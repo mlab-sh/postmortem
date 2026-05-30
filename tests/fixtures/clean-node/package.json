@@ -1,0 +1,6 @@
+{
+  "name": "clean-app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": { "leftpad-clean": "1.0.0" }
+}

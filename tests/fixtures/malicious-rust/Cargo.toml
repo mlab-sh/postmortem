@@ -1,0 +1,9 @@
+[package]
+name = "rustdecimal-victim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Typosquat of `rust_decimal`. Yanked by crates.io in May 2022 after it shipped
+# a malicious build script. We pin it here for the scanner's test corpus only.
+rustdecimal = "1.21.2"

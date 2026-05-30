@@ -1,0 +1,8 @@
+{
+  "name": "compromised-app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "event-stream": "3.3.6"
+  }
+}

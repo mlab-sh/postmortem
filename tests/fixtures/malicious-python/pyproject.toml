@@ -1,0 +1,4 @@
+[project]
+name = "ctx-victim"
+version = "0.1.0"
+dependencies = ["ctx==0.2.6", "requests==2.31.0"]

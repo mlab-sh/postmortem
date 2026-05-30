@@ -1,0 +1,97 @@
+//! Sensitive-API surface.
+//!
+//! Cheap substring scan for known dangerous primitives. We deduplicate per (file, api)
+//! and roll up at Low severity unless the file ALSO matched obfuscation/install-hook
+//! analyzers — escalation is left to the orchestration layer in v2.
+
+use std::collections::HashSet;
+use std::path::Path;
+
+use crate::analyze::util;
+use crate::model::{Category, Finding, Severity};
+
+#[derive(Copy, Clone)]
+pub enum Lang {
+    JavaScript,
+    Python,
+    Rust,
+}
+
+impl Lang {
+    fn exts(self) -> &'static [&'static str] {
+        match self {
+            Lang::JavaScript => &["js", "mjs", "cjs"],
+            Lang::Python => &["py"],
+            Lang::Rust => &["rs"],
+        }
+    }
+    fn apis(self) -> &'static [&'static str] {
+        match self {
+            Lang::JavaScript => &[
+                "child_process",
+                "require('fs')",
+                "require(\"fs\")",
+                "require('net')",
+                "require(\"net\")",
+                "require('dgram')",
+                "require('http')",
+                "require('https')",
+                "require('tls')",
+                ".exec(",
+                ".spawn(",
+            ],
+            Lang::Python => &[
+                "import subprocess",
+                "from subprocess",
+                "import socket",
+                "import requests",
+                "from urllib",
+                "os.system",
+                "os.popen",
+                "os.environ",
+                "shutil.copy",
+                "ctypes",
+            ],
+            Lang::Rust => &[
+                "std::process",
+                "std::net",
+                "tokio::process",
+                "reqwest::",
+                "ureq::",
+                "Command::new",
+            ],
+        }
+    }
+}
+
+pub fn scan_dir(root: &Path, out: &mut Vec<Finding>, lang: Lang) {
+    for path in util::walk_files(root, lang.exts()) {
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let mut hit: HashSet<&'static str> = HashSet::new();
+        for api in lang.apis() {
+            if text.contains(api) {
+                hit.insert(api);
+            }
+        }
+        if hit.is_empty() {
+            continue;
+        }
+        let dep = util::owner(&path, "<project>");
+        let mut apis: Vec<&str> = hit.into_iter().collect();
+        apis.sort();
+        let severity = if apis.len() >= 3 {
+            Severity::Medium
+        } else {
+            Severity::Low
+        };
+        out.push(Finding {
+            dependency: dep,
+            severity,
+            category: Category::SensitiveApi,
+            detail: format!("uses {}", apis.join(", ")),
+            location: Some(path.display().to_string()),
+            evidence: None,
+            enrich_url: None,
+        });
+    }
+}
