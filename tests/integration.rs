@@ -18,10 +18,12 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 /// Run postmortem in JSON mode and return (exit_code, parsed_json).
+/// Passes `-o -` so the default-file behavior doesn't intercept stdout.
 fn scan_json(fixture_name: &str, extra_args: &[&str]) -> (i32, Value) {
     let mut cmd = Command::new(bin());
     cmd.arg(fixture(fixture_name))
         .arg("--json")
+        .args(["-o", "-"])
         .args(extra_args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -286,6 +288,7 @@ reason = "test suppression"
     let out = Command::new(bin())
         .arg(&dst)
         .arg("--json")
+        .args(["-o", "-"])
         .output()
         .unwrap();
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -329,6 +332,7 @@ fn no_config_flag_disables_autoload() {
         .arg(&dst)
         .arg("--json")
         .arg("--no-config")
+        .args(["-o", "-"])
         .output()
         .unwrap();
     let report: Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -406,10 +410,121 @@ fn enrich_flag_off_by_default() {
 }
 
 #[test]
+fn sarif_output_is_well_formed() {
+    let out = Command::new(bin())
+        .arg(fixture("malicious-node"))
+        .arg("--sarif")
+        .args(["-o", "-"])
+        .output()
+        .unwrap();
+    let body = String::from_utf8(out.stdout).unwrap();
+    let v: Value = serde_json::from_str(&body).expect("valid JSON");
+
+    // Schema sanity
+    assert_eq!(v["version"], "2.1.0");
+    assert!(v["$schema"].as_str().unwrap().contains("sarif"));
+
+    let run = &v["runs"][0];
+    assert_eq!(run["tool"]["driver"]["name"], "postmortem");
+    let driver_ver = run["tool"]["driver"]["version"].as_str().unwrap();
+    assert!(!driver_ver.is_empty());
+
+    // We expect rules for every category present in this fixture's findings.
+    let rules = run["tool"]["driver"]["rules"].as_array().unwrap();
+    let rule_ids: Vec<&str> = rules.iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert!(rule_ids.contains(&"postmortem.install_hook"));
+    assert!(rule_ids.contains(&"postmortem.obfuscation"));
+    assert!(rule_ids.contains(&"postmortem.ioc"));
+    assert!(rule_ids.contains(&"postmortem.sensitive_api"));
+
+    // Results — at least one of each, all carrying a location with relative path + line.
+    let results = run["results"].as_array().unwrap();
+    assert!(results.len() >= 8);
+    for r in results {
+        let level = r["level"].as_str().unwrap();
+        assert!(["error", "warning", "note", "none"].contains(&level));
+        let loc = &r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"];
+        assert!(!loc.as_str().unwrap().starts_with('/'), "path should be SRCROOT-relative, got {loc}");
+        assert!(r["partialFingerprints"]["postmortem/finding-fingerprint"].is_string());
+    }
+}
+
+#[test]
+fn sarif_includes_enrich_url_when_flag_set() {
+    let out = Command::new(bin())
+        .arg(fixture("malicious-node"))
+        .arg("--sarif")
+        .arg("--enrich")
+        .args(["-o", "-"])
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let results = v["runs"][0]["results"].as_array().unwrap();
+    let has_enrich = results
+        .iter()
+        .any(|r| r["properties"]["enrichUrl"].as_str().map(|s| s.starts_with("https://mlab.sh/")).unwrap_or(false));
+    assert!(has_enrich, "expected at least one result with properties.enrichUrl");
+}
+
+#[test]
+fn default_output_filename_when_no_dash_o() {
+    // Run in a fresh temp cwd so we can assert exactly one file was created.
+    let tmp = std::env::temp_dir().join(format!("postmortem-it-default-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let out = Command::new(bin())
+        .arg(fixture("clean-node"))
+        .arg("--json")
+        .current_dir(&tmp)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+
+    // stdout must be empty — JSON should have gone to a file.
+    assert!(out.stdout.is_empty(), "stdout should be empty when defaulting to file");
+
+    // Stderr advertises the file path.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("wrote") && stderr.contains("bytes to"));
+
+    // Exactly one file in the cwd, matching the timestamped pattern.
+    let entries: Vec<_> = std::fs::read_dir(&tmp).unwrap().flatten().collect();
+    assert_eq!(entries.len(), 1, "expected exactly one output file in cwd");
+    let fname = entries[0].file_name().into_string().unwrap();
+    assert!(
+        fname.starts_with("postmortem-report-[") && fname.ends_with("].json"),
+        "filename does not match expected pattern: {fname}"
+    );
+
+    // The file is valid JSON
+    let body = std::fs::read_to_string(entries[0].path()).unwrap();
+    let v: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["schema_version"], 1);
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn dash_o_dash_forces_stdout() {
+    // -o - explicitly routes to stdout instead of a default file.
+    let out = Command::new(bin())
+        .arg(fixture("clean-node"))
+        .arg("--json")
+        .args(["-o", "-"])
+        .output()
+        .unwrap();
+    let body = String::from_utf8(out.stdout).unwrap();
+    let v: Value = serde_json::from_str(&body).expect("valid JSON on stdout");
+    assert_eq!(v["schema_version"], 1);
+}
+
+#[test]
 fn html_output_is_self_contained() {
     let out = Command::new(bin())
         .arg(fixture("malicious-node"))
         .arg("--html")
+        .args(["-o", "-"])
         .output()
         .unwrap();
     let body = String::from_utf8_lossy(&out.stdout);

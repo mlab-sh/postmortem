@@ -2,26 +2,26 @@
 # Do not edit by hand — your changes will be overwritten.
 class Postmortem < Formula
   desc "Static dependency scanner for Node, Python and Rust projects"
-  homepage "https://github.com/Sn0wAlice/postmortem"
+  homepage "https://github.com/mlab-sh/postmortem"
   version "0.1.0"
   license "Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
-      url "https://github.com/Sn0wAlice/postmortem/releases/download/v#{version}/postmortem-#{version}-aarch64-apple-darwin.tar.gz"
+      url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-aarch64-apple-darwin.tar.gz"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     else
-      url "https://github.com/Sn0wAlice/postmortem/releases/download/v#{version}/postmortem-#{version}-x86_64-apple-darwin.tar.gz"
+      url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-x86_64-apple-darwin.tar.gz"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   end
 
   on_linux do
     if Hardware::CPU.intel?
-      url "https://github.com/Sn0wAlice/postmortem/releases/download/v#{version}/postmortem-#{version}-x86_64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-x86_64-unknown-linux-gnu.tar.gz"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     elsif Hardware::CPU.arm?
-      url "https://github.com/Sn0wAlice/postmortem/releases/download/v#{version}/postmortem-#{version}-aarch64-unknown-linux-gnu.tar.gz"
+      url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-aarch64-unknown-linux-gnu.tar.gz"
       sha256 "0000000000000000000000000000000000000000000000000000000000000000"
     end
   end

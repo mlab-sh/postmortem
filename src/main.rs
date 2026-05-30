@@ -96,11 +96,15 @@ fn main() -> Result<()> {
         cli::Format::Terminal => report::terminal::render(&report, !args.no_deps),
         cli::Format::Json => {
             let out = report::json::render(&report)?;
-            cli::write_output(args.output.as_deref(), &out)?;
+            cli::OutputTarget::resolve(args.output.as_deref(), "json").write(&out)?;
         }
         cli::Format::Html => {
             let out = report::html::render(&report);
-            cli::write_output(args.output.as_deref(), &out)?;
+            cli::OutputTarget::resolve(args.output.as_deref(), "html").write(&out)?;
+        }
+        cli::Format::Sarif => {
+            let out = report::sarif::render(&report)?;
+            cli::OutputTarget::resolve(args.output.as_deref(), "sarif").write(&out)?;
         }
     }
 

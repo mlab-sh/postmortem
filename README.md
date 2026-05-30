@@ -39,8 +39,9 @@ postmortem ./my-project --skip-category ioc
   - `sensitive_api` — `child_process` / `fs` / `net` / `https` (Node);
     `subprocess` / `socket` / `urllib` / `os.system` (Python); `std::process`
     / `std::net` / `Command::new` (Rust).
-- **Three output formats** — colored terminal, stable versioned JSON, and a
-  self-contained HTML report (single file, no external assets).
+- **Four output formats** — colored terminal, stable versioned JSON, a
+  self-contained HTML report, and **SARIF 2.1.0** for GitHub Code Scanning and
+  other SARIF-aware tools.
 - **CI-friendly exit codes** — `0` clean, `1` findings ≥ `--severity`,
   `2` execution error.
 - **Suppression** via CLI flags and / or a `postmortem.conf` file in the
@@ -65,7 +66,7 @@ for four targets:
 #### Homebrew
 
 ```bash
-brew tap Sn0wAlice/postmortem https://github.com/Sn0wAlice/postmortem.git
+brew tap mlab-sh/postmortem https://github.com/mlab-sh/postmortem.git
 brew install postmortem
 ```
 
@@ -74,12 +75,12 @@ by the release workflow with live sha256 hashes — never edit it by hand.
 
 #### Direct tarball
 
-URL template: `https://github.com/Sn0wAlice/postmortem/releases/download/v<VERSION>/postmortem-<VERSION>-<TARGET>.tar.gz`
+URL template: `https://github.com/mlab-sh/postmortem/releases/download/v<VERSION>/postmortem-<VERSION>-<TARGET>.tar.gz`
 
 ```bash
-VERSION=0.1.0
+VERSION=1.0.1
 TARGET=aarch64-apple-darwin   # pick your target from the table above
-curl -L "https://github.com/Sn0wAlice/postmortem/releases/download/v${VERSION}/postmortem-${VERSION}-${TARGET}.tar.gz" \
+curl -L "https://github.com/mlab-sh/postmortem/releases/download/v${VERSION}/postmortem-${VERSION}-${TARGET}.tar.gz" \
   | tar xz
 sudo mv "postmortem-${VERSION}-${TARGET}/postmortem" /usr/local/bin/
 ```
@@ -89,7 +90,7 @@ sudo mv "postmortem-${VERSION}-${TARGET}/postmortem" /usr/local/bin/
 The release workflow is `workflow_dispatch`-only — no automatic builds on push or
 tag. To grab a binary from an untagged commit, trigger the workflow manually:
 
-1. Open the [Release workflow](https://github.com/Sn0wAlice/postmortem/actions/workflows/release.yml).
+1. Open the [Release workflow](https://github.com/mlab-sh/postmortem/actions/workflows/release.yml).
 2. Click **Run workflow**, pick the branch or commit, run it.
 3. Either download the per-platform `*.tar.gz` from the run-summary **Artifacts**
    panel (kept 90 days), or grab it from the `v<version>` Release the run
@@ -98,7 +99,7 @@ tag. To grab a binary from an untagged commit, trigger the workflow manually:
 ### Local build
 
 ```bash
-git clone https://github.com/Sn0wAlice/postmortem.git
+git clone https://github.com/mlab-sh/postmortem.git
 cd postmortem
 cargo build --release
 ./target/release/postmortem --help
@@ -120,7 +121,11 @@ Arguments:
 Options:
       --json                     Emit JSON
       --html                     Emit a self-contained HTML report
-  -o, --output <OUTPUT>          Write output to file instead of stdout
+      --sarif                    Emit SARIF 2.1.0 (GitHub Code Scanning)
+  -o, --output <OUTPUT>          Write output to this path. Pass `-` to force
+                                 stdout. When omitted for --json/--html/--sarif,
+                                 a file is auto-created in the cwd named
+                                 `postmortem-report-[MM.DD.YYYY::HH:MM].<ext>`
       --severity <SEVERITY>      Min severity that causes a non-zero exit code
                                  [default: high]  [info|low|medium|high|critical]
       --min-severity <SEV>       Hide findings below this severity from the report
@@ -241,6 +246,30 @@ pipelines:
 `--html -o report.html` produces a self-contained single-file report — no
 external CSS, JS, fonts or images. Safe to attach to a ticket or upload to
 artifact storage.
+
+### SARIF (GitHub Code Scanning)
+
+`--sarif -o report.sarif` produces a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/)
+document — one rule per analyzer category (`postmortem.ioc`, `.obfuscation`,
+`.install_hook`, `.sensitive_api`), one result per finding. Severity maps to
+SARIF levels: `critical/high → error`, `medium → warning`, `low → note`,
+`info → none`. Each result carries a stable `partialFingerprints` entry so
+re-runs don't re-open the same alert, and paths are made relative to a
+`SRCROOT` URI base so the same SARIF file makes sense on any reviewer's
+machine. When combined with `--enrich`, the mlab.sh deep-link is surfaced as
+`properties.enrichUrl` on each IOC result.
+
+Wire into GitHub Code Scanning:
+
+```yaml
+- name: Run postmortem
+  run: postmortem . --sarif -o postmortem.sarif
+
+- name: Upload SARIF
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: postmortem.sarif
+```
 
 ---
 

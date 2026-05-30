@@ -26,6 +26,7 @@ target
 /target
 report.html
 report.json
+postmortem-report-[*
 
 # Fixtures emulate real supply-chain attacks — their vendored `node_modules/`
 # trees ARE the test data and must be checked in. Override any global gitignore
