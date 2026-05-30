@@ -26,3 +26,9 @@ target
 /target
 report.html
 report.json
+
+# Fixtures emulate real supply-chain attacks — their vendored `node_modules/`
+# trees ARE the test data and must be checked in. Override any global gitignore
+# that excludes node_modules.
+!tests/fixtures/**/node_modules/
+!tests/fixtures/**/node_modules/**
