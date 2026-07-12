@@ -18,6 +18,7 @@ pub enum Lang {
     Ruby,
     Php,
     Go,
+    Java,
 }
 
 impl Lang {
@@ -29,6 +30,7 @@ impl Lang {
             Lang::Ruby => &["rb"],
             Lang::Php => &["php"],
             Lang::Go => &["go"],
+            Lang::Java => &["java", "kt"],
         }
     }
     fn apis(self) -> &'static [&'static str] {
@@ -102,6 +104,18 @@ impl Lang {
                 "net.Dial",
                 "plugin.Open",
                 "unsafe.Pointer",
+            ],
+            Lang::Java => &[
+                "Runtime.getRuntime",
+                "ProcessBuilder",
+                ".exec(",
+                "System.load",
+                "java.net.Socket",
+                "new Socket(",
+                "openConnection(",
+                "Class.forName",
+                "ScriptEngineManager",
+                "Method.invoke",
             ],
         }
     }

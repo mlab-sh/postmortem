@@ -4,11 +4,11 @@
 
 # postmortem
 
-A static dependency scanner for **Node.js, Python, Rust, Ruby, PHP, and Go**
-projects. It resolves the lockfile graph, walks the vendored sources, and flags
-the patterns that typically show up in supply-chain compromises: install hooks,
-obfuscation, embedded IOCs (URLs, IPs, crypto wallets), and dangerous API
-surface.
+A static dependency scanner for **Node.js, Python, Rust, Ruby, PHP, Go, and
+JVM (Java/Kotlin)** projects. It resolves the lockfile graph, walks the vendored
+sources, and flags the patterns that typically show up in supply-chain
+compromises: install hooks, obfuscation, embedded IOCs (URLs, IPs, crypto
+wallets), and dangerous API surface.
 
 Offline by default: no network calls, no telemetry, no daemon. One binary,
 about 2.7 MB.
@@ -30,6 +30,7 @@ postmortem ./my-project --skip-category ioc
 | Ruby | `Gemfile.lock` (Bundler) | the project's own source (`lib/`, `app/`, ...) |
 | PHP | `composer.lock` (Composer) | project root, including a committed `vendor/` tree |
 | Go | `go.mod` (with `go.sum` for checksums) | the project's own source and a committed `vendor/` tree |
+| JVM | Maven `pom.xml` (direct deps), Gradle `gradle.lockfile` (full resolved set) | the project's own `.java` / `.kt` source |
 
 ## Features
 
@@ -51,7 +52,8 @@ postmortem ./my-project --skip-category ioc
     `child_process`/`net`/`https` (Node), `subprocess`/`socket`/`os.system`
     (Python), `std::process`/`std::net`/`Command::new` (Rust),
     `system`/`Net::HTTP`/`Open3` (Ruby), `shell_exec`/`proc_open`/`fsockopen`
-    (PHP), and `exec.Command`/`net.Dial`/`plugin.Open` (Go).
+    (PHP), `exec.Command`/`net.Dial`/`plugin.Open` (Go), and
+    `Runtime.exec`/`ProcessBuilder`/`Class.forName` (JVM).
 - **Four output formats:** colored terminal, stable versioned JSON, a
   self-contained HTML report, and SARIF 2.1.0 for GitHub Code Scanning and other
   SARIF-aware tools.
@@ -71,9 +73,10 @@ The `ioc` analyzer is tuned for a high signal-to-noise ratio on real codebases:
 - **Non-routable ranges are dropped.** RFC1918, loopback, link-local, CGNAT, and
   TEST-NET IPv4, plus documentation (`2001:db8::/32`), link-local, and
   unique-local IPv6, are treated as config/test data.
-- **Member access is not a domain.** `self.name`, `logging.info`, `tc.in`, and
-  other attribute accesses whose trailing label happens to be a TLD (including
-  short ccTLDs like `.in` or `.it`) are filtered out.
+- **Member access is not a domain.** `self.name`, `logging.info`, `tc.in`,
+  `this.ch`, and other attribute accesses whose trailing label happens to be a
+  TLD (including short ccTLDs like `.in` or `.ch`) are filtered out, as are
+  reverse-DNS package paths (`com.google.gson`, `org.apache.commons`).
 - **Reference hosts are allow-listed.** Registry, docs, knowledge, and
   module-host sites (npm, PyPI, crates.io, `golang.org`, `gopkg.in`, Wikipedia,
   Stack Overflow, and more) are treated as noise, and hosts already covered by a
@@ -325,6 +328,7 @@ malicious code:
 | [`malicious-ruby/`](tests/fixtures/malicious-ruby) | `rest-client 1.6.13` / `strong_password` hijack shape | 2019 | SBOM resolves typosquat, `obfuscation` (eval + base64), `sensitive_api`, `ioc` |
 | [`malicious-php/`](tests/fixtures/malicious-php) | Composer package-hijack webshell shape | n/a | SBOM resolves typosquat, `obfuscation` HIGH (eval + gzinflate + base64), `sensitive_api`, `ioc` |
 | [`malicious-go/`](tests/fixtures/malicious-go) | Go module-typosquat payload shape | n/a | SBOM resolves typosquat and `// indirect` split, `obfuscation` (base64 blob), `sensitive_api`, `ioc` |
+| [`malicious-java/`](tests/fixtures/malicious-java) | Maven artifact-typosquat payload shape | n/a | SBOM reads pom direct deps and skips the BOM, `obfuscation` (base64 blob), `sensitive_api`, `ioc` |
 | [`clean-node/`](tests/fixtures/clean-node) | benign baseline | n/a | no findings, exit `0` |
 
 Run the live demo:
@@ -336,6 +340,7 @@ postmortem ./tests/fixtures/malicious-rust
 postmortem ./tests/fixtures/malicious-ruby
 postmortem ./tests/fixtures/malicious-php
 postmortem ./tests/fixtures/malicious-go
+postmortem ./tests/fixtures/malicious-java
 ```
 
 ## Development
@@ -343,7 +348,7 @@ postmortem ./tests/fixtures/malicious-go
 ```bash
 cargo build              # debug build
 cargo build --release    # stripped, LTO, about 2.7 MB
-cargo test               # 58 unit + 33 integration tests
+cargo test               # 61 unit + 36 integration tests
 ```
 
 ### False-positive harness
@@ -377,6 +382,7 @@ src/
     ruby.rs              # Gemfile.lock (Bundler)
     php.rs               # composer.lock (Composer)
     go.rs                # go.mod / go.sum (Go modules)
+    java.rs              # Maven pom.xml / Gradle gradle.lockfile
   analyze/
     install_hooks.rs     # npm pre/post-install + Python setup.py
     obfuscation.rs       # entropy + eval + hex/base64 heuristics

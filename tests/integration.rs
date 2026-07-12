@@ -374,6 +374,52 @@ fn malicious_go_detects_exfil_iocs() {
     assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("domain")));
 }
 
+// ---------- malicious-java (Maven artifact typosquat shape) ----------
+
+#[test]
+fn malicious_java_reads_pom_direct_deps_and_skips_bom() {
+    let (_, report) = scan_json("malicious-java", &["--skip-analyze"]);
+    assert_eq!(report["ecosystems"][0], "java");
+    assert!(dep_present(&report, "org.apache.commons:commons-colletions", "3.2.1"));
+
+    let typo = deps(&report)
+        .iter()
+        .find(|d| d["name"] == "org.apache.commons:commons-colletions")
+        .unwrap();
+    assert_eq!(typo["direct"], true);
+    assert_eq!(typo["ecosystem"], "java");
+
+    // dependencyManagement (BOM) entries are not real dependencies.
+    assert!(
+        !deps(&report).iter().any(|d| d["name"] == "org.springframework:spring-bom"),
+        "dependencyManagement must be excluded from the SBOM"
+    );
+}
+
+#[test]
+fn malicious_java_detects_sensitive_api_and_obfuscation() {
+    let (_, report) = scan_json("malicious-java", &[]);
+    assert!(
+        has_finding(&report, "<project>", "sensitive_api"),
+        "expected sensitive_api (Runtime.exec / Socket) in Payload.java"
+    );
+    assert!(
+        findings(&report).iter().any(|f| f["category"] == "obfuscation"),
+        "expected obfuscation (base64 decode + blob) in Payload.java"
+    );
+}
+
+#[test]
+fn malicious_java_detects_exfil_iocs() {
+    let (_, report) = scan_json("malicious-java", &[]);
+    let iocs: Vec<&Value> = findings(&report)
+        .iter()
+        .filter(|f| f["category"] == "ioc")
+        .collect();
+    assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("URL")));
+    assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("domain")));
+}
+
 // ---------- clean baseline ----------
 
 #[test]

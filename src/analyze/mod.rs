@@ -70,6 +70,14 @@ pub fn run_all(detected: &[Detected], deps: &[Dependency]) -> Vec<Finding> {
                 ioc::scan_dir(root, &mut findings, ioc::Lang::Go);
                 obfuscation::scan_dir(root, &mut findings, obfuscation::Lang::Go);
             }
+            Detected::Java { root, .. } => {
+                // JVM dependencies live in the Maven/Gradle caches, not in-repo.
+                // We scan the project's own JVM source for sensitive APIs, IOCs,
+                // and obfuscation. (Build-script execution is out of scope.)
+                sensitive_api::scan_dir(root, &mut findings, sensitive_api::Lang::Java);
+                ioc::scan_dir(root, &mut findings, ioc::Lang::Java);
+                obfuscation::scan_dir(root, &mut findings, obfuscation::Lang::Java);
+            }
         }
     }
 

@@ -24,6 +24,7 @@ pub enum Lang {
     Ruby,
     Php,
     Go,
+    Java,
 }
 
 impl Lang {
@@ -35,6 +36,7 @@ impl Lang {
             Lang::Ruby => &["rb"],
             Lang::Php => &["php"],
             Lang::Go => &["go"],
+            Lang::Java => &["java", "kt"],
         }
     }
 }
@@ -178,9 +180,15 @@ const AMBIGUOUS_TLDS: &[&str] = &[
     "blog", "world", "today", "guru", "ninja", "live", "store", "shop", "site",
     "online", "tech", "fun", "best", "wtf", "lol", "buzz", "monster", "rest", "uno",
     "cam", "skin", "design", "global", "studio", "pro", "biz", "mobi", "club", "icu",
-    // ccTLDs that double as ordinary words / struct-field names (`tc.in`, `x.at`).
-    "in", "it", "at", "be", "no", "me", "us",
+    // ccTLDs that double as ordinary words / struct-field names (`tc.in`, `x.at`,
+    // `this.ch` where `ch` is a char).
+    "in", "it", "at", "be", "no", "me", "us", "ch",
 ];
+
+/// TLDs that, as the *leading* label, mark a reverse-DNS package path
+/// (`com.google.gson`, `org.apache.commons`) rather than a hostname. Real
+/// hostnames never start with one of these.
+const REVERSE_DNS_HEADS: &[&str] = &["com", "org", "net", "edu", "gov", "mil", "int"];
 
 /// Embedded TLD allowlist — popular gTLDs/ccTLDs plus a handful of TLDs that
 /// frequently host throwaway exfil infrastructure (`tk`, `xyz`, `top`, ...).
@@ -480,6 +488,11 @@ fn domain_is_code_access(text: &str, start: usize, end: usize, candidate: &str) 
     if b.get(end).copied() == Some(b'(') {
         return true;
     }
+    // Reverse-DNS package path (`com.google.gson`, `org.apache.commons`).
+    let head = candidate.split('.').next().unwrap_or("");
+    if REVERSE_DNS_HEADS.contains(&head.to_ascii_lowercase().as_str()) {
+        return true;
+    }
     let tld = candidate.rsplit('.').next().unwrap_or("");
     // Real hostnames are written lowercase; an uppercase TLD is a type/constant.
     if tld.chars().any(|c| c.is_ascii_uppercase()) {
@@ -695,6 +708,16 @@ mod tests {
         assert!(
             !details(&fs).contains(&"embedded domain name"),
             "Go field access / module hosts must not be flagged: {fs:#?}"
+        );
+    }
+
+    #[test]
+    fn rejects_java_packages_and_char_field() {
+        // Reverse-DNS package paths and `.ch` (a char field) are code, not hosts.
+        let fs = scan("package com.google.gson; import org.apache.commons.Lang; c = this.ch;");
+        assert!(
+            !details(&fs).contains(&"embedded domain name"),
+            "Java packages / char field must not be flagged: {fs:#?}"
         );
     }
 

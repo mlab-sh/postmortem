@@ -10,6 +10,7 @@ pub enum Ecosystem {
     Ruby,
     Php,
     Go,
+    Java,
 }
 
 impl Ecosystem {
@@ -21,6 +22,7 @@ impl Ecosystem {
             Ecosystem::Ruby => "ruby",
             Ecosystem::Php => "php",
             Ecosystem::Go => "go",
+            Ecosystem::Java => "java",
         }
     }
 }

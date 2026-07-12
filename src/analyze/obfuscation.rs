@@ -30,6 +30,7 @@ pub enum Lang {
     Ruby,
     Php,
     Go,
+    Java,
 }
 
 impl Lang {
@@ -40,6 +41,7 @@ impl Lang {
             Lang::Ruby => &["rb"],
             Lang::Php => &["php"],
             Lang::Go => &["go"],
+            Lang::Java => &["java", "kt"],
         }
     }
 }
@@ -162,6 +164,19 @@ fn scan_file(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
             }
             if lower.contains("hex.DecodeString") {
                 signals.push("hex decode");
+            }
+        }
+        Lang::Java => {
+            if lower.contains("Base64.getDecoder")
+                || lower.contains("DatatypeConverter.parseBase64Binary")
+            {
+                signals.push("base64/codecs decode");
+            }
+            if lower.contains("ScriptEngine") || lower.contains(".eval(") {
+                signals.push("eval()");
+            }
+            if lower.contains("defineClass(") {
+                signals.push("defineClass");
             }
         }
     }

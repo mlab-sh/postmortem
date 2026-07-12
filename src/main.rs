@@ -85,6 +85,12 @@ fn main() -> Result<()> {
                     Err(e) => eprintln!("warn: go.mod parse failed: {e:#}"),
                 }
             }
+            detect::Detected::Java { manifest, lockfile, .. } => {
+                match parsers::java::parse(manifest.as_deref(), lockfile.as_deref()) {
+                    Ok(mut d) => deps.append(&mut d),
+                    Err(e) => eprintln!("warn: JVM manifest/lockfile parse failed: {e:#}"),
+                }
+            }
         }
     }
 

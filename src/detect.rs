@@ -43,6 +43,13 @@ pub enum Detected {
         /// `go.sum` if present — supplies module checksums.
         lockfile: Option<PathBuf>,
     },
+    Java {
+        root: PathBuf,
+        /// `pom.xml` (Maven) or `build.gradle`(`.kts`) (Gradle), if present.
+        manifest: Option<PathBuf>,
+        /// `gradle.lockfile` if present — the full resolved Gradle set.
+        lockfile: Option<PathBuf>,
+    },
 }
 
 impl Detected {
@@ -54,6 +61,7 @@ impl Detected {
             Detected::Ruby { .. } => "ruby",
             Detected::Php { .. } => "php",
             Detected::Go { .. } => "go",
+            Detected::Java { .. } => "java",
         }
     }
 }
@@ -154,6 +162,28 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
             root: root.to_path_buf(),
             manifest: go_mod,
             lockfile: go_sum.is_file().then_some(go_sum),
+        });
+    }
+
+    // JVM: Maven `pom.xml` lists direct deps; Gradle `gradle.lockfile` is the
+    // full resolved set. Prefer Maven when both are present at the root.
+    let pom = root.join("pom.xml");
+    let gradle_lock = root.join("gradle.lockfile");
+    if pom.is_file() {
+        out.push(Detected::Java {
+            root: root.to_path_buf(),
+            manifest: Some(pom),
+            lockfile: None,
+        });
+    } else if gradle_lock.is_file() {
+        let manifest = ["build.gradle", "build.gradle.kts"]
+            .iter()
+            .map(|f| root.join(f))
+            .find(|p| p.is_file());
+        out.push(Detected::Java {
+            root: root.to_path_buf(),
+            manifest,
+            lockfile: Some(gradle_lock),
         });
     }
 
