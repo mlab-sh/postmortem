@@ -144,9 +144,9 @@ fn malicious_node_detects_ipv6() {
         findings(&report).iter().any(|f| {
             f["category"] == "ioc"
                 && f["detail"] == "embedded IPv6 address"
-                && f["evidence"].as_str().map(|s| s.contains("2001:db8::dead:beef")).unwrap_or(false)
+                && f["evidence"].as_str().map(|s| s.contains("2606:4700:1c1c::dead:beef")).unwrap_or(false)
         }),
-        "expected IPv6 finding for 2001:db8::dead:beef"
+        "expected IPv6 finding for 2606:4700:1c1c::dead:beef"
     );
 }
 
@@ -268,6 +268,62 @@ fn malicious_ruby_detects_exfil_iocs() {
         iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("domain")),
         "expected the exfil.evil.tk domain finding"
     );
+}
+
+// ---------- malicious-php (Composer package hijack shape) ----------
+
+#[test]
+fn malicious_php_resolves_typosquat_and_graph() {
+    let (_, report) = scan_json("malicious-php", &["--skip-analyze"]);
+    assert_eq!(report["ecosystems"][0], "php");
+    assert!(dep_present(&report, "guzzlehttp/guzzel", "7.5.0"));
+
+    let root = deps(&report)
+        .iter()
+        .find(|d| d["name"] == "guzzlehttp/guzzel")
+        .unwrap();
+    assert_eq!(root["direct"], true);
+    assert_eq!(root["ecosystem"], "php");
+
+    let psr = deps(&report)
+        .iter()
+        .find(|d| d["name"] == "psr/http-client")
+        .expect("psr/http-client dep");
+    assert_eq!(psr["direct"], false);
+    let parents: Vec<String> = psr["parents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p[0].as_str().unwrap().to_string())
+        .collect();
+    assert!(parents.iter().any(|p| p == "guzzlehttp/guzzel"), "got {parents:?}");
+}
+
+#[test]
+fn malicious_php_detects_obfuscation_chain() {
+    let (_, report) = scan_json("malicious-php", &[]);
+    // eval + base64_decode + gzinflate is the classic PHP webshell chain → High.
+    assert!(
+        findings(&report).iter().any(|f| f["category"] == "obfuscation"
+            && (f["severity"] == "high" || f["severity"] == "critical")),
+        "expected a high-severity obfuscation finding: {}",
+        serde_json::to_string_pretty(&report["findings"]).unwrap()
+    );
+    assert!(
+        has_finding(&report, "<project>", "sensitive_api"),
+        "expected sensitive_api (shell_exec/fsockopen) in src/Payload.php"
+    );
+}
+
+#[test]
+fn malicious_php_detects_exfil_iocs() {
+    let (_, report) = scan_json("malicious-php", &[]);
+    let iocs: Vec<&Value> = findings(&report)
+        .iter()
+        .filter(|f| f["category"] == "ioc")
+        .collect();
+    assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("URL")));
+    assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("domain")));
 }
 
 // ---------- clean baseline ----------
@@ -441,7 +497,7 @@ fn enrich_flag_attaches_mlab_links_to_iocs() {
     assert_eq!(dom_f["enrich_url"], "https://mlab.sh/domain/track.evil.tk");
 
     let ip6_f = by_detail("embedded IPv6 address").expect("IPv6 finding present");
-    assert_eq!(ip6_f["enrich_url"], "https://mlab.sh/ip/2001:db8::dead:beef");
+    assert_eq!(ip6_f["enrich_url"], "https://mlab.sh/ip/2606:4700:1c1c::dead:beef");
 
     let btc_f = iocs
         .iter()

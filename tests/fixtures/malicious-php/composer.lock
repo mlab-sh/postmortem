@@ -1,0 +1,35 @@
+{
+    "_readme": [
+        "Hand-crafted lockfile for the fixture (not produced by composer)."
+    ],
+    "content-hash": "0000000000000000000000000000000000000000",
+    "packages": [
+        {
+            "name": "guzzlehttp/guzzel",
+            "version": "7.5.0",
+            "source": { "type": "git", "url": "https://github.com/guzzlehttp/guzzel.git", "reference": "deadbeef" },
+            "dist": { "type": "zip", "url": "https://api.github.com/repos/guzzlehttp/guzzel/zipball/deadbeef", "reference": "deadbeef", "shasum": "" },
+            "require": {
+                "php": "^8.0",
+                "psr/http-client": "^1.0"
+            },
+            "type": "library"
+        },
+        {
+            "name": "psr/http-client",
+            "version": "1.0.2",
+            "source": { "type": "git", "url": "https://github.com/php-fig/http-client.git", "reference": "0955afe4" },
+            "require": { "php": "^7.0 || ^8.0" },
+            "type": "library"
+        }
+    ],
+    "packages-dev": [
+        {
+            "name": "phpunit/phpunit",
+            "version": "9.5.28",
+            "require": { "php": ">=7.3" },
+            "type": "library"
+        }
+    ],
+    "platform": { "php": ">=8.0" }
+}

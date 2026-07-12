@@ -16,6 +16,7 @@ pub enum Lang {
     Python,
     Rust,
     Ruby,
+    Php,
 }
 
 impl Lang {
@@ -25,6 +26,7 @@ impl Lang {
             Lang::Python => &["py"],
             Lang::Rust => &["rs"],
             Lang::Ruby => &["rb"],
+            Lang::Php => &["php"],
         }
     }
     fn apis(self) -> &'static [&'static str] {
@@ -74,6 +76,19 @@ impl Lang {
                 "require 'open-uri'",
                 "require \"open-uri\"",
                 "Kernel.system",
+            ],
+            Lang::Php => &[
+                "shell_exec(",
+                "exec(",
+                "system(",
+                "passthru(",
+                "proc_open(",
+                "popen(",
+                "pcntl_exec(",
+                "curl_exec(",
+                "fsockopen(",
+                "fopen(\"http",
+                "fopen('http",
             ],
         }
     }

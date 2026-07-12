@@ -1,0 +1,11 @@
+{
+    "name": "acme/victim-app",
+    "description": "Fixture only — depends on a typosquat of guzzlehttp/guzzle.",
+    "require": {
+        "php": ">=8.0",
+        "guzzlehttp/guzzel": "7.5.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^9.5"
+    }
+}

@@ -28,6 +28,7 @@ pub enum Lang {
     JavaScript,
     Python,
     Ruby,
+    Php,
 }
 
 impl Lang {
@@ -36,6 +37,7 @@ impl Lang {
             Lang::JavaScript => &["js", "mjs", "cjs"],
             Lang::Python => &["py"],
             Lang::Ruby => &["rb"],
+            Lang::Php => &["php"],
         }
     }
 }
@@ -127,6 +129,23 @@ fn scan_file(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
             }
             if lower.contains("Zlib::Inflate") {
                 signals.push("zlib inflate");
+            }
+        }
+        Lang::Php => {
+            if lower.contains("eval(") {
+                signals.push("eval()");
+            }
+            if lower.contains("base64_decode(") {
+                signals.push("base64/codecs decode");
+            }
+            if lower.contains("gzinflate(") || lower.contains("gzuncompress(") {
+                signals.push("gzinflate");
+            }
+            if lower.contains("str_rot13(") {
+                signals.push("str_rot13");
+            }
+            if lower.contains("create_function(") {
+                signals.push("create_function");
             }
         }
     }

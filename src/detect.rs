@@ -30,6 +30,12 @@ pub enum Detected {
         manifest: Option<PathBuf>,
         lockfile: PathBuf,
     },
+    Php {
+        root: PathBuf,
+        /// `composer.json` if present — supplies the direct-dependency set.
+        manifest: Option<PathBuf>,
+        lockfile: PathBuf,
+    },
 }
 
 impl Detected {
@@ -39,6 +45,7 @@ impl Detected {
             Detected::Python { .. } => "python",
             Detected::Rust { .. } => "rust",
             Detected::Ruby { .. } => "ruby",
+            Detected::Php { .. } => "php",
         }
     }
 }
@@ -115,6 +122,18 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
             root: root.to_path_buf(),
             manifest,
             lockfile: gemfile_lock,
+        });
+    }
+
+    // Composer resolves composer.json into composer.lock; the manifest supplies
+    // the direct set (require / require-dev).
+    let composer_lock = root.join("composer.lock");
+    if composer_lock.is_file() {
+        let manifest = root.join("composer.json");
+        out.push(Detected::Php {
+            root: root.to_path_buf(),
+            manifest: manifest.is_file().then_some(manifest),
+            lockfile: composer_lock,
         });
     }
 

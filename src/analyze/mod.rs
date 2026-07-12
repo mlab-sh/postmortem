@@ -54,6 +54,14 @@ pub fn run_all(detected: &[Detected], deps: &[Dependency]) -> Vec<Finding> {
                 ioc::scan_dir(root, &mut findings, ioc::Lang::Ruby);
                 obfuscation::scan_dir(root, &mut findings, obfuscation::Lang::Ruby);
             }
+            Detected::Php { root, .. } => {
+                // Composer vendors dependencies under vendor/ when installed, so a
+                // single root walk covers both the project's own PHP and any
+                // committed vendor tree.
+                sensitive_api::scan_dir(root, &mut findings, sensitive_api::Lang::Php);
+                ioc::scan_dir(root, &mut findings, ioc::Lang::Php);
+                obfuscation::scan_dir(root, &mut findings, obfuscation::Lang::Php);
+            }
         }
     }
 

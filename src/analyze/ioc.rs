@@ -22,6 +22,7 @@ pub enum Lang {
     Python,
     Rust,
     Ruby,
+    Php,
 }
 
 impl Lang {
@@ -31,6 +32,7 @@ impl Lang {
             Lang::Python => &["py"],
             Lang::Rust => &["rs"],
             Lang::Ruby => &["rb"],
+            Lang::Php => &["php"],
         }
     }
 }
@@ -291,8 +293,7 @@ fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
         }
         // RFC-valid?
         let Ok(addr) = Ipv6Addr::from_str(candidate) else { continue };
-        // Drop unspecified / loopback — they show up in dual-stack server stubs.
-        if addr.is_unspecified() || addr.is_loopback() {
+        if !is_noteworthy_ipv6(&addr) {
             continue;
         }
         out.push(Finding {
@@ -438,6 +439,21 @@ fn is_noteworthy_ipv4(a: &Ipv4Addr) -> bool {
         || o[0] >= 240)                            // 240.0.0.0/4 reserved
 }
 
+/// IPv6 analogue of `is_noteworthy_ipv4`: drop the non-routable ranges that
+/// turn up in dual-stack stubs and IP-matching test fixtures — unspecified,
+/// loopback, multicast, the `2001:db8::/32` documentation prefix (RFC 3849),
+/// link-local (`fe80::/10`), and unique-local (`fc00::/7`).
+fn is_noteworthy_ipv6(a: &Ipv6Addr) -> bool {
+    if a.is_unspecified() || a.is_loopback() || a.is_multicast() {
+        return false;
+    }
+    let s = a.segments();
+    let documentation = s[0] == 0x2001 && s[1] == 0x0db8;
+    let link_local = (s[0] & 0xffc0) == 0xfe80;
+    let unique_local = (s[0] & 0xfe00) == 0xfc00;
+    !(documentation || link_local || unique_local)
+}
+
 /// True when a domain-shaped match is really source code — a member access or
 /// method call whose attribute happens to be a valid TLD (`self.name`,
 /// `logging.info`, `stack.top`, `vertex.id`), an uppercase constant path
@@ -566,7 +582,7 @@ mod tests {
 
     #[test]
     fn finds_ipv6_compressed() {
-        let fs = scan(r#"const host = "2001:db8::1";"#);
+        let fs = scan(r#"const host = "2606:4700::1";"#);
         assert!(
             details(&fs).contains(&"embedded IPv6 address"),
             "{fs:#?}"
@@ -575,7 +591,7 @@ mod tests {
 
     #[test]
     fn finds_ipv6_full() {
-        let fs = scan(r#"connect("2001:0db8:85a3:0000:0000:8a2e:0370:7334", 80);"#);
+        let fs = scan(r#"connect("2606:4700:4700:1111:2222:8a2e:0370:7334", 80);"#);
         assert!(details(&fs).contains(&"embedded IPv6 address"), "{fs:#?}");
     }
 
@@ -609,6 +625,17 @@ mod tests {
         assert!(
             !details(&fs).contains(&"embedded IPv6 address"),
             "turbofish must not be flagged as IPv6: {fs:#?}"
+        );
+    }
+
+    #[test]
+    fn rejects_documentation_and_local_ipv6() {
+        let fs = scan(
+            r#"a="2001:db8::52:0:3"; b="fe80::1ff:fe23:4567:890a"; c="fc00::abcd";"#,
+        );
+        assert!(
+            !details(&fs).contains(&"embedded IPv6 address"),
+            "doc/link-local/unique-local IPv6 must be suppressed: {fs:#?}"
         );
     }
 

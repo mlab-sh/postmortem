@@ -4,7 +4,7 @@
 #
 # Clones a set of well-known, *legitimate* repositories (algorithm collections
 # and popular libraries) across the supported ecosystems — Node.js, Python,
-# Rust, Ruby — runs postmortem on each, and summarizes the findings. Because
+# Rust, Ruby, PHP — runs postmortem on each, and summarizes the findings. Because
 # these repos are trusted, essentially every finding is a candidate false
 # positive, so the breakdown is a quick eyeball test for the IOC / obfuscation
 # heuristics. It also runs a few sanity checks ("bricoles") on each repo:
@@ -36,6 +36,8 @@ REPOS=(
   "node|https://github.com/axios/axios|axios"
   "ruby|https://github.com/fastlane/fastlane|fastlane"
   "ruby|https://github.com/heartcombo/devise|devise"
+  "php|https://github.com/composer/composer|composer"
+  "php|https://github.com/phpmyadmin/phpmyadmin|phpmyadmin"
 )
 
 WANT=("$@")
@@ -87,6 +89,11 @@ for entry in "${REPOS[@]}"; do
   if [ "$lang" = "ruby" ] && [ ! -f "$dir/Gemfile.lock" ] && [ -f "$dir/Gemfile" ]; then
     echo "   (no Gemfile.lock — trying bundle lock)"
     ( cd "$dir" && bundle lock ) >/dev/null 2>&1 || echo "   !! could not generate lockfile (need bundler + network)"
+  fi
+  if [ "$lang" = "php" ] && [ ! -f "$dir/composer.lock" ] && [ -f "$dir/composer.json" ]; then
+    echo "   (no composer.lock — trying composer update --lock)"
+    ( cd "$dir" && composer update --lock --no-install --no-interaction ) >/dev/null 2>&1 \
+      || echo "   !! could not generate lockfile (need composer + network)"
   fi
 
   out="$CACHE/$name.report.json"

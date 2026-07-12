@@ -73,6 +73,12 @@ fn main() -> Result<()> {
                     Err(e) => eprintln!("warn: Gemfile.lock parse failed: {e:#}"),
                 }
             }
+            detect::Detected::Php { manifest, lockfile, .. } => {
+                match parsers::php::parse_lockfile(lockfile, manifest.as_deref()) {
+                    Ok(mut d) => deps.append(&mut d),
+                    Err(e) => eprintln!("warn: composer.lock parse failed: {e:#}"),
+                }
+            }
         }
     }
 
