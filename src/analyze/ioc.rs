@@ -207,6 +207,13 @@ fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
         if in_url(m.start()) {
             continue;
         }
+        // Scope-resolution paths (`web::get`, `std::vector`) whose trailing hex
+        // chars + `::` parse as a valid compressed IPv6 are the dominant false
+        // positive. A real address literal is always delimited; if the match is
+        // welded to an identifier char on either side, it's code, not data.
+        if touches_identifier(text, m.start(), m.end()) {
+            continue;
+        }
         let candidate = m.as_str();
         // RFC-valid?
         let Ok(addr) = Ipv6Addr::from_str(candidate) else { continue };
@@ -312,6 +319,20 @@ fn line_loc(path: &Path, text: &str, needle: &str) -> Option<String> {
     Some(format!("{}:{}", path.display(), line))
 }
 
+/// True when the byte just before `start` or just after `end` is an ASCII
+/// identifier character (alnum or `_`) — i.e. the match is embedded in a larger
+/// token rather than standing alone as a literal.
+fn touches_identifier(text: &str, start: usize, end: usize) -> bool {
+    let b = text.as_bytes();
+    let left = start.checked_sub(1).is_some_and(|i| is_ident_byte(b[i]));
+    let right = b.get(end).copied().is_some_and(is_ident_byte);
+    left || right
+}
+
+fn is_ident_byte(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_'
+}
+
 fn is_plausible_ip(s: &str) -> bool {
     let parts: Vec<&str> = s.split('.').collect();
     if parts.len() != 4 {
@@ -399,6 +420,19 @@ mod tests {
         assert!(
             !details(&fs).contains(&"embedded IPv6 address"),
             "loopback/unspecified should be noise: {fs:#?}"
+        );
+    }
+
+    #[test]
+    fn rejects_rust_scope_paths_as_ipv6() {
+        // `web::get`, `crate::api`, `Interface::new` etc. have hex-tailed idents
+        // before `::` that parse as valid compressed IPv6 (`eb::`, `e::a`, ...).
+        let fs = scan(
+            r#"use actix_web::web; let r = web::get(); crate::api::init(); Interface::new();"#,
+        );
+        assert!(
+            !details(&fs).contains(&"embedded IPv6 address"),
+            "scope-resolution paths must not be flagged as IPv6: {fs:#?}"
         );
     }
 
