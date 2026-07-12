@@ -79,6 +79,12 @@ fn main() -> Result<()> {
                     Err(e) => eprintln!("warn: composer.lock parse failed: {e:#}"),
                 }
             }
+            detect::Detected::Go { manifest, lockfile, .. } => {
+                match parsers::go::parse(manifest, lockfile.as_deref()) {
+                    Ok(mut d) => deps.append(&mut d),
+                    Err(e) => eprintln!("warn: go.mod parse failed: {e:#}"),
+                }
+            }
         }
     }
 

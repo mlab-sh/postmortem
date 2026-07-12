@@ -29,6 +29,7 @@ pub enum Lang {
     Python,
     Ruby,
     Php,
+    Go,
 }
 
 impl Lang {
@@ -38,6 +39,7 @@ impl Lang {
             Lang::Python => &["py"],
             Lang::Ruby => &["rb"],
             Lang::Php => &["php"],
+            Lang::Go => &["go"],
         }
     }
 }
@@ -146,6 +148,20 @@ fn scan_file(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
             }
             if lower.contains("create_function(") {
                 signals.push("create_function");
+            }
+        }
+        Lang::Go => {
+            // Go has no eval; obfuscated payloads lean on encoded blobs decoded
+            // at runtime. The generic entropy / \xNN / base64-blob signals cover
+            // the rest.
+            if lower.contains("base64.StdEncoding.DecodeString")
+                || lower.contains("base64.RawStdEncoding.DecodeString")
+                || lower.contains("base64.URLEncoding.DecodeString")
+            {
+                signals.push("base64/codecs decode");
+            }
+            if lower.contains("hex.DecodeString") {
+                signals.push("hex decode");
             }
         }
     }

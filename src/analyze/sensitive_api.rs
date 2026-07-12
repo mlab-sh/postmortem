@@ -17,6 +17,7 @@ pub enum Lang {
     Rust,
     Ruby,
     Php,
+    Go,
 }
 
 impl Lang {
@@ -27,6 +28,7 @@ impl Lang {
             Lang::Rust => &["rs"],
             Lang::Ruby => &["rb"],
             Lang::Php => &["php"],
+            Lang::Go => &["go"],
         }
     }
     fn apis(self) -> &'static [&'static str] {
@@ -89,6 +91,17 @@ impl Lang {
                 "fsockopen(",
                 "fopen(\"http",
                 "fopen('http",
+            ],
+            Lang::Go => &[
+                "os/exec",
+                "exec.Command",
+                "exec.CommandContext",
+                "os.StartProcess",
+                "syscall.Exec",
+                "syscall.Syscall",
+                "net.Dial",
+                "plugin.Open",
+                "unsafe.Pointer",
             ],
         }
     }

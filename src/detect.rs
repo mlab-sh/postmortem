@@ -36,6 +36,13 @@ pub enum Detected {
         manifest: Option<PathBuf>,
         lockfile: PathBuf,
     },
+    Go {
+        root: PathBuf,
+        /// `go.mod` — lists every module with a direct/indirect marker.
+        manifest: PathBuf,
+        /// `go.sum` if present — supplies module checksums.
+        lockfile: Option<PathBuf>,
+    },
 }
 
 impl Detected {
@@ -46,6 +53,7 @@ impl Detected {
             Detected::Rust { .. } => "rust",
             Detected::Ruby { .. } => "ruby",
             Detected::Php { .. } => "php",
+            Detected::Go { .. } => "go",
         }
     }
 }
@@ -134,6 +142,18 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
             root: root.to_path_buf(),
             manifest: manifest.is_file().then_some(manifest),
             lockfile: composer_lock,
+        });
+    }
+
+    // go.mod lists every module (direct, plus `// indirect` transitives); go.sum
+    // adds checksums. The manifest alone is enough for the SBOM.
+    let go_mod = root.join("go.mod");
+    if go_mod.is_file() {
+        let go_sum = root.join("go.sum");
+        out.push(Detected::Go {
+            root: root.to_path_buf(),
+            manifest: go_mod,
+            lockfile: go_sum.is_file().then_some(go_sum),
         });
     }
 

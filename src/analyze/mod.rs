@@ -62,6 +62,14 @@ pub fn run_all(detected: &[Detected], deps: &[Dependency]) -> Vec<Finding> {
                 ioc::scan_dir(root, &mut findings, ioc::Lang::Php);
                 obfuscation::scan_dir(root, &mut findings, obfuscation::Lang::Php);
             }
+            Detected::Go { root, .. } => {
+                // Go has no install-time hooks; modules live in the module cache
+                // or a committed vendor/ tree. We scan the project's own source
+                // (and vendor/ if present) for sensitive APIs, IOCs, obfuscation.
+                sensitive_api::scan_dir(root, &mut findings, sensitive_api::Lang::Go);
+                ioc::scan_dir(root, &mut findings, ioc::Lang::Go);
+                obfuscation::scan_dir(root, &mut findings, obfuscation::Lang::Go);
+            }
         }
     }
 

@@ -326,6 +326,54 @@ fn malicious_php_detects_exfil_iocs() {
     assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("domain")));
 }
 
+// ---------- malicious-go (module typosquat shape) ----------
+
+#[test]
+fn malicious_go_resolves_typosquat_and_classifies_indirect() {
+    let (_, report) = scan_json("malicious-go", &["--skip-analyze"]);
+    assert_eq!(report["ecosystems"][0], "go");
+    assert!(dep_present(&report, "github.com/sirupsen/logrous", "v1.9.3"));
+
+    let root = deps(&report)
+        .iter()
+        .find(|d| d["name"] == "github.com/sirupsen/logrous")
+        .unwrap();
+    assert_eq!(root["direct"], true);
+    assert_eq!(root["ecosystem"], "go");
+    // go.sum checksum is attached as integrity.
+    assert!(root["integrity"].as_str().unwrap_or("").starts_with("h1:"));
+
+    let indirect = deps(&report)
+        .iter()
+        .find(|d| d["name"] == "golang.org/x/sys")
+        .expect("x/sys dep");
+    assert_eq!(indirect["direct"], false, "// indirect must be transitive");
+}
+
+#[test]
+fn malicious_go_detects_sensitive_api_and_obfuscation() {
+    let (_, report) = scan_json("malicious-go", &[]);
+    assert!(
+        has_finding(&report, "<project>", "sensitive_api"),
+        "expected sensitive_api (exec.Command / net.Dial) in main.go"
+    );
+    assert!(
+        findings(&report).iter().any(|f| f["category"] == "obfuscation"),
+        "expected obfuscation (base64 decode + blob) in main.go"
+    );
+}
+
+#[test]
+fn malicious_go_detects_exfil_iocs() {
+    let (_, report) = scan_json("malicious-go", &[]);
+    let iocs: Vec<&Value> = findings(&report)
+        .iter()
+        .filter(|f| f["category"] == "ioc")
+        .collect();
+    assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("URL")));
+    assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("domain")));
+}
+
 // ---------- clean baseline ----------
 
 #[test]

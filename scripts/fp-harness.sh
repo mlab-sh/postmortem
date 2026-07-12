@@ -4,7 +4,7 @@
 #
 # Clones a set of well-known, *legitimate* repositories (algorithm collections
 # and popular libraries) across the supported ecosystems — Node.js, Python,
-# Rust, Ruby, PHP — runs postmortem on each, and summarizes the findings. Because
+# Rust, Ruby, PHP, Go — runs postmortem on each, and summarizes the findings. Because
 # these repos are trusted, essentially every finding is a candidate false
 # positive, so the breakdown is a quick eyeball test for the IOC / obfuscation
 # heuristics. It also runs a few sanity checks ("bricoles") on each repo:
@@ -38,6 +38,8 @@ REPOS=(
   "ruby|https://github.com/heartcombo/devise|devise"
   "php|https://github.com/composer/composer|composer"
   "php|https://github.com/phpmyadmin/phpmyadmin|phpmyadmin"
+  "go|https://github.com/TheAlgorithms/Go|the-algorithms-go"
+  "go|https://github.com/gin-gonic/gin|gin"
 )
 
 WANT=("$@")

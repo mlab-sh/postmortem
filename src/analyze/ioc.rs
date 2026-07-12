@@ -23,6 +23,7 @@ pub enum Lang {
     Rust,
     Ruby,
     Php,
+    Go,
 }
 
 impl Lang {
@@ -33,6 +34,7 @@ impl Lang {
             Lang::Rust => &["rs"],
             Lang::Ruby => &["rb"],
             Lang::Php => &["php"],
+            Lang::Go => &["go"],
         }
     }
 }
@@ -151,6 +153,14 @@ const URL_NOISE_HOSTS: &[&str] = &[
     "scipy.org",
     "pydata.org",
     "reddit.com",
+    // Go module hosts — appear constantly in import paths, never an exfil target.
+    "golang.org",
+    "go.dev",
+    "pkg.go.dev",
+    "gopkg.in",
+    "go.uber.org",
+    "go.mongodb.org",
+    "k8s.io",
 ];
 
 // Public resolvers that show up constantly in examples/tests and are never the
@@ -168,6 +178,8 @@ const AMBIGUOUS_TLDS: &[&str] = &[
     "blog", "world", "today", "guru", "ninja", "live", "store", "shop", "site",
     "online", "tech", "fun", "best", "wtf", "lol", "buzz", "monster", "rest", "uno",
     "cam", "skin", "design", "global", "studio", "pro", "biz", "mobi", "club", "icu",
+    // ccTLDs that double as ordinary words / struct-field names (`tc.in`, `x.at`).
+    "in", "it", "at", "be", "no", "me", "us",
 ];
 
 /// Embedded TLD allowlist — popular gTLDs/ccTLDs plus a handful of TLDs that
@@ -670,6 +682,19 @@ mod tests {
         assert!(
             !details(&fs).contains(&"embedded domain name"),
             "attribute access must not be flagged as a domain: {fs:#?}"
+        );
+    }
+
+    #[test]
+    fn rejects_go_field_access_and_module_hosts() {
+        // `tc.in` is struct-field access (`.in` = India ccTLD); import paths like
+        // golang.org / gopkg.in are module hosts, not exfil targets.
+        let fs = scan(
+            "for _, tc := range cases { got := run(tc.in) }\nimport \"golang.org/x/net\"\nimport \"gopkg.in/yaml.v3\"",
+        );
+        assert!(
+            !details(&fs).contains(&"embedded domain name"),
+            "Go field access / module hosts must not be flagged: {fs:#?}"
         );
     }
 
