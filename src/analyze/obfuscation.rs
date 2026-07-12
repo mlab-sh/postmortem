@@ -125,6 +125,13 @@ fn scan_file(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
     if signals.is_empty() {
         return;
     }
+    // A single "weak" signal (`compile(`, `__import__(`, `eval(`, ...) fires
+    // constantly in legit metaprogramming, so it only counts when corroborated:
+    // require at least one strong signal, or two signals of any kind.
+    let has_strong = signals.iter().any(|s| !is_weak_signal(s));
+    if !has_strong && signals.len() < 2 {
+        return;
+    }
 
     let mut severity = match signals.len() {
         1 => Severity::Low,
@@ -159,6 +166,21 @@ fn scan_file(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
         evidence: None,
         enrich_url: None,
     });
+}
+
+/// Signals common enough in benign code that alone they mean nothing; they add
+/// weight only alongside another signal.
+fn is_weak_signal(s: &str) -> bool {
+    matches!(
+        s,
+        "eval()"
+            | "Function() constructor"
+            | "atob() base64 decode"
+            | "exec()"
+            | "compile()"
+            | "__import__()"
+            | "base64/codecs decode"
+    )
 }
 
 fn looks_minified(text: &str) -> bool {

