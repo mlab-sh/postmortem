@@ -215,6 +215,13 @@ fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
             continue;
         }
         let candidate = m.as_str();
+        // A `::` scope operator with a hex-ish left side (`E::<T>`, `eb::`) is a
+        // valid *compressed* IPv6 with a single explicit hextet. Real address
+        // literals have at least two; requiring that kills the whole class
+        // without dropping anything routable.
+        if explicit_hextets(candidate) < 2 {
+            continue;
+        }
         // RFC-valid?
         let Ok(addr) = Ipv6Addr::from_str(candidate) else { continue };
         // Drop unspecified / loopback — they show up in dual-stack server stubs.
@@ -333,6 +340,15 @@ fn is_ident_byte(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_'
 }
 
+/// Count textual hextet groups in an IPv6 candidate, ignoring the zero-run
+/// implied by `::`. An embedded IPv4 tail (`::ffff:1.2.3.4`) counts as two.
+fn explicit_hextets(s: &str) -> usize {
+    s.split(':')
+        .filter(|p| !p.is_empty())
+        .map(|p| if p.contains('.') { 2 } else { 1 })
+        .sum()
+}
+
 fn is_plausible_ip(s: &str) -> bool {
     let parts: Vec<&str> = s.split('.').collect();
     if parts.len() != 4 {
@@ -434,6 +450,23 @@ mod tests {
             !details(&fs).contains(&"embedded IPv6 address"),
             "scope-resolution paths must not be flagged as IPv6: {fs:#?}"
         );
+    }
+
+    #[test]
+    fn rejects_rust_turbofish_as_ipv6() {
+        // `E::<PrimeField>` — a single hex-ish hextet + `::` is a valid
+        // compressed IPv6 but is really a turbofish / generic path.
+        let fs = scan(r#"let p = E::<PrimeField<7>>::new(); let q = E::coeff();"#);
+        assert!(
+            !details(&fs).contains(&"embedded IPv6 address"),
+            "turbofish must not be flagged as IPv6: {fs:#?}"
+        );
+    }
+
+    #[test]
+    fn still_finds_ipv4_mapped_ipv6() {
+        let fs = scan(r#"const m = "::ffff:203.0.113.5";"#);
+        assert!(details(&fs).contains(&"embedded IPv6 address"), "{fs:#?}");
     }
 
     #[test]
