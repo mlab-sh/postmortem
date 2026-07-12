@@ -7,6 +7,7 @@ pub enum Ecosystem {
     Node,
     Python,
     Rust,
+    Ruby,
 }
 
 impl Ecosystem {
@@ -15,6 +16,7 @@ impl Ecosystem {
             Ecosystem::Node => "node",
             Ecosystem::Python => "python",
             Ecosystem::Rust => "rust",
+            Ecosystem::Ruby => "ruby",
         }
     }
 }

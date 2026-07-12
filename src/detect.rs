@@ -23,6 +23,13 @@ pub enum Detected {
         manifest: PathBuf,
         lockfile: PathBuf,
     },
+    Ruby {
+        root: PathBuf,
+        /// `Gemfile` or a `*.gemspec` if present — informational only; direct
+        /// deps come from the lockfile's own `DEPENDENCIES` section.
+        manifest: Option<PathBuf>,
+        lockfile: PathBuf,
+    },
 }
 
 impl Detected {
@@ -31,6 +38,7 @@ impl Detected {
             Detected::Node { .. } => "node",
             Detected::Python { .. } => "python",
             Detected::Rust { .. } => "rust",
+            Detected::Ruby { .. } => "ruby",
         }
     }
 }
@@ -94,7 +102,30 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
         });
     }
 
+    // Bundler always resolves a Gemfile into a Gemfile.lock, whose own
+    // DEPENDENCIES section marks the direct gems — so the lock alone suffices.
+    let gemfile_lock = root.join("Gemfile.lock");
+    if gemfile_lock.is_file() {
+        let manifest = ["Gemfile", "gems.rb"]
+            .iter()
+            .map(|f| root.join(f))
+            .find(|p| p.is_file())
+            .or_else(|| first_gemspec(root));
+        out.push(Detected::Ruby {
+            root: root.to_path_buf(),
+            manifest,
+            lockfile: gemfile_lock,
+        });
+    }
+
     Ok(out)
+}
+
+/// First `*.gemspec` at the repo root, if any.
+fn first_gemspec(root: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(root).ok()?.flatten().map(|e| e.path()).find(|p| {
+        p.extension().and_then(|s| s.to_str()) == Some("gemspec")
+    })
 }
 
 fn first_existing(root: &Path, names: &[&str]) -> Option<PathBuf> {

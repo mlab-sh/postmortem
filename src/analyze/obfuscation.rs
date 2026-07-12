@@ -27,6 +27,7 @@ use crate::model::{Category, Finding, Severity};
 pub enum Lang {
     JavaScript,
     Python,
+    Ruby,
 }
 
 impl Lang {
@@ -34,6 +35,7 @@ impl Lang {
         match self {
             Lang::JavaScript => &["js", "mjs", "cjs"],
             Lang::Python => &["py"],
+            Lang::Ruby => &["rb"],
         }
     }
 }
@@ -108,6 +110,23 @@ fn scan_file(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
             }
             if lower.contains("__import__(") {
                 signals.push("__import__()");
+            }
+        }
+        Lang::Ruby => {
+            if lower.contains("eval(")
+                || lower.contains("instance_eval")
+                || lower.contains("class_eval")
+            {
+                signals.push("eval()");
+            }
+            if lower.contains("Marshal.load") {
+                signals.push("marshal.loads");
+            }
+            if lower.contains("Base64.decode64") || lower.contains(".unpack(") {
+                signals.push("base64/codecs decode");
+            }
+            if lower.contains("Zlib::Inflate") {
+                signals.push("zlib inflate");
             }
         }
     }

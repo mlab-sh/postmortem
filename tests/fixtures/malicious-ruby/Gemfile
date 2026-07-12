@@ -1,0 +1,6 @@
+# Typosquat of `rest-client`. The real `rest-client` 1.6.13 (2019) was hijacked
+# to eval a remote base64 payload and exfiltrate credentials. Pinned here for
+# the scanner's test corpus only — the code in lib/ is inert.
+source "https://rubygems.org"
+
+gem "rest-cliient", "1.6.13"

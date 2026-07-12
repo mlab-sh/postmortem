@@ -67,6 +67,12 @@ fn main() -> Result<()> {
                     Err(e) => eprintln!("warn: cargo lockfile parse failed: {e:#}"),
                 }
             }
+            detect::Detected::Ruby { manifest, lockfile, .. } => {
+                match parsers::ruby::parse_lockfile(lockfile, manifest.as_deref()) {
+                    Ok(mut d) => deps.append(&mut d),
+                    Err(e) => eprintln!("warn: Gemfile.lock parse failed: {e:#}"),
+                }
+            }
         }
     }
 

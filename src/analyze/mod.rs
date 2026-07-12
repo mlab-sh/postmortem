@@ -46,6 +46,14 @@ pub fn run_all(detected: &[Detected], deps: &[Dependency]) -> Vec<Finding> {
                     ioc::scan_dir(&src, &mut findings, ioc::Lang::Rust);
                 }
             }
+            Detected::Ruby { root, .. } => {
+                // Gems aren't vendored in-repo (they live in the bundle path), so —
+                // like Rust — we scan the project's own Ruby source for sensitive
+                // primitives, IOCs, and obfuscation.
+                sensitive_api::scan_dir(root, &mut findings, sensitive_api::Lang::Ruby);
+                ioc::scan_dir(root, &mut findings, ioc::Lang::Ruby);
+                obfuscation::scan_dir(root, &mut findings, obfuscation::Lang::Ruby);
+            }
         }
     }
 

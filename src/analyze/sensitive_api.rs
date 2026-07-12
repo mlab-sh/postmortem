@@ -15,6 +15,7 @@ pub enum Lang {
     JavaScript,
     Python,
     Rust,
+    Ruby,
 }
 
 impl Lang {
@@ -23,6 +24,7 @@ impl Lang {
             Lang::JavaScript => &["js", "mjs", "cjs"],
             Lang::Python => &["py"],
             Lang::Rust => &["rs"],
+            Lang::Ruby => &["rb"],
         }
     }
     fn apis(self) -> &'static [&'static str] {
@@ -59,6 +61,19 @@ impl Lang {
                 "reqwest::",
                 "ureq::",
                 "Command::new",
+            ],
+            Lang::Ruby => &[
+                "system(",
+                "exec(",
+                "%x(",
+                "IO.popen",
+                "Open3.",
+                "Net::HTTP",
+                "require 'socket'",
+                "require \"socket\"",
+                "require 'open-uri'",
+                "require \"open-uri\"",
+                "Kernel.system",
             ],
         }
     }

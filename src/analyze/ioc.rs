@@ -21,6 +21,7 @@ pub enum Lang {
     JavaScript,
     Python,
     Rust,
+    Ruby,
 }
 
 impl Lang {
@@ -29,6 +30,7 @@ impl Lang {
             Lang::JavaScript => &["js", "mjs", "cjs", "ts"],
             Lang::Python => &["py"],
             Lang::Rust => &["rs"],
+            Lang::Ruby => &["rb"],
         }
     }
 }
@@ -219,7 +221,10 @@ fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
             url_ranges.push((m.start(), m.end()));
             continue;
         }
-        if URL_NOISE_HOSTS.iter().any(|h| url.contains(h)) || url_host_is_private_ip(url) {
+        if !url_has_host(url)
+            || URL_NOISE_HOSTS.iter().any(|h| url.contains(h))
+            || url_host_is_private_ip(url)
+        {
             // Still record the range so domain matches inside don't fire.
             url_ranges.push((m.start(), m.end()));
             continue;
@@ -462,6 +467,15 @@ fn domain_is_code_access(text: &str, start: usize, end: usize, candidate: &str) 
     false
 }
 
+/// Whether the URL has a real host after `://`. String-interpolation fragments
+/// (`http://#{root_url}` in Ruby, `http://${host}` in JS) match the URL regex
+/// but resolve to an empty host and are pure noise.
+fn url_has_host(url: &str) -> bool {
+    url.split_once("://")
+        .and_then(|(_, rest)| rest.bytes().next())
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+}
+
 /// True when a URL's host is a non-routable IPv4 (`http://172.16.1.1:5000`) —
 /// a local/test endpoint, never real exfil infrastructure.
 fn url_host_is_private_ip(url: &str) -> bool {
@@ -638,6 +652,15 @@ mod tests {
         let fs = scan(r#"host="evil.tk"; url2="steal.top"; ref=gmail.com;"#);
         let n = details(&fs).iter().filter(|d| **d == "embedded domain name").count();
         assert!(n >= 3, "expected evil.tk, steal.top, gmail.com: {fs:#?}");
+    }
+
+    #[test]
+    fn rejects_interpolation_url_fragments() {
+        let fs = scan("u = \"http://#{root_url}/x\"; v = `http://${host}:3000`;");
+        assert!(
+            !details(&fs).contains(&"embedded URL"),
+            "interpolation fragments must not be flagged: {fs:#?}"
+        );
     }
 
     #[test]

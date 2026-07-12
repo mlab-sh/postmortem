@@ -4,7 +4,7 @@
 
 # postmortem
 
-A static dependency scanner for **Node.js, Python, and Rust** projects. Resolves
+A static dependency scanner for **Node.js, Python, Rust, and Ruby** projects. Resolves
 the lockfile graph, walks the vendored sources, and flags the patterns that
 typically show up in supply-chain compromises — install hooks, obfuscation,
 embedded IOCs (URLs, IPs, crypto wallets), and dangerous API surface.
@@ -25,7 +25,7 @@ postmortem ./my-project --skip-category ioc
 
 - **Multi-ecosystem SBOM** — npm `package-lock.json` v2/v3 (with full hoisting
   resolution for parent edges), Python `poetry.lock` / `Pipfile.lock` /
-  `requirements*.txt`, Rust `Cargo.lock`.
+  `requirements*.txt`, Rust `Cargo.lock`, Ruby `Gemfile.lock` (Bundler).
 - **Four static analyzers** that run against vendored source on disk:
   - `install_hook` — npm `pre/post-install` scripts; Python `setup.py` invoking
     `subprocess` / `os.system` / `exec` / network primitives.
@@ -280,6 +280,7 @@ Wire into GitHub Code Scanning:
 | **Node** | `node_modules/` on disk, with full hoist resolution | tarballs on the registry; never downloaded |
 | **Python** | project root (`setup.py`, etc.) and `.venv/lib/.../site-packages/` if present | system-wide site-packages |
 | **Rust** | the project's own `src/` for sensitive APIs | `~/.cargo/registry/` (not walked by default) |
+| **Ruby** | the project's own source (`lib/`, `app/`, …) for sensitive APIs, IOCs, obfuscation | gems in the Bundler path (not walked by default) |
 
 The scanner never makes network calls. The optional `--enrich` flag emits
 clickable [mlab.sh](https://mlab.sh) deep-links per IOC finding so a human can
@@ -340,6 +341,7 @@ src/
     node.rs              # package-lock.json v2/v3 + npm hoist resolution
     python.rs            # poetry.lock / Pipfile.lock / requirements*.txt
     rust.rs              # Cargo.lock
+    ruby.rs              # Gemfile.lock (Bundler)
   analyze/
     install_hooks.rs     # npm pre/post-install + Python setup.py
     obfuscation.rs       # entropy + eval + hex/base64 heuristics

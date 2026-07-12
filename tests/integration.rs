@@ -210,6 +210,66 @@ fn malicious_rust_detects_sensitive_api_in_local_src() {
     );
 }
 
+// ---------- malicious-ruby (rest-client 1.6.13 shape, 2019) ----------
+
+#[test]
+fn malicious_ruby_resolves_typosquat_and_graph() {
+    let (_, report) = scan_json("malicious-ruby", &["--skip-analyze"]);
+    assert_eq!(report["ecosystems"][0], "ruby");
+    assert!(dep_present(&report, "rest-cliient", "1.6.13"));
+
+    let root = deps(&report)
+        .iter()
+        .find(|d| d["name"] == "rest-cliient")
+        .unwrap();
+    assert_eq!(root["direct"], true);
+    assert_eq!(root["ecosystem"], "ruby");
+
+    // mime-types is transitive with rest-cliient as its parent.
+    let mt = deps(&report)
+        .iter()
+        .find(|d| d["name"] == "mime-types")
+        .expect("mime-types dep");
+    assert_eq!(mt["direct"], false);
+    let parents: Vec<String> = mt["parents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p[0].as_str().unwrap().to_string())
+        .collect();
+    assert!(parents.iter().any(|p| p == "rest-cliient"), "got {parents:?}");
+}
+
+#[test]
+fn malicious_ruby_detects_sensitive_api_and_obfuscation() {
+    let (_, report) = scan_json("malicious-ruby", &[]);
+    assert!(
+        has_finding(&report, "<project>", "sensitive_api"),
+        "expected sensitive_api (system/Net::HTTP/socket) in lib/exfil.rb"
+    );
+    assert!(
+        findings(&report).iter().any(|f| f["category"] == "obfuscation"),
+        "expected obfuscation (eval + Base64.decode64) in lib/exfil.rb"
+    );
+}
+
+#[test]
+fn malicious_ruby_detects_exfil_iocs() {
+    let (_, report) = scan_json("malicious-ruby", &[]);
+    let iocs: Vec<&Value> = findings(&report)
+        .iter()
+        .filter(|f| f["category"] == "ioc")
+        .collect();
+    assert!(
+        iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("URL")),
+        "expected an exfil URL finding"
+    );
+    assert!(
+        iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("domain")),
+        "expected the exfil.evil.tk domain finding"
+    );
+}
+
 // ---------- clean baseline ----------
 
 #[test]
