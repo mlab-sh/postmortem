@@ -25,9 +25,25 @@ pub enum Lang {
     Php,
     Go,
     Java,
+    /// C and C++ (shared headers, overlapping surface).
+    Cpp,
+    Perl,
 }
 
 impl Lang {
+    /// Every language, for a full-tree source scan (`system inspect --deep`).
+    pub const ALL: &'static [Lang] = &[
+        Lang::JavaScript,
+        Lang::Python,
+        Lang::Rust,
+        Lang::Ruby,
+        Lang::Php,
+        Lang::Go,
+        Lang::Java,
+        Lang::Cpp,
+        Lang::Perl,
+    ];
+
     fn exts(self) -> &'static [&'static str] {
         match self {
             Lang::JavaScript => &["js", "mjs", "cjs", "ts"],
@@ -37,6 +53,8 @@ impl Lang {
             Lang::Php => &["php"],
             Lang::Go => &["go"],
             Lang::Java => &["java", "kt"],
+            Lang::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
+            Lang::Perl => &["pl", "pm", "t"],
         }
     }
 }

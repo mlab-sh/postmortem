@@ -34,6 +34,11 @@ pub enum Lang {
 }
 
 impl Lang {
+    /// Every language this analyzer covers, for a full-tree scan. (C-family and
+    /// Perl obfuscation markers aren't defined yet — added on demand.)
+    pub const ALL: &'static [Lang] =
+        &[Lang::JavaScript, Lang::Python, Lang::Ruby, Lang::Php, Lang::Go, Lang::Java];
+
     fn exts(self) -> &'static [&'static str] {
         match self {
             Lang::JavaScript => &["js", "mjs", "cjs"],

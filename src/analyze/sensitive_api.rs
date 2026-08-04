@@ -19,9 +19,25 @@ pub enum Lang {
     Php,
     Go,
     Java,
+    /// C and C++ (shared headers, overlapping surface).
+    Cpp,
+    Perl,
 }
 
 impl Lang {
+    /// Every language, for a full-tree source scan (`system inspect --deep`).
+    pub const ALL: &'static [Lang] = &[
+        Lang::JavaScript,
+        Lang::Python,
+        Lang::Rust,
+        Lang::Ruby,
+        Lang::Php,
+        Lang::Go,
+        Lang::Java,
+        Lang::Cpp,
+        Lang::Perl,
+    ];
+
     fn exts(self) -> &'static [&'static str] {
         match self {
             Lang::JavaScript => &["js", "mjs", "cjs"],
@@ -31,6 +47,8 @@ impl Lang {
             Lang::Php => &["php"],
             Lang::Go => &["go"],
             Lang::Java => &["java", "kt"],
+            Lang::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
+            Lang::Perl => &["pl", "pm", "t"],
         }
     }
     fn apis(self) -> &'static [&'static str] {
@@ -117,6 +135,43 @@ impl Lang {
                 "ScriptEngineManager",
                 "Method.invoke",
             ],
+            // C / C++ — process spawning, dynamic loading, raw sockets.
+            Lang::Cpp => &[
+                "system(",
+                "popen(",
+                "posix_spawn",
+                "execl",
+                "execlp",
+                "execle",
+                "execv",
+                "execvp",
+                "execve",
+                "dlopen(",
+                "dlsym(",
+                "socket(",
+                "connect(",
+                "CreateProcess",
+                "LoadLibrary",
+                "std::system",
+                "mprotect(",
+            ],
+            // Perl — shell-out (system/exec/qx), IPC, sockets, HTTP clients.
+            Lang::Perl => &[
+                "system(",
+                "exec(",
+                "qx(",
+                "qx/",
+                "qx{",
+                "qx!",
+                "IPC::Open3",
+                "IPC::Open2",
+                "IO::Socket",
+                "use Socket",
+                "LWP::UserAgent",
+                "HTTP::Tiny",
+                "Net::FTP",
+                "syscall(",
+            ],
         }
     }
 }
@@ -150,5 +205,45 @@ pub fn scan_dir(root: &Path, out: &mut Vec<Finding>, lang: Lang) {
             evidence: None,
             enrich_url: None,
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scan_one(file: &str, content: &str, lang: Lang) -> Vec<Finding> {
+        let dir = std::env::temp_dir().join(format!("pm-sapi-{}-{file}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(file), content).unwrap();
+        let mut out = Vec::new();
+        scan_dir(&dir, &mut out, lang);
+        std::fs::remove_dir_all(&dir).ok();
+        out
+    }
+
+    #[test]
+    fn flags_c_family_primitives() {
+        let f = scan_one(
+            "x.c",
+            "int main(){ system(\"id\"); void* h = dlopen(\"x.so\", 0); }",
+            Lang::Cpp,
+        );
+        let detail = &f[0].detail;
+        assert!(detail.contains("system("), "{detail}");
+        assert!(detail.contains("dlopen("), "{detail}");
+    }
+
+    #[test]
+    fn flags_perl_primitives() {
+        let f = scan_one(
+            "x.pl",
+            "my $o = qx/id/;\nsystem('curl http://x');\nuse IO::Socket;\n",
+            Lang::Perl,
+        );
+        let detail = &f[0].detail;
+        assert!(detail.contains("qx/"), "{detail}");
+        assert!(detail.contains("system("), "{detail}");
+        assert!(detail.contains("IO::Socket"), "{detail}");
     }
 }

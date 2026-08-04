@@ -105,12 +105,11 @@ fn deep(args: &crate::cli::InspectArgs, sub: &[Dependency], ui: &ui::Ui) -> Resu
     bar.step("cloning + analyzing sources");
     let mut analyzed: Vec<RepoAudit> = Vec::new();
     let vuln_ctx = (crate::vuln::agent(), crate::cache::Cache::open(), settings.vuln_token());
-    let quiet = ui::Ui::new(false); // per-repo analyzers shouldn't each draw a bar
     for (name, repo) in &targets {
         bar.step(format!("git clone {}", repo.slug()));
         let dest = work.join(sanitize(&repo.slug()));
         if git_clone(&clone_url(repo), &dest) {
-            analyzed.push(audit_clone(name, repo, &dest, &vuln_ctx, &quiet));
+            analyzed.push(audit_clone(name, repo, &dest, &vuln_ctx));
         } else {
             analyzed.push(RepoAudit::clone_failed(name, repo));
         }
@@ -151,22 +150,32 @@ impl RepoAudit {
     }
 }
 
-/// Detect the cloned repo's ecosystem and run the full analyzer suite over its
-/// real source, plus a best-effort vuln scan of any lockfile it ships.
+/// Run the full content-analyzer suite over the cloned repo's **entire** source
+/// tree (every language, not gated by ecosystem detection), plus a best-effort
+/// vuln scan of any lockfile it commits.
 fn audit_clone(
     dep: &str,
     repo: &RepoRef,
     dir: &Path,
     vuln_ctx: &(ureq::Agent, crate::cache::Cache, Option<String>),
-    ui: &ui::Ui,
 ) -> RepoAudit {
-    let detected = detect::detect(dir).unwrap_or_default();
-    let findings = analyze::run_all(&detected, &[], ui);
+    // Rewrite finding locations relative to the clone (the absolute temp path is
+    // meaningless once the workspace is deleted).
+    let prefix = format!("{}/", dir.display());
+    let findings: Vec<crate::model::Finding> = analyze::scan_source_tree(dir)
+        .into_iter()
+        .map(|mut f| {
+            if let Some(loc) = &f.location {
+                f.location = Some(loc.strip_prefix(&prefix).unwrap_or(loc).to_string());
+            }
+            f
+        })
+        .collect();
 
     // --vulns: scan any lockfile the upstream repo commits (best-effort).
     let (agent, cache, token) = vuln_ctx;
     let mut vulns = 0;
-    for d in &detected {
+    for d in &detect::detect(dir).unwrap_or_default() {
         if let Some((lock, fmt)) = crate::mlab_target(d)
             && let Ok(v) = crate::vuln::scan(agent, cache, token.as_deref(), lock, fmt)
         {

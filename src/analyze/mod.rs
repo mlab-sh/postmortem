@@ -33,6 +33,24 @@ impl<'a> Step<'a> {
     }
 }
 
+/// Run every content analyzer, for **every language**, over an arbitrary source
+/// tree — regardless of ecosystem detection. Used by `system inspect --deep` to
+/// scan cloned dependency source directly (a C/Perl/etc. upstream has no
+/// lockfile for [`plan`] to key off, but its code should still be inspected).
+pub fn scan_source_tree(root: &Path) -> Vec<Finding> {
+    let mut out = Vec::new();
+    for &lang in ioc::Lang::ALL {
+        ioc::scan_dir(root, &mut out, lang);
+    }
+    for &lang in obfuscation::Lang::ALL {
+        obfuscation::scan_dir(root, &mut out, lang);
+    }
+    for &lang in sensitive_api::Lang::ALL {
+        sensitive_api::scan_dir(root, &mut out, lang);
+    }
+    out
+}
+
 /// Run every analyzer that applies to the detected ecosystems, driving a
 /// progress bar over the units. Order is irrelevant — findings are independent.
 /// Each analyzer is best-effort: a failure inside one must not abort the scan.
