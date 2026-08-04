@@ -1,6 +1,6 @@
 # postmortem
 
-**A static supply-chain scanner for your dependencies — no network by default.**
+**A static supply-chain scanner for your dependencies - no network by default.**
 
 postmortem reads your project's lockfiles (and, with `system`, your machine's OS
 packages), reconstructs the full dependency graph, and surfaces supply-chain
@@ -23,13 +23,13 @@ network are opt-in (`--online`, `--vulns`), and every response is cached locally
 
 ## Key concepts
 
-- **[Ecosystems & Hosts](Ecosystems-and-Hosts)** — the 7 language ecosystems and
+- **[Ecosystems & Hosts](Ecosystems-and-Hosts)** - the 7 language ecosystems and
   3 code hosts postmortem understands.
-- **[Online resolution](Online-Resolution)** — how `--online` turns a package
+- **[Online resolution](Online-Resolution)** - how `--online` turns a package
   into a `risk:dep` score, plus `--languages`.
-- **[System package managers](System)** — the Homebrew backend in depth.
-- **[CI gate](CI-Gate)** — turn scores and vulns into a pass/fail build.
-- **[Configuration](Configuration)** — tokens, thresholds, and per-project policy.
+- **[System package managers](System)** - the Homebrew backend in depth.
+- **[CI gate](CI-Gate)** - turn scores and vulns into a pass/fail build.
+- **[Configuration](Configuration)** - tokens, thresholds, and per-project policy.
 
 ---
 
@@ -61,4 +61,4 @@ postmortem system --online             # audit installed Homebrew packages
 ```
 
 > This wiki is generated from the [`wiki/`](https://github.com/mlab-sh/postmortem/tree/main/wiki)
-> folder in the repo and synced automatically — edit the markdown there, not here.
+> folder in the repo and synced automatically - edit the markdown there, not here.

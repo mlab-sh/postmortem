@@ -21,6 +21,7 @@
 - [Homebrew](Homebrew)
 
 **Concepts**
+- [Source-code scanning](Source-Code-Scanning)
 - [Online resolution](Online-Resolution)
 - [CI gate](CI-Gate)
 - [Configuration](Configuration)

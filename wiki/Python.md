@@ -7,7 +7,7 @@ Part of the [ecosystems](Ecosystems-and-Hosts) matrix.
 | File | Notes |
 | --- | --- |
 | `requirements.txt` | pip. |
-| `poetry.lock` | Poetry — carries the resolved graph. |
+| `poetry.lock` | Poetry - carries the resolved graph. |
 
 Package names are normalized (case, `-`/`_`/`.`) so `Foo_Bar` and `foo-bar`
 match.
@@ -27,5 +27,5 @@ Poetry lockfiles give a full graph; a bare `requirements.txt` is flatter.
 
 ### Gotcha
 
-Many packages list only a documentation/homepage URL, not a code repo — those
+Many packages list only a documentation/homepage URL, not a code repo - those
 resolve to *no repository* (reported as **unchecked**, not suspicious).

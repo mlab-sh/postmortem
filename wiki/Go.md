@@ -7,14 +7,14 @@ path **is** its repository.
 
 `go.mod` (declared modules) + `go.sum` (the full set with versions).
 
-## Graph — flat
+## Graph - flat
 
 Go's transitive parent edges can't be reconstructed offline (that needs
 `go mod graph`). postmortem builds a **flat** graph and emits a **diagnostic**
-saying so, plus surfaces `replace` directives — so a flat result is never read as
+saying so, plus surfaces `replace` directives - so a flat result is never read as
 "clean".
 
-## Online resolution — no registry call
+## Online resolution - no registry call
 
 The module path already points at the repo, so it's parsed directly:
 `github.com/gin-gonic/gin` → `gin-gonic/gin`. Works for GitHub, GitLab, and
@@ -36,4 +36,4 @@ Well-known custom domains are rewritten to their GitHub mirror
 ### Gotcha
 
 Irregular vanity paths (e.g. `google.golang.org/grpc`) have no fixed mapping and
-resolve to *no repository* (**unchecked**) — deliberately not guessed.
+resolve to *no repository* (**unchecked**) - deliberately not guessed.

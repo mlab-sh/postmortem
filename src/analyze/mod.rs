@@ -103,8 +103,10 @@ fn plan(detected: &[Detected]) -> Vec<Step<'_>> {
                 let src = root.join("src");
                 if src.is_dir() {
                     let ioc_src = src.clone();
+                    let obf_src = src.clone();
                     steps.push(Step::new("rust · sensitive-api", move |f| sensitive_api::scan_dir(&src, f, sensitive_api::Lang::Rust)));
                     steps.push(Step::new("rust · ioc", move |f| ioc::scan_dir(&ioc_src, f, ioc::Lang::Rust)));
+                    steps.push(Step::new("rust · obfuscation", move |f| obfuscation::scan_dir(&obf_src, f, obfuscation::Lang::Rust)));
                 }
             }
             Detected::Ruby { root, .. } => {

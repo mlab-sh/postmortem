@@ -27,26 +27,41 @@ use crate::model::{Category, Finding, Severity};
 pub enum Lang {
     JavaScript,
     Python,
+    Rust,
     Ruby,
     Php,
     Go,
     Java,
+    /// C and C++ (shared headers, overlapping surface).
+    Cpp,
+    Perl,
 }
 
 impl Lang {
-    /// Every language this analyzer covers, for a full-tree scan. (C-family and
-    /// Perl obfuscation markers aren't defined yet — added on demand.)
-    pub const ALL: &'static [Lang] =
-        &[Lang::JavaScript, Lang::Python, Lang::Ruby, Lang::Php, Lang::Go, Lang::Java];
+    /// Every language this analyzer covers, for a full-tree scan.
+    pub const ALL: &'static [Lang] = &[
+        Lang::JavaScript,
+        Lang::Python,
+        Lang::Rust,
+        Lang::Ruby,
+        Lang::Php,
+        Lang::Go,
+        Lang::Java,
+        Lang::Cpp,
+        Lang::Perl,
+    ];
 
     fn exts(self) -> &'static [&'static str] {
         match self {
-            Lang::JavaScript => &["js", "mjs", "cjs"],
+            Lang::JavaScript => &["js", "mjs", "cjs", "ts"],
             Lang::Python => &["py"],
+            Lang::Rust => &["rs"],
             Lang::Ruby => &["rb"],
             Lang::Php => &["php"],
             Lang::Go => &["go"],
             Lang::Java => &["java", "kt"],
+            Lang::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
+            Lang::Perl => &["pl", "pm", "t"],
         }
     }
 }
@@ -184,6 +199,47 @@ fn scan_file(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
                 signals.push("defineClass");
             }
         }
+        Lang::Rust => {
+            // No eval; obfuscation leans on embedded blobs, type-punning, and asm.
+            // All weak on their own — corroborated by the generic entropy/blob
+            // signals below.
+            if lower.contains("include_bytes!") {
+                signals.push("include_bytes! blob");
+            }
+            if lower.contains("transmute") {
+                signals.push("transmute");
+            }
+            if lower.contains("asm!(") || lower.contains("global_asm!(") {
+                signals.push("inline asm");
+            }
+            if lower.contains("base64::decode") || lower.contains("from_base64") {
+                signals.push("base64/codecs decode");
+            }
+        }
+        Lang::Cpp => {
+            // Shellcode loaders lean on inline asm + RWX memory; embedded blobs
+            // are caught by the generic \xNN-run / base64 signals below.
+            if lower.contains("__asm") {
+                signals.push("inline asm");
+            }
+            if lower.contains("VirtualProtect")
+                || lower.contains("VirtualAllocEx")
+                || lower.contains("mprotect")
+            {
+                signals.push("rwx memory");
+            }
+        }
+        Lang::Perl => {
+            if lower.contains("eval \"") || lower.contains("eval '") || lower.contains("eval $") {
+                signals.push("eval()");
+            }
+            if lower.contains("pack(") || lower.contains("unpack(") {
+                signals.push("pack/unpack");
+            }
+            if lower.contains("decode_base64") || lower.contains("MIME::Base64") {
+                signals.push("base64/codecs decode");
+            }
+        }
     }
 
     if hex_run_re().is_match(text) {
@@ -254,6 +310,11 @@ fn is_weak_signal(s: &str) -> bool {
             | "compile()"
             | "__import__()"
             | "base64/codecs decode"
+            | "include_bytes! blob"
+            | "transmute"
+            | "inline asm"
+            | "rwx memory"
+            | "pack/unpack"
     )
 }
 

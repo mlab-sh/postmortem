@@ -9,8 +9,8 @@ postmortem tree <paths>... [options]
 
 ## Offline (default)
 
-Builds the recursive dependency graph straight from the lockfiles — the same
-parsers `scan` uses — with diamond/cycle dedup (`(*)`) and depth control. See
+Builds the recursive dependency graph straight from the lockfiles - the same
+parsers `scan` uses - with diamond/cycle dedup (`(*)`) and depth control. See
 [Ecosystems & Hosts](Ecosystems-and-Hosts) for the supported lockfiles, and each
 ecosystem's page for its quirks: [Node](Node) · [Python](Python) · [Rust](Rust) ·
 [Ruby](Ruby) · [PHP](PHP) · [Go](Go) · [Java](Java).
@@ -29,7 +29,7 @@ my-project (node)
 312 nodes · 24 direct · 288 transitive · depth 6 · 41 deduped
 ```
 
-## `--online` — source-repo reputation
+## `--online` - source-repo reputation
 
 Resolves each dependency to its source repository and pulls reputation stats
 (stars, age, last activity, archived), producing a **`(risk:dep)`** score per
@@ -40,7 +40,7 @@ postmortem tree . --online              # (risk:dep) + flags + gochi recap
 postmortem tree . --online --languages  # + repo language / breakdown
 ```
 
-## `--vulns` — known vulnerabilities
+## `--vulns` - known vulnerabilities
 
 Scans the lockfile against the mlab SBOM API (`vuln.mlab.sh`, OSV/GHSA/CVE) and
 lists advisories per package, worst-severity first. Independent of `--online`.
@@ -61,7 +61,7 @@ postmortem tree . --online --vulns      # reputation + CVEs together
 | `--json` / `--sarif` | Emit the resolved forest as JSON, or SARIF for Code Scanning. Single path only. |
 | `-o, --output <FILE>` | Output file (`-` = stdout). |
 | `--no-progress` | Disable the animated progress UI. |
-| **Gate flags** | `--max-risk` `--max-dep` `--max-high` `--max-sus` `--max-vulns` `--fail-on-vuln` `--allow` `--baseline` `--config` — see [CI gate](CI-Gate). |
+| **Gate flags** | `--max-risk` `--max-dep` `--max-high` `--max-sus` `--max-vulns` `--fail-on-vuln` `--allow` `--baseline` `--config` - see [CI gate](CI-Gate). |
 
 ## Exit codes
 
@@ -74,5 +74,5 @@ postmortem tree . --online --vulns      # reputation + CVEs together
 ## JSON output
 
 `--json` emits the serializable `Tree`/`Node` model (repo, stars, signals,
-severity, `risk`/`dep`, language) — the foundation for feeding the graph into
+severity, `risk`/`dep`, language) - the foundation for feeding the graph into
 downstream tooling, or as a `--baseline` for the diff gate.

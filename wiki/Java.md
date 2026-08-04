@@ -7,17 +7,17 @@ the JVM is `groupId:artifactId`.
 
 | File | Notes |
 | --- | --- |
-| `pom.xml` | Maven — direct `<dependencies>` (BOM imports skipped). |
-| `build.gradle` / `.kts` | Gradle — `group:artifact:version` strings. |
+| `pom.xml` | Maven - direct `<dependencies>` (BOM imports skipped). |
+| `build.gradle` / `.kts` | Gradle - `group:artifact:version` strings. |
 
-## Graph — flat
+## Graph - flat
 
 Like Go, transitive edges aren't reconstructed offline; the graph is **flat**
 and a **diagnostic** is emitted.
 
 ## Online resolution
 
-- **Registry:** **deps.dev** —
+- **Registry:** **deps.dev** -
   `api.deps.dev/v3/systems/maven/packages/<group%3Aartifact>/versions/<version>`
   → the `links` array, preferring the `SOURCE_REPO` label. This avoids parsing
   Maven POM XML.

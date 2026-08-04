@@ -26,7 +26,7 @@ without the data it needs is a configuration error (non-zero exit, clear message
 
 ## Allowlist
 
-Exempt a package from every gate count — by name or `name@version`:
+Exempt a package from every gate count - by name or `name@version`:
 
 ```bash
 postmortem tree . --online --max-high 0 --allow left-pad --allow foo@1.2.3
@@ -56,7 +56,7 @@ postmortem tree . --json -o baseline.json          # record a clean baseline
 postmortem tree . --online --max-high 0 --baseline baseline.json
 ```
 
-Risk already present in the baseline is not counted — only risk absent from it.
+Risk already present in the baseline is not counted - only risk absent from it.
 
 ## Example
 

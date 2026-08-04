@@ -2,7 +2,7 @@
 
 postmortem uses two distinct config files, plus environment variables.
 
-## Machine settings — `~/.postmortem/config.yml`
+## Machine settings - `~/.postmortem/config.yml`
 
 Machine-wide knobs for the networked paths: API tokens and risk thresholds.
 Written `0600`. GitHub can be entered once at an interactive prompt (it offers to
@@ -25,14 +25,14 @@ tree:
 
 | Variable | Used for |
 | --- | --- |
-| `GITHUB_TOKEN` | GitHub repo stats — raises the 60/h anonymous limit. |
+| `GITHUB_TOKEN` | GitHub repo stats - raises the 60/h anonymous limit. |
 | `GITLAB_TOKEN` | GitLab repo stats (optional; public repos resolve anonymously). |
 | `CODEBERG_TOKEN` | Codeberg repo stats (optional). |
-| `VULN_MLAB_TOKEN` | `vuln.mlab.sh` scans — raises the anonymous 8/hr limit. |
+| `VULN_MLAB_TOKEN` | `vuln.mlab.sh` scans - raises the anonymous 8/hr limit. |
 
 Resolution order for GitHub: `config.yml` → `$GITHUB_TOKEN` → interactive prompt.
 
-## Project policy — `postmortem.conf`
+## Project policy - `postmortem.conf`
 
 A per-project **TOML** file, auto-loaded from the scanned directory (disable with
 `--no-config`, or point elsewhere with `--config`). Two roles:

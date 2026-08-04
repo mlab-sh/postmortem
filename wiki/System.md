@@ -22,15 +22,15 @@ Recognized: `brew`, `apt`, `dpkg`, `pacman`, `dnf`, `apk`, `port`. If no
 
 ## Supported managers
 
-Each backend has its own page — the metadata, quirks, and risk signals differ per
+Each backend has its own page - the metadata, quirks, and risk signals differ per
 manager.
 
 | Manager | Status | Page |
 | --- | --- | --- |
 | Homebrew | ✅ supported | [Homebrew](Homebrew) |
-| apt / dpkg | planned | — |
-| pacman (+ AUR) | planned | — |
-| dnf / apk | planned | — |
+| apt / dpkg | planned | - |
+| pacman (+ AUR) | planned | - |
+| dnf / apk | planned | - |
 
 ## Common options
 

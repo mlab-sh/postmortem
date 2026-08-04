@@ -16,13 +16,16 @@ Each finding has a **severity** (`info` → `critical`) and a **category**:
 
 | Category | Detects |
 | --- | --- |
-| `ioc` | Indicators of compromise — hard-coded IPs, bare/suspicious domains, exfil URLs. |
+| `ioc` | Indicators of compromise - hard-coded IPs, bare/suspicious domains, exfil URLs. |
 | `obfuscation` | Encoded/packed payloads, eval chains, and other obfuscation tells. |
 | `install_hook` | `preinstall`/`install`/`postinstall` lifecycle scripts that run on install. |
 | `sensitive_api` | Calls to sensitive APIs (process spawning, filesystem, network). |
 
 Findings can carry an `--enrich` deep-link into mlab.sh (WHOIS / passive DNS /
-abuse) — **links only, no HTTP is made**.
+abuse) - **links only, no HTTP is made**.
+
+See [Source-code scanning](Source-Code-Scanning) for the full analyzer ×
+language coverage matrix.
 
 ## Options
 

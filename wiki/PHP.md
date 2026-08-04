@@ -4,7 +4,7 @@ Part of the [ecosystems](Ecosystems-and-Hosts) matrix.
 
 ## Lockfile
 
-`composer.lock` — the `packages` (and `packages-dev`) arrays. Names are
+`composer.lock` - the `packages` (and `packages-dev`) arrays. Names are
 `vendor/package`.
 
 ## Graph

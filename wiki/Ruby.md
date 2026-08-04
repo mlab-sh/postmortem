@@ -4,7 +4,7 @@ Part of the [ecosystems](Ecosystems-and-Hosts) matrix.
 
 ## Lockfile
 
-`Gemfile.lock` — the `GEM` specs section (name + version), with the
+`Gemfile.lock` - the `GEM` specs section (name + version), with the
 `DEPENDENCIES` section marking the direct set.
 
 ## Online resolution

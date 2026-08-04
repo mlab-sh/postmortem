@@ -12,7 +12,7 @@ deps) mark the **direct** set.
 
 Full graph from the lock's `dependencies` edges.
 
-**Exception:** workspace member crates have no `source` field — they're local,
+**Exception:** workspace member crates have no `source` field - they're local,
 not dependencies, so they're skipped (the scan target isn't its own dependency).
 
 ## Online resolution

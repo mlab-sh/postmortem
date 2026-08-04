@@ -14,7 +14,7 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 | [**Rust**](Rust) | Cargo (`Cargo.lock`) | crates.io |
 | [**Ruby**](Ruby) | Bundler (`Gemfile.lock`) | RubyGems |
 | [**PHP**](PHP) | Composer (`composer.lock`) | Packagist |
-| [**Go**](Go) | modules (`go.mod`, `go.sum`) | *(none — the module path is the repo)* |
+| [**Go**](Go) | modules (`go.mod`, `go.sum`) | *(none - the module path is the repo)* |
 | [**Java**](Java) | Maven, Gradle (`pom.xml`, `build.gradle`) | deps.dev |
 | [**Homebrew**](Homebrew) | via [`system`](System) | formulae.brew.sh |
 
@@ -50,4 +50,4 @@ rewrites those automatically:
   `go-<pkg>/<pkg>` (and `gopkg.in/<user>/<pkg>.vN` → `<user>/<pkg>`).
 
 Hosts and paths that don't map (Bitbucket, sr.ht, `google.golang.org/*`) resolve
-to *no repository* — reported honestly as **unchecked**, never guessed.
+to *no repository* - reported honestly as **unchecked**, never guessed.

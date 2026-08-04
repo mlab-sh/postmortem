@@ -10,7 +10,7 @@ dependency it:
 3. scores it against risk thresholds and surfaces the suspicious ones.
 
 See [Ecosystems & Hosts](Ecosystems-and-Hosts) for the registry/host matrix.
-Everything is cached under `~/.postmortem/cache/` — see [Cache](Cache).
+Everything is cached under `~/.postmortem/cache/` - see [Cache](Cache).
 
 ## Risk signals
 
@@ -29,17 +29,17 @@ Everything is cached under `~/.postmortem/cache/` — see [Cache](Cache).
 - **Reputation** signals come from the source repo's stats vs. your
   [thresholds](Configuration) (`min_stars`, `recent_days`, `stale_days`).
 - **Provenance** signals (`typosquat`, `install-script-added`,
-  `dormant-release`, `new-publisher`) are npm-specific today — the typosquat
+  `dormant-release`, `new-publisher`) are npm-specific today - the typosquat
   corpus and version anomalies come from the npm packument.
-- **`no-repository`** means "we couldn't find a source repo to assess" — an
+- **`no-repository`** means "we couldn't find a source repo to assess" - an
   *absence of information*, so it's counted as **unchecked**, not suspicious.
 
 ## The `risk:dep` score
 
-Every node shows a **`(risk:dep)`** pair, each `0–100`:
+Every node shows a **`(risk:dep)`** pair, each `0-100`:
 
-- **`risk`** — the package's *own* risk, summed from its signal points (capped).
-- **`dep`** — its *dependency-subtree* risk: distinct flagged deps weighted by
+- **`risk`** - the package's *own* risk, summed from its signal points (capped).
+- **`dep`** - its *dependency-subtree* risk: distinct flagged deps weighted by
   severity. Platform/scope splits of the same module (e.g. `@napi-rs/nice-*`)
   don't inflate it.
 
@@ -50,24 +50,24 @@ high-risk / suspicious / unchecked packages.
 
 ## `--languages`
 
-By default the node shows the repo's **primary language** (free — GitHub returns
+By default the node shows the repo's **primary language** (free - GitHub returns
 it in the repo object): `express@4.18.2 ★66000 (0:0) (JavaScript)`.
 
 `--languages` fetches the full breakdown (one extra, **cached**, `/languages`
-call per repo — paid once per repo, ever):
+call per repo - paid once per repo, ever):
 
 ```
 ripgrep@14.1.0 ★66000 (0:0) (Rust:95.0|Python:2.4|Shell:1.9|Other:0.7)
 ```
 
-- `(Lang)` — primary only (GitHub, free).
-- `(L1:%|L2:%|Other:%)` — full breakdown (`--languages`).
-- `(?)` — a repo resolved but the host reported no language (e.g. GitLab/Codeberg
+- `(Lang)` - primary only (GitHub, free).
+- `(L1:%|L2:%|Other:%)` - full breakdown (`--languages`).
+- `(?)` - a repo resolved but the host reported no language (e.g. GitLab/Codeberg
   without `--languages`).
 
 ## Tokens & rate limits
 
-Without a token, GitHub's anonymous API is **60 requests/hour** — the tightest
+Without a token, GitHub's anonymous API is **60 requests/hour** - the tightest
 budget, so postmortem fans out gently (2 workers) and wide (8) with a token.
 GitLab and Codeberg resolve anonymously for public repos. See
 [Configuration](Configuration).

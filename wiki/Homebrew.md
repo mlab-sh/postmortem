@@ -14,15 +14,15 @@ it with the same `risk:dep` model as [`tree`](Tree).
 
 ## Formulae vs casks
 
-- **Formulae** — built/bottled packages with a real dependency graph;
+- **Formulae** - built/bottled packages with a real dependency graph;
   `installed_on_request` formulae are the roots.
-- **Casks** — apps installed as **prebuilt vendor binaries**. They're shown as
+- **Casks** - apps installed as **prebuilt vendor binaries**. They're shown as
   flat roots and carry an extra download-and-run risk surface (below).
 
 ## Source repos (taps)
 
 `--repos` lists the configured taps with their real remotes (read from
-`brew tap-info`, **not** guessed — taps don't follow a fixed `homebrew-<name>`
+`brew tap-info`, **not** guessed - taps don't follow a fixed `homebrew-<name>`
 naming, e.g. `sn0walice/sshm` → `github.com/Sn0wAlice/sshm`), flagging anything
 outside `homebrew/*`.
 
@@ -35,23 +35,23 @@ reputation, not a "no repository").
 
 | Signal | Severity | Meaning |
 | --- | --- | --- |
-| `third-party-tap (owner/name)` | Medium | Installed from a tap outside `homebrew/*` — bypasses core review. |
+| `third-party-tap (owner/name)` | Medium | Installed from a tap outside `homebrew/*` - bypasses core review. |
 | `unofficial-bottle (host)` | Medium | The prebuilt binary is pulled from a bottle registry outside Homebrew's official `ghcr.io/v2/homebrew/*`. |
 | `insecure-tap-remote (http)` | High | The tap's git remote is plain HTTP. |
 | `exotic-tap-host (host)` | Low | The tap's remote is on a host we can't vouch for (not GitHub/GitLab/Codeberg/…). |
-| `deprecated` | Medium | Formula/cask marked deprecated or disabled — unmaintained. |
-| `outdated (installed → current)` | Low | Behind the current version — missing upstream (incl. security) fixes. |
-| `installs-service (runs at boot/login)` | Info | Installs a launchd/systemd service — runs automatically, higher attack surface. |
+| `deprecated` | Medium | Formula/cask marked deprecated or disabled - unmaintained. |
+| `outdated (installed → current)` | Low | Behind the current version - missing upstream (incl. security) fixes. |
+| `installs-service (runs at boot/login)` | Info | Installs a launchd/systemd service - runs automatically, higher attack surface. |
 
-### Casks — the download-and-run surface
+### Casks - the download-and-run surface
 
 | Signal | Severity | Meaning |
 | --- | --- | --- |
-| `unverified-download (sha256 :no_check)` | High | No integrity pin — brew runs whatever bytes arrive. |
+| `unverified-download (sha256 :no_check)` | High | No integrity pin - brew runs whatever bytes arrive. |
 | `insecure-url (http)` | High | Download over plain HTTP. |
 | `download-host-mismatch (host)` | Low | Download host unrelated to the homepage and not a known release mirror (GitHub/GitLab/SourceForge/…). |
 | `runs-installer` | Info | Ships a `pkg`/`installer` artifact (elevated install), not a plain `.app`. |
-| `auto-updates` | Info | Self-updates outside brew — later versions bypass this audit. |
+| `auto-updates` | Info | Self-updates outside brew - later versions bypass this audit. |
 
 ### Install-recipe static analysis (third-party only)
 
@@ -71,19 +71,19 @@ Ruby (`Lang::Ruby`), plus a brew-specific check:
 The formula `homepage` (or a cask's download URL, often a GitHub release)
 resolves to the source repo, pulling the same stars/age/activity/language signals
 as [`tree --online`](Online-Resolution). A curated `homebrew/core` formula whose
-homepage isn't a code host resolves to *no repository* — reported as **unchecked**,
+homepage isn't a code host resolves to *no repository* - reported as **unchecked**,
 not suspicious.
 
 ## Inspect a single package
 
-`system inspect <pkg>` focuses on one installed package — its dependency subtree
+`system inspect <pkg>` focuses on one installed package - its dependency subtree
 only, not the whole machine.
 
 ```bash
 postmortem system inspect wget          # just wget's subtree + scoring
 ```
 
-### `--deep` — clone & audit the real source
+### `--deep` - clone & audit the real source
 
 A heavyweight audit that reuses the **full** detection suite on actual upstream
 code (not just metadata):
@@ -102,8 +102,11 @@ postmortem system inspect wget --deep -y  # skip the confirmation
 6. Writes a Markdown report to `./postmortem-inspect-<pkg>.md`.
 7. **Deletes** the cloned source.
 
-> Coverage note: the analyzers cover postmortem's [7 language ecosystems](Ecosystems-and-Hosts).
-> A dependency whose upstream is C/C++/other yields no static findings.
+> Coverage: the analyzers cover a fixed set of languages (JS/TS, Python, Rust,
+> Ruby, PHP, Go, Java/Kotlin, C/C++, Perl) - see the
+> [source-code scanning matrix](Source-Code-Scanning). A dependency whose
+> upstream is in another language (C#, Shell, Swift, …) yields no static findings
+> yet.
 
 ## Examples
 

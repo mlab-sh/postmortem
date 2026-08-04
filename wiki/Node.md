@@ -1,7 +1,7 @@
 # Node (npm / pnpm / yarn)
 
 Part of the [ecosystems](Ecosystems-and-Hosts) matrix. Node is postmortem's
-richest ecosystem — the only one with **identity/provenance** signals.
+richest ecosystem - the only one with **identity/provenance** signals.
 
 ## Lockfiles
 

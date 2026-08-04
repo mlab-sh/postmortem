@@ -40,7 +40,7 @@ impl Lang {
 
     fn exts(self) -> &'static [&'static str] {
         match self {
-            Lang::JavaScript => &["js", "mjs", "cjs"],
+            Lang::JavaScript => &["js", "mjs", "cjs", "ts"],
             Lang::Python => &["py"],
             Lang::Rust => &["rs"],
             Lang::Ruby => &["rb"],
