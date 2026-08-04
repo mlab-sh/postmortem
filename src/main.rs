@@ -6,6 +6,7 @@ mod detect;
 mod enrich;
 mod gate;
 mod gochi;
+mod inspect;
 mod model;
 mod parsers;
 mod report;
@@ -66,6 +67,11 @@ fn run_cache(args: cli::CacheArgs) -> Result<()> {
 /// and tree the installed forest with risk scoring. Homebrew only today. Exit 2
 /// if no supported manager is present.
 fn run_system(args: cli::SystemArgs) -> Result<()> {
+    // `system inspect <pkg>` focuses on a single package (its own flow).
+    if let Some(cli::SystemCommand::Inspect(i)) = &args.command {
+        return inspect::run(i);
+    }
+
     let ui = ui::Ui::new(!args.no_progress);
     let managers = system::detect();
 
@@ -436,7 +442,7 @@ type ParsedProject = (Vec<detect::Detected>, Vec<model::Dependency>, Vec<model::
 /// Map a detected ecosystem to the lockfile + mlab `format` its vuln API
 /// accepts, or `None` when mlab doesn't support that format (pnpm/yarn, poetry/
 /// Pipfile, Java).
-fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)> {
+pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)> {
     let base = |p: &Path| p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
     match d {
         detect::Detected::Node { lockfile, .. } => {

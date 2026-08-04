@@ -97,6 +97,48 @@ pub struct Stats {
 
 /// Build the dependency forest for one project.
 pub fn build(root: &str, ecosystems: &[String], deps: &[Dependency], depth: Option<usize>) -> Tree {
+    // Roots: the direct dependencies. Fall back to parent-less nodes if a
+    // lockfile marks nothing direct.
+    let mut roots: Vec<DepRef> = deps
+        .iter()
+        .filter(|d| d.direct)
+        .map(|d| (d.name.clone(), d.version.clone()))
+        .collect();
+    if roots.is_empty() {
+        roots = deps
+            .iter()
+            .filter(|d| d.parents.is_empty())
+            .map(|d| (d.name.clone(), d.version.clone()))
+            .collect();
+    }
+    build_with_roots(root, ecosystems, deps, depth, roots)
+}
+
+/// Build a forest rooted at a single package `name` (all its installed versions)
+/// — its dependency subtree only, for `system inspect`.
+pub fn build_focused(
+    root: &str,
+    ecosystems: &[String],
+    deps: &[Dependency],
+    depth: Option<usize>,
+    name: &str,
+) -> Tree {
+    let roots: Vec<DepRef> = deps
+        .iter()
+        .filter(|d| d.name == name)
+        .map(|d| (d.name.clone(), d.version.clone()))
+        .collect();
+    build_with_roots(root, ecosystems, deps, depth, roots)
+}
+
+/// Shared forest builder given an explicit set of roots.
+fn build_with_roots(
+    root: &str,
+    ecosystems: &[String],
+    deps: &[Dependency],
+    depth: Option<usize>,
+    mut roots: Vec<DepRef>,
+) -> Tree {
     let index: BTreeMap<DepRef, &Dependency> = deps
         .iter()
         .map(|d| ((d.name.clone(), d.version.clone()), d))
@@ -115,20 +157,6 @@ pub fn build(root: &str, ecosystems: &[String], deps: &[Dependency], depth: Opti
         kids.dedup();
     }
 
-    // Roots: the direct dependencies. Fall back to parent-less nodes if a
-    // lockfile marks nothing direct.
-    let mut roots: Vec<DepRef> = deps
-        .iter()
-        .filter(|d| d.direct)
-        .map(|d| (d.name.clone(), d.version.clone()))
-        .collect();
-    if roots.is_empty() {
-        roots = deps
-            .iter()
-            .filter(|d| d.parents.is_empty())
-            .map(|d| (d.name.clone(), d.version.clone()))
-            .collect();
-    }
     roots.sort();
     roots.dedup();
 

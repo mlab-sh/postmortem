@@ -35,3 +35,5 @@ postmortem-report-[*
 !tests/fixtures/**/node_modules/**
 
 realrepo
+
+postmortem-*.md

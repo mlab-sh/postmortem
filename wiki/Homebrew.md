@@ -74,6 +74,37 @@ as [`tree --online`](Online-Resolution). A curated `homebrew/core` formula whose
 homepage isn't a code host resolves to *no repository* — reported as **unchecked**,
 not suspicious.
 
+## Inspect a single package
+
+`system inspect <pkg>` focuses on one installed package — its dependency subtree
+only, not the whole machine.
+
+```bash
+postmortem system inspect wget          # just wget's subtree + scoring
+```
+
+### `--deep` — clone & audit the real source
+
+A heavyweight audit that reuses the **full** detection suite on actual upstream
+code (not just metadata):
+
+```bash
+postmortem system inspect wget --deep     # gochi asks to confirm first
+postmortem system inspect wget --deep -y  # skip the confirmation
+```
+
+1. gochi warns it's slow (network + disk) and asks `[y/N]` (`-y` bypasses).
+2. Resolves every dependency to its source repo (reputation, as `--online`).
+3. Creates a temp workspace under `~/.postmortem/inspect/`.
+4. `git clone`s each dependency's repo (shallow; `git` must be installed).
+5. Runs the [`scan`](Scan) analyzers + a best-effort vuln scan over the cloned
+   source, capped at 60 repos.
+6. Writes a Markdown report to `./postmortem-inspect-<pkg>.md`.
+7. **Deletes** the cloned source.
+
+> Coverage note: the analyzers cover postmortem's [7 language ecosystems](Ecosystems-and-Hosts).
+> A dependency whose upstream is C/C++/other yields no static findings.
+
 ## Examples
 
 ```bash
@@ -81,4 +112,5 @@ postmortem system                       # offline tree + provenance/cask/install
 postmortem system --repos               # just the taps
 postmortem system --online              # + source-repo reputation
 postmortem system --online --languages  # + repo language breakdown
+postmortem system inspect wget --deep   # deep-audit one package's whole source
 ```

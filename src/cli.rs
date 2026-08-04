@@ -43,6 +43,10 @@ pub enum Command {
 /// Arguments for `postmortem system`.
 #[derive(Args, Debug)]
 pub struct SystemArgs {
+    /// Focus on one installed package instead of the whole machine.
+    #[command(subcommand)]
+    pub command: Option<SystemCommand>,
+
     /// List the configured source repos (Homebrew taps) and exit, flagging
     /// third-party taps that bypass core review.
     #[arg(long)]
@@ -65,6 +69,33 @@ pub struct SystemArgs {
     /// cached, call per repo).
     #[arg(long)]
     pub languages: bool,
+
+    /// Disable the animated progress UI.
+    #[arg(long)]
+    pub no_progress: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum SystemCommand {
+    /// Inspect one installed package: show only its dependency subtree. With
+    /// `--deep`, clone every dependency's source and run the full detection
+    /// suite (scan + tree --online + --vulns) over it, into a Markdown report.
+    Inspect(InspectArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct InspectArgs {
+    /// The installed package to inspect.
+    pub package: String,
+
+    /// Deep mode: clone every dependency's source repo and run the complete
+    /// analysis over the actual code. Touches the network and disk.
+    #[arg(long)]
+    pub deep: bool,
+
+    /// Assume "yes" to the deep-analysis confirmation prompt.
+    #[arg(short = 'y', long)]
+    pub yes: bool,
 
     /// Disable the animated progress UI.
     #[arg(long)]
