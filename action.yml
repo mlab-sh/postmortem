@@ -1,8 +1,5 @@
 name: postmortem supply-chain gate
-description: >-
-  Resolve the dependency tree, score reputation/identity risk and known vulns,
-  and fail the build when risk crosses your thresholds. Uploads SARIF to Code
-  Scanning and writes a job-summary recap.
+description: "Fail the build on dependency risk and known vulns: thresholds, allowlist, baseline diff, SARIF upload."
 author: mlab-sh
 branding:
   icon: shield
