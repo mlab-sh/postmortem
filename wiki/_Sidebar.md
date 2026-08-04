@@ -21,6 +21,7 @@
 - [Homebrew](Homebrew)
 - [Pacman](Pacman)
 - [APT](Apt)
+- [DNF](Dnf)
 
 **Concepts**
 - [Source-code scanning](Source-Code-Scanning)

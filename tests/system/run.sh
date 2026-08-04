@@ -78,6 +78,15 @@ if container run --rm -v "$PWD:/src" -w /src docker.io/library/rust:latest \
   capture "ubuntu/apt-system.txt"  container exec postmortem-ubuntu /usr/bin/pm system --no-progress
   capture "ubuntu/apt-repos.txt"   container exec postmortem-ubuntu /usr/bin/pm system --repos --no-progress
   capture "ubuntu/apt-system.json" container exec postmortem-ubuntu /usr/bin/pm system --json --no-progress
+  # Fedora container: same Linux binary, dnf/rpm backend.
+  mkdir -p "$OUT/fedora"
+  container start postmortem-fedora >/dev/null 2>&1
+  container cp "$PWD/target-linux/release/postmortem" postmortem-fedora:/usr/bin/pm 2>/dev/null
+  container exec postmortem-fedora chmod +x /usr/bin/pm 2>/dev/null
+  log "system (dnf backend, Fedora container)"
+  capture "fedora/dnf-system.txt"  container exec postmortem-fedora /usr/bin/pm system --no-progress
+  capture "fedora/dnf-repos.txt"   container exec postmortem-fedora /usr/bin/pm system --repos --no-progress
+  capture "fedora/dnf-system.json" container exec postmortem-fedora /usr/bin/pm system --json --no-progress
 else
   echo "  SKIP Linux build failed (network?) - re-run to retry" | tee "$OUT/arch/BUILD-FAILED.txt"
 fi

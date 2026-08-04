@@ -18,6 +18,8 @@ pub enum Ecosystem {
     Pacman,
     /// Debian/Ubuntu `apt`/`dpkg` — an OS-level package manager (`system` command).
     Apt,
+    /// Fedora/RHEL `dnf`/`rpm` — an OS-level package manager (`system` command).
+    Dnf,
 }
 
 impl Ecosystem {
@@ -33,6 +35,7 @@ impl Ecosystem {
             Ecosystem::Brew => "brew",
             Ecosystem::Pacman => "pacman",
             Ecosystem::Apt => "apt",
+            Ecosystem::Dnf => "dnf",
         }
     }
 }

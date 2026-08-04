@@ -426,7 +426,12 @@ impl Resolver {
         // assess the tap rather than flag "no repository". Pacman has no registry
         // and carries the package's upstream URL the same way. Gated to these two:
         // other ecosystems' `resolved_url` is a tarball/registry URL, not a repo.
-        if repo.is_none() && matches!(dep.ecosystem, Ecosystem::Brew | Ecosystem::Pacman | Ecosystem::Apt) {
+        if repo.is_none()
+            && matches!(
+                dep.ecosystem,
+                Ecosystem::Brew | Ecosystem::Pacman | Ecosystem::Apt | Ecosystem::Dnf
+            )
+        {
             repo = dep.resolved_url.as_deref().and_then(parse_repo);
         }
         self.cache.put("registry", &key, &CachedRepo { repo: repo.clone() });
@@ -614,7 +619,7 @@ fn registry_url(dep: &Dependency) -> Option<String> {
         Ecosystem::Brew => format!("https://formulae.brew.sh/api/formula/{}.json", dep.name),
         // Go's module path and Pacman's package URL resolve without a registry
         // call (repo parsed from the name / `resolved_url`).
-        Ecosystem::Go | Ecosystem::Pacman | Ecosystem::Apt => return None,
+        Ecosystem::Go | Ecosystem::Pacman | Ecosystem::Apt | Ecosystem::Dnf => return None,
     })
 }
 
@@ -687,7 +692,7 @@ fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<String> {
         .flatten()
         .collect(),
         // Resolved directly from the name / resolved_url, never via a registry.
-        Ecosystem::Go | Ecosystem::Pacman | Ecosystem::Apt => Vec::new(),
+        Ecosystem::Go | Ecosystem::Pacman | Ecosystem::Apt | Ecosystem::Dnf => Vec::new(),
     }
 }
 
