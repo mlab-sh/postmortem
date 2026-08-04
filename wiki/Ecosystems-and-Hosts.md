@@ -21,6 +21,7 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 | [**apt / dpkg**](Apt) | via [`system`](System) | *(none - homepage → repo)* |
 | [**dnf / rpm**](Dnf) | via [`system`](System) | *(none - homepage → repo)* |
 | [**Nix**](Nix) | via [`system`](System) | *(none - store closure + signatures)* |
+| [**apk**](Apk) | via [`system`](System) | *(none - homepage → repo)* |
 
 > Go and Java are **flat-graph** ecosystems offline (transitive parent edges
 > can't be reconstructed without the toolchain). postmortem emits a

@@ -23,6 +23,7 @@
 - [APT](Apt)
 - [DNF](Dnf)
 - [Nix](Nix)
+- [apk](Apk)
 
 **Concepts**
 - [Source-code scanning](Source-Code-Scanning)

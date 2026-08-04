@@ -102,8 +102,17 @@ if container run --rm -v "$PWD:/src" -w /src docker.io/library/rust:latest \
     capture "nix/nix-system.txt"  container exec postmortem-nix /usr/bin/pm system --no-progress
     capture "nix/nix-repos.txt"   container exec postmortem-nix /usr/bin/pm system --repos --no-progress
     capture "nix/nix-system.json" container exec postmortem-nix /usr/bin/pm system --json --no-progress
+    # Alpine container: musl-native, reuse the same static binary, apk backend.
+    mkdir -p "$OUT/alpine"
+    container start postmortem-alpine >/dev/null 2>&1
+    container cp "$PWD/target-musl/aarch64-unknown-linux-musl/release/postmortem" postmortem-alpine:/usr/bin/pm 2>/dev/null
+    container exec postmortem-alpine chmod +x /usr/bin/pm 2>/dev/null
+    log "system (apk backend, Alpine container)"
+    capture "alpine/apk-system.txt"  container exec postmortem-alpine /usr/bin/pm system --no-progress
+    capture "alpine/apk-repos.txt"   container exec postmortem-alpine /usr/bin/pm system --repos --no-progress
+    capture "alpine/apk-system.json" container exec postmortem-alpine /usr/bin/pm system --json --no-progress
   else
-    echo "  SKIP nix musl build failed" | tee "$OUT/nix/BUILD-FAILED.txt"
+    echo "  SKIP nix/alpine musl build failed" | tee "$OUT/nix/BUILD-FAILED.txt"
   fi
 else
   echo "  SKIP Linux build failed (network?) - re-run to retry" | tee "$OUT/arch/BUILD-FAILED.txt"

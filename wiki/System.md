@@ -32,7 +32,8 @@ manager.
 | apt / dpkg | supported | [APT](Apt) |
 | dnf / rpm | supported | [DNF](Dnf) |
 | Nix | supported | [Nix](Nix) |
-| apk / macports | planned | (roadmap) |
+| apk (Alpine) | supported | [apk](Apk) |
+| macports | planned | (roadmap) |
 
 ## Common options
 

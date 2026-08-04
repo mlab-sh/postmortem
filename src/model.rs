@@ -22,6 +22,8 @@ pub enum Ecosystem {
     Dnf,
     /// Nix (the store / profiles) — an OS-level package manager (`system` command).
     Nix,
+    /// Alpine `apk` — an OS-level package manager (`system` command).
+    Apk,
 }
 
 impl Ecosystem {
@@ -39,6 +41,7 @@ impl Ecosystem {
             Ecosystem::Apt => "apt",
             Ecosystem::Dnf => "dnf",
             Ecosystem::Nix => "nix",
+            Ecosystem::Apk => "apk",
         }
     }
 }
