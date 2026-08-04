@@ -72,6 +72,12 @@ pub struct Node {
     /// Its dependency-subtree risk score, 0–100.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dep: Option<u8>,
+    /// Source-repo primary language (online; free on GitHub).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// Source-repo language breakdown `(name, percent)` (online, `--languages`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub languages: Option<Vec<(String, f64)>>,
 
     pub children: Vec<Node>,
 }
@@ -183,6 +189,8 @@ fn build_node(
             severity: None,
             risk: None,
             dep: None,
+            language: None,
+            languages: None,
             children: Vec::new(),
         };
     }
@@ -202,6 +210,8 @@ fn build_node(
             severity: None,
             risk: None,
             dep: None,
+            language: None,
+            languages: None,
             children: Vec::new(),
         };
     }
@@ -228,6 +238,8 @@ fn build_node(
         severity: None,
         risk: None,
         dep: None,
+        language: None,
+        languages: None,
         children: child_nodes,
     }
 }
@@ -243,6 +255,8 @@ pub fn enrich(tree: &mut Tree, resolutions: &HashMap<DepRef, Resolution>) {
             node.signals = r.signals.clone();
             node.severity = r.worst;
             node.risk = Some(r.risk);
+            node.language = r.language.clone();
+            node.languages = r.languages.clone();
         }
         for child in &mut node.children {
             walk(child, resolutions);
@@ -364,6 +378,8 @@ fn project_scores(tree: &Tree) -> (u8, u8) {
             severity: None,
             risk: None,
             dep: None,
+            language: None,
+            languages: None,
             children: Vec::new(),
         };
         collect_flagged(root, &project, &mut seen, &mut sevs);
@@ -520,13 +536,13 @@ fn render_recap(tree: &Tree) {
         "    {}  {}  {}",
         orange(pad(medium)),
         orange("suspicious".into()),
-        "new maintainer / dormant / stale / no repo".dimmed()
+        "new maintainer / dormant / stale / archived".dimmed()
     );
     println!(
         "    {}  {}   {}",
         pad(info).dimmed(),
         "unchecked".dimmed(),
-        "couldn't verify".dimmed()
+        "no repo / couldn't verify".dimmed()
     );
     let vulns: usize = tree.vulnerabilities.iter().map(|p| p.vulns.len()).sum();
     if vulns > 0 {
@@ -585,6 +601,23 @@ fn colorize(text: &str, severity: Option<Severity>) -> String {
     }
 }
 
+/// The parenthesized language group shown after `(risk:dep)`. `None` for nodes
+/// that weren't resolved to a repo (offline, or `no-repository`) — so it isn't
+/// noise on every line. A resolved repo with no reported language shows `(?)`.
+fn language_tag(node: &Node) -> Option<String> {
+    if let Some(bk) = &node.languages {
+        // Full breakdown (`--languages`): `Rust:96.9|Shell:1.9|Other:1.2`.
+        let parts: Vec<String> = bk.iter().map(|(n, p)| format!("{n}:{p:.1}")).collect();
+        Some(format!("({})", parts.join("|")))
+    } else if let Some(lang) = &node.language {
+        Some(format!("({lang})"))
+    } else if node.repo.is_some() {
+        Some("(?)".to_string())
+    } else {
+        None
+    }
+}
+
 fn render_node(node: &Node, prefix: &str, is_last: bool, scored: bool) {
     let connector = if is_last { "└── " } else { "├── " };
     // The name takes the node's color: red/orange if it's itself risky, blue if
@@ -605,6 +638,12 @@ fn render_node(node: &Node, prefix: &str, is_last: bool, scored: bool) {
     if scored {
         let scores = format!("({}:{})", node.risk.unwrap_or(0), node.dep.unwrap_or(0));
         label.push_str(&format!(" {}", paint(&scores, node)));
+        // Repo language, after the scores: `(Rust)`, a breakdown
+        // `(Rust:96.9|Shell:1.9|Other:1.2)`, or `(?)` when we resolved a repo but
+        // the host reported no language. Only shown for online-resolved nodes.
+        if let Some(tag) = language_tag(node) {
+            label.push_str(&format!(" {}", tag.dimmed()));
+        }
     }
     println!("{prefix}{connector}{label}");
 
@@ -624,12 +663,14 @@ struct Flag {
 type Flagged = BTreeMap<(String, String), Flag>;
 
 /// After the tree, list the flagged packages once each (deduped by name@version),
-/// worst-severity first, so a big forest's warnings are easy to eyeball. No-op
-/// when nothing is flagged (i.e. offline runs, which carry no signals).
+/// worst-severity first, so a big forest's warnings are easy to eyeball. Only
+/// **Medium+** nodes are listed — the real flags; "couldn't verify" nodes (Info,
+/// e.g. a curated OS package with no GitHub repo) are summarized in the recap's
+/// `unchecked` count instead of drowning the list. No-op offline (no signals).
 fn render_flagged(tree: &Tree) {
     let mut flagged: Flagged = BTreeMap::new();
     fn collect(node: &Node, out: &mut Flagged) {
-        if !node.signals.is_empty() {
+        if node.severity.is_some_and(|s| s >= Severity::Medium) && !node.signals.is_empty() {
             out.insert(
                 (node.name.clone(), node.version.clone()),
                 Flag {
@@ -688,6 +729,8 @@ mod tests {
             severity: sev,
             risk: sev.map(|_| 30),
             dep: None,
+            language: None,
+            languages: None,
             children,
         }
     }

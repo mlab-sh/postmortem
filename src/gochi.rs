@@ -58,12 +58,26 @@ pub struct Loader {
 }
 
 impl Loader {
-    /// Start the animation (a no-op display when `enabled` is false, e.g. a
-    /// non-TTY run — `step`/`inc`/`finish` still work, just silently).
+    /// Start a **counted** loading animation (`p/len`), for a phase with a known
+    /// number of items. A no-op display when `enabled` is false (non-TTY);
+    /// `step`/`inc`/`finish` still work, just silently.
     pub fn start(len: u64, enabled: bool) -> Self {
+        Self::spawn(Some(len), String::new(), enabled)
+    }
+
+    /// Start an **indeterminate** loading animation — gochi + a label, no
+    /// counter — for a single wait of unknown length (e.g. shelling out to
+    /// `brew info` to read the installed forest).
+    pub fn spinner(label: impl Into<String>, enabled: bool) -> Self {
+        Self::spawn(None, label.into(), enabled)
+    }
+
+    /// Shared animation loop. `total = Some(len)` shows a `p/len` counter;
+    /// `None` runs an indeterminate spinner with just the label.
+    fn spawn(total: Option<u64>, initial_label: String, enabled: bool) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let pos = Arc::new(AtomicU64::new(0));
-        let label = Arc::new(Mutex::new(String::new()));
+        let label = Arc::new(Mutex::new(initial_label));
 
         let handle = enabled.then(|| {
             let (stop, pos, label) = (stop.clone(), pos.clone(), label.clone());
@@ -75,14 +89,11 @@ impl Loader {
                 while !stop.load(Ordering::Relaxed) {
                     let face = faces[frame % faces.len()];
                     let lbl = label.lock().unwrap().clone();
-                    let p = pos.load(Ordering::Relaxed);
-                    let _ = write!(
-                        out,
-                        "\r\x1b[2K{} {}  {}",
-                        face.cyan(),
-                        lbl,
-                        format!("{p}/{len}").dimmed()
-                    );
+                    let counter = match total {
+                        Some(len) => format!("  {}", format!("{}/{len}", pos.load(Ordering::Relaxed)).dimmed()),
+                        None => String::new(),
+                    };
+                    let _ = write!(out, "\r\x1b[2K{} {}{}", face.cyan(), lbl, counter);
                     let _ = out.flush();
                     frame += 1;
                     std::thread::sleep(Duration::from_millis(90));

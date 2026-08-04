@@ -474,6 +474,8 @@ mod tests {
             severity: sev,
             risk: Some(80),
             dep: Some(0),
+            language: None,
+            languages: None,
             children: vec![],
         }
     }

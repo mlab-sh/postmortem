@@ -11,6 +11,9 @@ pub enum Ecosystem {
     Php,
     Go,
     Java,
+    /// Homebrew (macOS/Linux) — an OS-level package manager, surfaced by the
+    /// `system` command rather than the project-lockfile parsers.
+    Brew,
 }
 
 impl Ecosystem {
@@ -23,6 +26,7 @@ impl Ecosystem {
             Ecosystem::Php => "php",
             Ecosystem::Go => "go",
             Ecosystem::Java => "java",
+            Ecosystem::Brew => "brew",
         }
     }
 }

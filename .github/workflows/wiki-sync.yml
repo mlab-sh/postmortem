@@ -1,0 +1,72 @@
+name: Sync wiki
+
+# Mirror the in-repo `wiki/` folder to the GitHub wiki
+# (github.com/<owner>/<repo>.wiki.git) on every push that touches it. The repo
+# is the single source of truth; the wiki is a generated mirror, so do NOT edit
+# pages in the wiki web UI — they get overwritten on the next sync.
+#
+# Uses the default GITHUB_TOKEN (which can push to the same repo's wiki) and
+# plain git — no third-party actions.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "wiki/**"
+      - ".github/workflows/wiki-sync.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Mirror wiki/ to the GitHub wiki
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -d wiki ]; then
+            echo "no wiki/ folder — nothing to sync"
+            exit 0
+          fi
+
+          wiki_url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git"
+          work="$(mktemp -d)"
+
+          # The wiki repo exists only once a first page has been created in the
+          # UI. Clone it; bail with a clear message if it isn't initialized yet.
+          if ! git clone --depth 1 "$wiki_url" "$work" 2>/dev/null; then
+            echo "::error::Could not clone the wiki repo. Create the first wiki page in the GitHub UI once, then re-run."
+            exit 1
+          fi
+
+          # Replace all tracked page content with wiki/ (preserving .git).
+          find "$work" -mindepth 1 -maxdepth 1 -not -name '.git' -exec rm -rf {} +
+          cp -R wiki/. "$work"/
+
+          cd "$work"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "wiki already up to date"
+            exit 0
+          fi
+
+          git commit -m "docs: sync wiki from ${GITHUB_SHA::7}"
+          # Push back to whatever branch the wiki repo checked out (GitHub wikis
+          # use 'master'), rather than hardcoding it.
+          branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo master)"
+          git push origin "HEAD:${branch}"

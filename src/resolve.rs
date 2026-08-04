@@ -107,6 +107,10 @@ pub struct RepoStats {
     /// Last push time (unix seconds), when known.
     pub pushed_at: Option<i64>,
     pub archived: bool,
+    /// Primary language, when the host advertises one in the repo object (GitHub
+    /// does, for free; GitLab/Codeberg don't). `None` for an empty repo.
+    #[serde(default)]
+    pub language: Option<String>,
     /// When postmortem fetched this record (unix seconds) — for the future
     /// `cache` command / TTL policy.
     pub fetched_at: i64,
@@ -164,16 +168,19 @@ impl RiskSignal {
             | RiskSignal::RecentlyCreated(_)
             | RiskSignal::Typosquat { .. }
             | RiskSignal::InstallScriptAdded => Severity::High,
-            // Inactivity / missing source / provenance drift — amber.
+            // Inactivity / provenance drift — amber.
             RiskSignal::Stale(_)
             | RiskSignal::Archived
-            | RiskSignal::NoRepository
             | RiskSignal::DormantRelease(_)
             | RiskSignal::NewPublisher => Severity::Medium,
-            // Operational — we simply couldn't check. Neutral.
-            RiskSignal::ResolveFailed | RiskSignal::StatsFailed | RiskSignal::StatsUnavailable => {
-                Severity::Info
-            }
+            // "Couldn't verify" — no source repo to assess, or a fetch we
+            // couldn't complete. Neutral: a missing GitHub repo is normal for a
+            // curated OS core (project-site homepages) and common for legit
+            // packages, so on its own it's unchecked, not suspicious.
+            RiskSignal::NoRepository
+            | RiskSignal::ResolveFailed
+            | RiskSignal::StatsFailed
+            | RiskSignal::StatsUnavailable => Severity::Info,
         }
     }
 
@@ -187,11 +194,14 @@ impl RiskSignal {
             RiskSignal::RecentlyCreated(_) => 40,
             RiskSignal::LowStars(_) => 30,
             RiskSignal::Archived => 30,
-            RiskSignal::NoRepository => 25,
             RiskSignal::NewPublisher => 25,
             RiskSignal::Stale(_) => 20,
             RiskSignal::DormantRelease(_) => 20,
-            RiskSignal::ResolveFailed | RiskSignal::StatsFailed | RiskSignal::StatsUnavailable => 0,
+            // "Couldn't verify" signals carry no risk weight on their own.
+            RiskSignal::NoRepository
+            | RiskSignal::ResolveFailed
+            | RiskSignal::StatsFailed
+            | RiskSignal::StatsUnavailable => 0,
         }
     }
 }
@@ -206,6 +216,11 @@ pub struct Resolution {
     pub worst: Option<Severity>,
     /// The package's own risk score, 0–100 (summed signal points).
     pub risk: u8,
+    /// Repo primary language (free, GitHub only).
+    pub language: Option<String>,
+    /// Repo language breakdown as `(name, percent)`, biggest first — only when
+    /// `--languages` asked for it (one extra, cached, per-host call).
+    pub languages: Option<Vec<(String, f64)>>,
 }
 
 /// Cached npm-version → repository resolution (an explicit `None` means the
@@ -236,6 +251,9 @@ pub struct Resolver {
     tokens: Tokens,
     thresholds: TreeSettings,
     now: i64,
+    /// Also fetch each repo's full language breakdown (one extra, cached,
+    /// per-host `/languages` call). Off by default.
+    languages: bool,
 }
 
 impl Resolver {
@@ -249,7 +267,14 @@ impl Resolver {
             tokens,
             thresholds,
             now: chrono::Utc::now().timestamp(),
+            languages: false,
         }
+    }
+
+    /// Enable the per-repo language breakdown (`--languages`).
+    pub fn with_languages(mut self, on: bool) -> Self {
+        self.languages = on;
+        self
     }
 
     /// How many packages to resolve concurrently. Each unit is a blocking
@@ -361,6 +386,15 @@ impl Resolver {
             .sum::<u32>()
             .min(100) as u8;
         res.signals = signals.iter().map(RiskSignal::label).collect();
+
+        // Primary language rides along free in the repo stats; the full
+        // breakdown is one extra (cached) call, only when `--languages`.
+        res.language = res.stats.as_ref().and_then(|s| s.language.clone());
+        if self.languages
+            && let Some(repo) = &res.repo
+        {
+            res.languages = self.languages_for(repo).ok().flatten();
+        }
         res
     }
 
@@ -381,12 +415,19 @@ impl Resolver {
         let Some(url) = registry_url(dep) else {
             return Ok(None);
         };
-        let repo = match self.get_json(&url, &[])? {
+        let mut repo = match self.get_json(&url, &[])? {
             Some(v) => repo_candidates(dep.ecosystem, &v)
                 .iter()
                 .find_map(|u| parse_repo(u)),
             None => None, // 404 — unpublished/private/unknown package
         };
+        // Homebrew third-party taps aren't on formulae.brew.sh (404 above), but
+        // the tap *is* a repo — fall back to it (carried in `resolved_url`) so we
+        // assess the tap rather than flag "no repository". Gated to Brew: other
+        // ecosystems' `resolved_url` is a tarball/registry URL, not a repo.
+        if repo.is_none() && dep.ecosystem == Ecosystem::Brew {
+            repo = dep.resolved_url.as_deref().and_then(parse_repo);
+        }
         self.cache.put("registry", &key, &CachedRepo { repo: repo.clone() });
         Ok(repo)
     }
@@ -463,8 +504,47 @@ impl Resolver {
             created_at: v.get("created_at").and_then(|s| s.as_str()).and_then(parse_ts),
             pushed_at: v.get(activity_field).and_then(|s| s.as_str()).and_then(parse_ts),
             archived: v.get("archived").and_then(|s| s.as_bool()).unwrap_or(false),
+            // GitHub carries `language` in the repo object for free; the others
+            // omit it (`None`), and fill it via `--languages` if requested.
+            language: v.get("language").and_then(|s| s.as_str()).map(String::from),
             fetched_at: self.now,
         }))
+    }
+
+    /// The repo's language breakdown as `(name, percent)`, biggest first, capped
+    /// to a top-N + `Other`. One extra `/languages` call per repo, dispatched by
+    /// host and cached per `host/owner/repo` (so it's paid once per repo, ever).
+    /// GitHub/Codeberg report bytes, GitLab reports percentages — we normalize
+    /// both by the total, so the maths is uniform.
+    fn languages_for(&self, repo: &RepoRef) -> Result<Option<Vec<(String, f64)>>> {
+        let key = format!("{}/{}", repo.host, repo.slug());
+        if let Some(hit) = self.cache.get::<Vec<(String, f64)>>("languages", &key) {
+            return Ok(Some(hit));
+        }
+        let (url, auth) = match repo.kind() {
+            Some(Host::GitHub) => (
+                format!("{GITHUB_API}/repos/{}/{}/languages", repo.owner, repo.name),
+                self.tokens.github.as_deref().map(|t| ("Authorization", format!("Bearer {t}"))),
+            ),
+            Some(Host::GitLab) => (
+                format!("{GITLAB_API}/projects/{}/languages", urlencode(&repo.slug())),
+                self.tokens.gitlab.as_deref().map(|t| ("PRIVATE-TOKEN", t.to_string())),
+            ),
+            Some(Host::Codeberg) => (
+                format!("{CODEBERG_API}/repos/{}/{}/languages", repo.owner, repo.name),
+                self.tokens.codeberg.as_deref().map(|t| ("Authorization", format!("token {t}"))),
+            ),
+            None => return Ok(None),
+        };
+        let headers: Vec<(&str, String)> = auth.into_iter().collect();
+        let Some(v) = self.get_json(&url, &headers)? else {
+            return Ok(None);
+        };
+        let breakdown = normalize_languages(&v);
+        if let Some(b) = &breakdown {
+            self.cache.put("languages", &key, b);
+        }
+        Ok(breakdown)
     }
 
     fn assess(&self, stats: &RepoStats) -> Vec<RiskSignal> {
@@ -528,6 +608,9 @@ fn registry_url(dep: &Dependency) -> Option<String> {
             urlencode(&dep.name),
             urlencode(&dep.version),
         ),
+        // Homebrew: the formula JSON carries `homepage` (often a GitHub repo).
+        // The name can contain `@` (`openssl@3`); the API path takes it verbatim.
+        Ecosystem::Brew => format!("https://formulae.brew.sh/api/formula/{}.json", dep.name),
         Ecosystem::Go => return None,
     })
 }
@@ -591,8 +674,45 @@ fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<String> {
                 out
             })
             .unwrap_or_default(),
+        // Homebrew: `homepage`, then the stable source URL as a fallback (some
+        // formulae point `urls.stable` straight at a GitHub release tarball).
+        Ecosystem::Brew => [
+            s(v, "homepage"),
+            v.get("urls").and_then(|u| u.get("stable")).and_then(|st| s(st, "url")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
         Ecosystem::Go => Vec::new(),
     }
+}
+
+/// Normalize a host `/languages` object (`{name: bytes|percent}`) into a
+/// `(name, percent)` list, biggest first, capped to the top 3 with a rolled-up
+/// `Other`. `None` for an empty repo.
+fn normalize_languages(v: &serde_json::Value) -> Option<Vec<(String, f64)>> {
+    const TOP: usize = 3;
+    let obj = v.as_object()?;
+    let mut items: Vec<(String, f64)> = obj
+        .iter()
+        .filter_map(|(k, val)| val.as_f64().map(|n| (k.clone(), n)))
+        .filter(|(_, n)| *n > 0.0)
+        .collect();
+    let total: f64 = items.iter().map(|(_, n)| n).sum();
+    if items.is_empty() || total <= 0.0 {
+        return None;
+    }
+    items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    let mut out: Vec<(String, f64)> =
+        items.iter().take(TOP).map(|(n, w)| (n.clone(), w / total * 100.0)).collect();
+    if items.len() > TOP {
+        let other = (100.0 - out.iter().map(|(_, p)| p).sum::<f64>()).max(0.0);
+        if other >= 0.05 {
+            out.push(("Other".to_string(), other));
+        }
+    }
+    Some(out)
 }
 
 /// Minimal RFC-3986 percent-encoding for a single path component (encodes `/`,
@@ -988,6 +1108,29 @@ mod tests {
     }
 
     #[test]
+    fn normalize_languages_percentages_and_other() {
+        // Bytes (GitHub/Codeberg shape): normalized to %, top-3 + Other.
+        let bytes = serde_json::json!({
+            "Rust": 9000, "Shell": 600, "Ruby": 300, "Roff": 90, "Lua": 10
+        });
+        let out = normalize_languages(&bytes).unwrap();
+        assert_eq!(out[0].0, "Rust");
+        assert!((out[0].1 - 90.0).abs() < 0.1, "Rust ~90%");
+        assert_eq!(out.len(), 4, "top 3 + Other");
+        assert_eq!(out[3].0, "Other");
+        let sum: f64 = out.iter().map(|(_, p)| p).sum();
+        assert!((sum - 100.0).abs() < 0.01, "sums to 100");
+
+        // Already-percentages (GitLab shape) with ≤3 langs: no Other appended.
+        let pct = serde_json::json!({ "Go": 98.34, "Shell": 1.66 });
+        let out = normalize_languages(&pct).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].0, "Go");
+
+        assert!(normalize_languages(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
     fn urlencodes_path_and_coordinate() {
         assert_eq!(urlencode("group/sub/proj"), "group%2Fsub%2Fproj");
         assert_eq!(urlencode("com.google.guava:guava"), "com.google.guava%3Aguava");
@@ -1042,12 +1185,14 @@ mod tests {
             tokens: Tokens::default(),
             thresholds: TreeSettings { min_stars: 20, recent_days: 30, stale_days: 365 },
             now: 1_000_000_000,
+            languages: false,
         };
         let fresh_lowstar = RepoStats {
             stars: 1,
             created_at: Some(1_000_000_000 - 5 * 86_400), // 5 days old
             pushed_at: Some(1_000_000_000),
             archived: false,
+            language: None,
             fetched_at: 0,
         };
         let labels: Vec<String> = r.assess(&fresh_lowstar).iter().map(RiskSignal::label).collect();
@@ -1059,6 +1204,7 @@ mod tests {
             created_at: Some(0),
             pushed_at: Some(1_000_000_000),
             archived: false,
+            language: None,
             fetched_at: 0,
         };
         assert!(r.assess(&healthy).is_empty());

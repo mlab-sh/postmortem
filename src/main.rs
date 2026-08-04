@@ -11,6 +11,7 @@ mod parsers;
 mod report;
 mod resolve;
 mod settings;
+mod system;
 mod tree;
 mod typosquat;
 mod ui;
@@ -26,6 +27,7 @@ fn main() -> Result<()> {
         cli::Command::Scan(args) => run_scan(args),
         cli::Command::Tree(args) => run_tree(args),
         cli::Command::Cache(args) => run_cache(args),
+        cli::Command::System(args) => run_system(args),
         cli::Command::Help => {
             print_overview();
             Ok(())
@@ -60,6 +62,82 @@ fn run_cache(args: cli::CacheArgs) -> Result<()> {
     Ok(())
 }
 
+/// `postmortem system` — detect OS package managers, list their source repos,
+/// and tree the installed forest with risk scoring. Homebrew only today. Exit 2
+/// if no supported manager is present.
+fn run_system(args: cli::SystemArgs) -> Result<()> {
+    let ui = ui::Ui::new(!args.no_progress);
+    let managers = system::detect();
+
+    system::render_detected(&managers);
+
+    // Homebrew is the only backend today; require it.
+    if !managers.iter().any(|m| m.name == "homebrew" && m.available) {
+        eprintln!("no supported system package manager found (need Homebrew).");
+        std::process::exit(2);
+    }
+
+    // gochi rides the (indeterminate) load while `brew info` reads the forest.
+    let loader = gochi::Loader::spinner("gochi — reading installed packages", ui.animating());
+    let inv = match system::brew_inventory() {
+        Ok(inv) => {
+            let formulae = inv.deps.len() - inv.casks;
+            loader.finish(
+                gochi::HAPPY,
+                &format!("read {formulae} formula(e) + {} cask(s)", inv.casks),
+            );
+            inv
+        }
+        Err(e) => {
+            loader.finish(gochi::ALERT, "couldn't read packages");
+            return Err(e);
+        }
+    };
+
+    // `--repos`: just the source-repo view.
+    if args.repos {
+        system::render_repos(&inv);
+        return Ok(());
+    }
+
+    let mut forest = tree::build("homebrew", &["brew".to_string()], &inv.deps, args.depth);
+
+    // `--online`: resolve each formula's repo reputation through the shared
+    // resolver (same token/cache/scoring path as `tree --online`).
+    if args.online {
+        gochi::greet(ui.animating());
+        let mut settings = settings::Settings::load().unwrap_or_default();
+        let github = settings.resolve_github_token()?;
+        if github.is_none() {
+            eprintln!(
+                "note: no GitHub token — using the anonymous GitHub API (60 req/h). \
+                 Set GITHUB_TOKEN or add it to ~/.postmortem/config.yml to raise the limit."
+            );
+        }
+        let tokens = resolve::Tokens {
+            github,
+            gitlab: settings.gitlab_token(),
+            codeberg: settings.codeberg_token(),
+        };
+        let resolver =
+            resolve::Resolver::new(tokens, settings.tree.clone()).with_languages(args.languages);
+        let resolutions = resolver.resolve_all(&inv.deps, &ui);
+        tree::enrich(&mut forest, &resolutions);
+    }
+
+    // Offline system risk: third-party taps + cask download/artifact surface.
+    // Merges with any online signals, then score so `risk:dep` reflects both.
+    system::annotate(&mut forest, &inv.signals);
+    tree::score(&mut forest);
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&forest)?);
+    } else {
+        tree::render(&forest);
+    }
+    Ok(())
+}
+
 /// Compact byte count: `0 B`, `4.2 KB`, `1.3 MB`.
 fn human_bytes(n: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
@@ -90,6 +168,7 @@ fn print_overview() {
     println!("  {}   Scan one or more project directories for malicious dependencies", "scan".cyan());
     println!("  {}   Resolve the dependency tree from the lockfiles ({} for repo stats)", "tree".cyan(), "--online".dimmed());
     println!("  {}  Manage the on-disk cache used by {}", "cache".cyan(), "tree --online".dimmed());
+    println!("  {} Audit OS package managers ({} for repo stats)", "system".cyan(), "--online".dimmed());
     println!("  {}   Show this overview", "help".cyan());
     println!();
     println!("{}", "ECOSYSTEMS".bold());
@@ -179,7 +258,7 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
             gitlab: settings.gitlab_token(),
             codeberg: settings.codeberg_token(),
         };
-        Some(resolve::Resolver::new(tokens, settings.tree.clone()))
+        Some(resolve::Resolver::new(tokens, settings.tree.clone()).with_languages(args.languages))
     } else {
         None
     };

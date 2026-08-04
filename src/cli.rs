@@ -31,8 +31,44 @@ pub enum Command {
     /// Manage the on-disk cache (~/.postmortem/cache) used by `tree --online`.
     Cache(CacheArgs),
 
+    /// Audit the machine's OS-level package managers (Homebrew today): detect
+    /// them, list their source repos, and tree the installed forest with the
+    /// same risk scoring as `tree`. `--online` adds repo reputation.
+    System(SystemArgs),
+
     /// Show an overview of postmortem: what it does and the available commands.
     Help,
+}
+
+/// Arguments for `postmortem system`.
+#[derive(Args, Debug)]
+pub struct SystemArgs {
+    /// List the configured source repos (Homebrew taps) and exit, flagging
+    /// third-party taps that bypass core review.
+    #[arg(long)]
+    pub repos: bool,
+
+    /// Limit the tree to this many levels below each root.
+    #[arg(long)]
+    pub depth: Option<usize>,
+
+    /// Emit the resolved forest as JSON instead of the terminal view.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Go ONLINE: resolve each package to its source repo and fetch reputation
+    /// stats (Homebrew `homepage` → GitHub). Touches the network.
+    #[arg(long)]
+    pub online: bool,
+
+    /// With --online, also fetch each repo's language breakdown (one extra,
+    /// cached, call per repo).
+    #[arg(long)]
+    pub languages: bool,
+
+    /// Disable the animated progress UI.
+    #[arg(long)]
+    pub no_progress: bool,
 }
 
 /// `postmortem cache <action>`.
@@ -90,6 +126,12 @@ pub struct TreeArgs {
     /// reputation stats + identity/provenance signals. Touches the network.
     #[arg(long)]
     pub online: bool,
+
+    /// With --online, also fetch each repo's language breakdown (one extra,
+    /// cached, call per repo). Without it, only GitHub's free primary language
+    /// is shown.
+    #[arg(long)]
+    pub languages: bool,
 
     /// Query known vulnerabilities via the mlab SBOM scan API (vuln.mlab.sh):
     /// the lockfile is scanned recursively and OSV/GHSA/CVE advisories are
