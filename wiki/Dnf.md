@@ -37,7 +37,10 @@ if dnf is unavailable every package is treated as direct). Edges come from the
 | --- | --- | --- |
 | `third-party-source (repo / vendor)` | Medium | Not from a distribution repo. The origin repo is authoritative when known (so a **copr** / **rpmfusion** build flags even though it keeps a `Fedora Project` vendor); otherwise the vendor decides (a non-distro vendor, or `local .rpm` for an empty vendor / a sideloaded package). |
 | `unsigned` | High | No header signature. Suppressed when almost every package is unsigned (an image built with `--nogpgcheck`), so it only fires as the exception. |
-| `install-script (runs code at install)` | Info | Ships an rpm scriptlet (`%pre`/`%post`/`%preun`/`%postun`). |
+| `install-script (runs code at install)` | Info | Ships an rpm scriptlet (`%pre`/`%post`/`%preun`/`%postun`). Analyzed as shell, or as Lua when the scriptlet uses the embedded interpreter (`-p <lua>`). |
+| `held (version locked)` | Low | Pinned by the dnf versionlock plugin (`/etc/dnf/plugins/versionlock.list`), so excluded from upgrades. |
+| `foreign-arch (arch)` | Low | Installed only for a non-native architecture (a pure multilib package). |
+| `orphan (not in any repo)` | Low | Installed but offered by no enabled repo (`dnf repoquery --extras`): removed upstream or a local build. Suppressed when repo metadata is unavailable. |
 | `outdated (installed -> current)` | Low | Behind the repos (`dnf check-update`). |
 
 ### Execution & privilege surface

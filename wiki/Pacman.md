@@ -1,8 +1,9 @@
 # Pacman (Arch)
 
-The second [`system`](System) backend, alongside [Homebrew](Homebrew). Reads
-what `pacman` has installed and audits it with the same `risk:dep` model as
-[`tree`](Tree). Selected automatically when `pacman` is the available manager.
+A [`system`](System) backend, alongside [Homebrew](Homebrew), [APT](Apt),
+[DNF](Dnf), [Nix](Nix), and [apk](Apk). Reads what `pacman` has installed and
+audits it with the same `risk:dep` model as [`tree`](Tree). Selected
+automatically when `pacman` is the available manager.
 
 ## Data sources
 
@@ -10,7 +11,9 @@ what `pacman` has installed and audits it with the same `risk:dep` model as
 | --- | --- |
 | `pacman -Qi` | Every installed package in one call: name, version, deps, URL, signature status, install-reason (explicit vs pulled-in), and whether it ships an install hook. |
 | `pacman -Qm` | Foreign packages (AUR builds / manual installs), the untrusted surface. |
-| `/etc/pacman.conf` | Configured repos (`core`, `extra`, custom). |
+| `pacman -Ql` | The files each package ships (services / timers / auth config / setuid attribution). |
+| `pacman -Qkk` | Installed files whose content no longer matches (SHA256). |
+| `/etc/pacman.conf` | Configured repos (`core`, `extra`, custom) and `SigLevel`. |
 | `aur.archlinux.org/rpc` | AUR provenance for foreign packages (`--online`). |
 
 ## The tree
@@ -35,6 +38,14 @@ postmortem system --online        # + source-repo reputation + AUR provenance
 | `aur-unpopular (N votes)` | Low | AUR package with few votes (`--online`). |
 | `install-script (runs code at install)` | Info | Ships an `.install` hook that runs at install time. |
 | `outdated (installed → current)` | Low | Behind the synced repos (needs `pacman -Sy`). |
+
+### Execution & privilege surface
+
+The same file-derived signals as the [apt](Apt) and [dnf](Dnf) backends, from each
+package's `pacman -Ql` file list: a systemd `.service` (`installs-service`, Info),
+a cron job or `.timer` (`installs-scheduled-task`, Info), a `sudoers.d` / `pam.d` /
+PAM module (`modifies-auth`, Info), and a setuid/setgid binary (`setuid-binary
+(name)`, Low, attributed via one `find /usr /opt -perm /6000`).
 
 ### Install-recipe static analysis (foreign packages)
 
@@ -74,6 +85,15 @@ so postmortem detects that state and **skips** foreign detection, showing:
 ```
 
 `--force-aur` overrides the guard and flags everything foreign regardless.
+
+## Source trust & integrity
+
+Machine-wide caveats surfaced as a gochi alert after loading:
+
+| Caveat | Source |
+| --- | --- |
+| `N installed file(s) modified since install` | A packaged file whose content no longer matches the local database (`pacman -Qkk` SHA256 mismatch); size/mtime-only differences are ignored. |
+| `pacman signature verification disabled` | `SigLevel = Never` in `/etc/pacman.conf` (the analog of apt's `[trusted=yes]`). |
 
 ## Options
 

@@ -525,9 +525,9 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
     // which is useless, so it's skipped unless forced.
     let raw = read_foreign();
     let unsynced = !raw.is_empty() && raw.len() * 10 >= deps.len() * 9;
-    let mut note = None;
+    let mut warnings: Vec<String> = Vec::new();
     let foreign = if unsynced && !opts.force_aur {
-        note = Some(
+        warnings.push(
             "package DB not synced, so AUR/foreign detection is unavailable. \
              Run `sudo pacman -Sy` first, or pass --force-aur to scan anyway."
                 .to_string(),
@@ -564,10 +564,32 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
         }
     }
 
+    // Execution & privilege: the boot/scheduled/auth/setuid surface a package sets
+    // up through its files (shared with the apt/dnf backends).
+    let file_index = pacman_file_index();
+    let setuid = find_setuid_files();
+    for d in &deps {
+        if let Some(files) = file_index.get(&d.name) {
+            for sig in persistence_signals(files, &setuid) {
+                push_signal(&mut signals, &d.name, sig);
+            }
+        }
+    }
+
     // Version drift (needs a synced DB; best-effort).
     for (name, (old, new)) in read_pacman_outdated() {
         signals.entry(name).or_default().push(outdated_signal(&old, &new));
     }
+
+    // Integrity & trust caveats.
+    let modified = pacman_modified_files();
+    if modified > 0 {
+        warnings.push(format!("{modified} installed file(s) modified since install (pacman -Qkk)"));
+    }
+    if pacman_sig_disabled() {
+        warnings.push("pacman signature verification disabled (SigLevel = Never)".to_string());
+    }
+    let note = (!warnings.is_empty()).then(|| warnings.join("; "));
 
     let explicit = deps.iter().filter(|d| d.direct).count();
     let extra = if foreign.is_empty() {
@@ -577,6 +599,48 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
     };
     let summary = format!("{} package(s) ({explicit} explicit{extra})", deps.len());
     Ok(Inventory { manager: "pacman", deps, repos: pacman_repos(), signals, summary, note })
+}
+
+/// `name → installed files`, from one `pacman -Ql` (`<pkg> <path>` per line).
+fn pacman_file_index() -> HashMap<String, Vec<String>> {
+    let Ok(out) = Command::new("pacman").arg("-Ql").output() else {
+        return HashMap::new();
+    };
+    if !out.status.success() {
+        return HashMap::new();
+    }
+    let mut idx: HashMap<String, Vec<String>> = HashMap::new();
+    for line in String::from_utf8_lossy(&out.stdout).lines() {
+        if let Some((name, path)) = line.split_once(' ') {
+            idx.entry(name.to_string()).or_default().push(path.trim().to_string());
+        }
+    }
+    idx
+}
+
+/// Count installed files whose content no longer matches the package database
+/// (`pacman -Qkk` SHA256 mismatch). Size/mtime-only differences are ignored.
+fn pacman_modified_files() -> usize {
+    let Ok(out) = Command::new("pacman").arg("-Qkk").output() else {
+        return 0;
+    };
+    // `pacman -Qkk` prints its findings to stderr and exits non-zero when any file
+    // is altered; the SHA256 line is the definitive content-tamper signal.
+    let text = String::from_utf8_lossy(&out.stderr);
+    text.lines().filter(|l| l.contains("SHA256 checksum mismatch")).count()
+}
+
+/// Is package signature verification switched off in `/etc/pacman.conf`
+/// (`SigLevel = Never`)? The weaker `Optional`/`DatabaseOptional` defaults are not
+/// flagged.
+fn pacman_sig_disabled() -> bool {
+    let Ok(text) = std::fs::read_to_string("/etc/pacman.conf") else {
+        return false;
+    };
+    text.lines().any(|l| {
+        let l = l.trim();
+        l.starts_with("SigLevel") && l.contains('=') && l.contains("Never")
+    })
 }
 
 // --- AUR (foreign packages + aur.archlinux.org RPC) --------------------------
@@ -1522,6 +1586,12 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
     let from_repo = dnf_from_repo();
     let file_index = rpm_file_index();
     let setuid = find_setuid_files();
+    let held = dnf_held();
+    let foreign = dnf_foreign_arch();
+    // Orphans (installed, offered by no enabled repo). Needs repo metadata; when it
+    // can't be computed it reports everything, so guard as with `unsigned`.
+    let orphans = dnf_orphans();
+    let mostly_orphan = !nodes.is_empty() && orphans.len() * 10 >= nodes.len() * 9;
 
     let mut signals: HashMap<String, Vec<SysSignal>> = HashMap::new();
     let mut deps = Vec::with_capacity(nodes.len());
@@ -1550,7 +1620,10 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
                 SysSignal::new("install-script (runs code at install)", Severity::Info, 0),
             );
             if third_party {
-                for sig in analyze_recipe(&n.name, &dnf_scripts(&n.name), "sh") {
+                // rpm scriptlets are usually shell but may be Lua (`-p <lua>`);
+                // analyze with the matching language.
+                let ext = if dnf_script_is_lua(&n.name) { "lua" } else { "sh" };
+                for sig in analyze_recipe(&n.name, &dnf_scripts(&n.name), ext) {
                     push_signal(&mut signals, &n.name, sig);
                 }
             }
@@ -1561,6 +1634,30 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
             for sig in persistence_signals(files, &setuid) {
                 push_signal(&mut signals, &n.name, sig);
             }
+        }
+        // Held (version-locked): excluded from upgrades, so stuck on its version.
+        if held.contains(&n.name) {
+            push_signal(
+                &mut signals,
+                &n.name,
+                SysSignal::new("held (version locked)", Severity::Low, 10),
+            );
+        }
+        // Installed only for a non-native architecture (pure multilib package).
+        if let Some(arch) = foreign.get(&n.name) {
+            push_signal(
+                &mut signals,
+                &n.name,
+                SysSignal::new(format!("foreign-arch ({arch})"), Severity::Low, 5),
+            );
+        }
+        // Installed but offered by no enabled repo (removed upstream / local build).
+        if !mostly_orphan && orphans.contains(&n.name) {
+            push_signal(
+                &mut signals,
+                &n.name,
+                SysSignal::new("orphan (not in any repo)", Severity::Low, 10),
+            );
         }
         deps.push(Dependency {
             direct: userinstalled.is_empty() || userinstalled.contains(&n.name),
@@ -1878,6 +1975,100 @@ fn dnf_repos() -> Vec<Repo> {
         }
     }
     repos
+}
+
+/// Does a package's scriptlets use the embedded Lua interpreter (`rpm -q --scripts`
+/// labels them `(using <lua>)`) rather than shell?
+fn dnf_script_is_lua(name: &str) -> bool {
+    Command::new("rpm")
+        .args(["-q", "--scripts", name])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains("using <lua>"))
+}
+
+/// Version-locked packages from the dnf versionlock plugin
+/// (`/etc/dnf/plugins/versionlock.list`): pinned, so excluded from upgrades.
+fn dnf_held() -> std::collections::HashSet<String> {
+    let Ok(text) = std::fs::read_to_string("/etc/dnf/plugins/versionlock.list") else {
+        return Default::default();
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            // Entries are NEVRA-ish (`name-epoch:version-release.arch`, maybe `!`
+            // or glob); the name is everything before the first `-<digit>` segment.
+            let l = l.trim_start_matches('!');
+            let bytes = l.as_bytes();
+            let mut cut = None;
+            for (i, w) in bytes.windows(2).enumerate() {
+                if w[0] == b'-' && w[1].is_ascii_digit() {
+                    cut = Some(i);
+                    break;
+                }
+            }
+            let name = match cut {
+                Some(i) => &l[..i],
+                None => l.split_whitespace().next().unwrap_or(l),
+            };
+            (!name.is_empty()).then(|| name.to_string())
+        })
+        .collect()
+}
+
+/// Packages installed *only* for a non-native architecture (a pure multilib
+/// package). Maps `name → foreign arch`; ordinary packages with a native or
+/// `noarch` copy are excluded.
+fn dnf_foreign_arch() -> HashMap<String, String> {
+    let native = Command::new("rpm")
+        .args(["--eval", "%{_arch}"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default();
+    if native.is_empty() {
+        return HashMap::new();
+    }
+    let Ok(text) = rpm_qa("%{NAME}\t%{ARCH}\n") else {
+        return HashMap::new();
+    };
+    let mut arches: HashMap<String, Vec<String>> = HashMap::new();
+    for line in text.lines() {
+        if let Some((name, arch)) = line.split_once('\t') {
+            arches.entry(name.to_string()).or_default().push(arch.to_string());
+        }
+    }
+    arches
+        .into_iter()
+        .filter_map(|(name, a)| {
+            (!a.is_empty() && a.iter().all(|x| x != &native && x != "noarch"))
+                .then(|| (name, a[0].clone()))
+        })
+        .collect()
+}
+
+/// Installed packages offered by no enabled repo (`dnf repoquery --extras`), the
+/// analog of apt's obsolete set. `--cacheonly` avoids a network round-trip;
+/// best-effort (empty when repo metadata isn't cached).
+fn dnf_orphans() -> std::collections::HashSet<String> {
+    let Ok(out) = Command::new("dnf")
+        .args(["--cacheonly", "repoquery", "--extras", "--qf", "%{name}\n"])
+        .output()
+    else {
+        return Default::default();
+    };
+    if !out.status.success() {
+        return Default::default();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.contains(' '))
+        .map(str::to_string)
+        .collect()
 }
 
 /// A distribution (first-party) dnf repo id: the Fedora / RHEL-family archives and
