@@ -6,9 +6,13 @@
 //!
 //! Reference: <https://sarifweb.azurewebsites.net/>.
 
+use std::collections::BTreeMap;
+
 use serde_json::{Value, json};
 
 use crate::model::{Category, Finding, Report, Severity};
+use crate::tree::{Node, Tree};
+use crate::vuln::Vuln;
 
 const SCHEMA_URI: &str = "https://json.schemastore.org/sarif-2.1.0.json";
 const SARIF_VERSION: &str = "2.1.0";
@@ -42,6 +46,176 @@ pub fn render(report: &Report) -> Result<String, serde_json::Error> {
         ]
     });
     serde_json::to_string_pretty(&doc)
+}
+
+// --- `tree` SARIF -------------------------------------------------------------
+
+/// Render a resolved `tree` (online + `--vulns`) as SARIF: reputation/identity
+/// risk signals and known vulnerabilities become Code Scanning alerts. Deps are
+/// deduped by `name@version`. Results are attributed to the project root (SARIF
+/// requires a physical location; a dependency has no single source line).
+pub fn render_tree(tree: &Tree) -> Result<String, serde_json::Error> {
+    // Flagged deps, deduped by name@version (sorted for stable output).
+    let mut flagged: BTreeMap<(String, String), &Node> = BTreeMap::new();
+    fn walk<'a>(n: &'a Node, out: &mut BTreeMap<(String, String), &'a Node>) {
+        if n.severity.is_some() && !n.signals.is_empty() {
+            out.entry((n.name.clone(), n.version.clone())).or_insert(n);
+        }
+        for c in &n.children {
+            walk(c, out);
+        }
+    }
+    for r in &tree.roots {
+        walk(r, &mut flagged);
+    }
+
+    let mut rules: Vec<Value> = Vec::new();
+    let mut results: Vec<Value> = Vec::new();
+    if !flagged.is_empty() {
+        rules.push(tree_rule_risk());
+        for ((name, version), n) in &flagged {
+            results.push(risk_result(name, version, n));
+        }
+    }
+    if !tree.vulnerabilities.is_empty() {
+        rules.push(tree_rule_vuln());
+        for p in &tree.vulnerabilities {
+            for v in &p.vulns {
+                results.push(vuln_result(&p.name, &p.version, v));
+            }
+        }
+    }
+
+    let doc = json!({
+        "$schema": SCHEMA_URI,
+        "version": SARIF_VERSION,
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "postmortem",
+                        "version": TOOL_VERSION,
+                        "semanticVersion": TOOL_VERSION,
+                        "informationUri": INFO_URI,
+                        "rules": rules,
+                    }
+                },
+                "originalUriBaseIds": {
+                    "SRCROOT": { "uri": format!("file://{}/", tree.root) }
+                },
+                "results": results,
+            }
+        ]
+    });
+    serde_json::to_string_pretty(&doc)
+}
+
+/// SARIF `level` for a severity. Info maps to `none` so it's recorded but silent.
+fn level_of(sev: Severity) -> &'static str {
+    match sev {
+        Severity::Critical | Severity::High => "error",
+        Severity::Medium => "warning",
+        Severity::Low => "note",
+        Severity::Info => "none",
+    }
+}
+
+/// GitHub `security-severity` band (a numeric string) for a severity.
+fn security_severity(sev: Severity) -> &'static str {
+    match sev {
+        Severity::Critical => "9.0",
+        Severity::High => "7.5",
+        Severity::Medium => "5.0",
+        Severity::Low => "3.0",
+        Severity::Info => "1.0",
+    }
+}
+
+fn tree_rule_risk() -> Value {
+    let id = "postmortem.dependency-risk";
+    json!({
+        "id": id,
+        "name": id,
+        "shortDescription": { "text": "Dependency reputation / identity risk" },
+        "fullDescription": { "text": "The dependency raised one or more supply-chain reputation or identity signals — low stars, a freshly-created or transferred repository, a typosquat of a popular name, a newly-added install script, a dormant release, or a new publisher." },
+        "defaultConfiguration": { "level": "warning" },
+        "help": {
+            "text": format!("See {INFO_URI}#--online-reputation--the-riskdep-scores for how tree scores reputation."),
+            "markdown": format!("See the [postmortem README]({INFO_URI}#--online-reputation--the-riskdep-scores) for how `tree --online` scores reputation."),
+        },
+        "properties": { "tags": ["security", "supply-chain", "reputation"], "precision": "medium" }
+    })
+}
+
+fn tree_rule_vuln() -> Value {
+    let id = "postmortem.known-vulnerability";
+    json!({
+        "id": id,
+        "name": id,
+        "shortDescription": { "text": "Known vulnerability in dependency" },
+        "fullDescription": { "text": "A dependency version matches a published advisory (OSV / GHSA / CVE) from the mlab SBOM scan." },
+        "defaultConfiguration": { "level": "error" },
+        "help": {
+            "text": format!("See {INFO_URI}#--vulns-known-vulnerabilities for the vulnerability source."),
+            "markdown": format!("See the [postmortem README]({INFO_URI}#--vulns-known-vulnerabilities) for the vulnerability source."),
+        },
+        "properties": { "tags": ["security", "supply-chain", "vulnerability"], "precision": "high" }
+    })
+}
+
+fn root_location() -> Value {
+    json!({
+        "physicalLocation": {
+            "artifactLocation": { "uri": ".", "uriBaseId": "SRCROOT" },
+            "region": { "startLine": 1 }
+        }
+    })
+}
+
+fn risk_result(name: &str, version: &str, n: &Node) -> Value {
+    let sev = n.severity.unwrap_or(Severity::Info);
+    let repo = n.repo.as_deref().unwrap_or("—");
+    let message = format!("{name}@{version} [{repo}] — {}", n.signals.join(", "));
+    json!({
+        "ruleId": "postmortem.dependency-risk",
+        "level": level_of(sev),
+        "message": { "text": message },
+        "locations": [ root_location() ],
+        "partialFingerprints": { "postmortem/tree-fingerprint": tree_fingerprint(name, version, &n.signals.join(",")) },
+        "properties": {
+            "security-severity": security_severity(sev),
+            "risk": n.risk.unwrap_or(0),
+            "dep": n.dep.unwrap_or(0),
+            "repo": n.repo,
+            "stars": n.stars,
+        }
+    })
+}
+
+fn vuln_result(name: &str, version: &str, v: &Vuln) -> Value {
+    let message = if v.summary.is_empty() {
+        format!("{name}@{version}: {}", v.id)
+    } else {
+        format!("{name}@{version}: {} — {}", v.id, v.summary)
+    };
+    json!({
+        "ruleId": "postmortem.known-vulnerability",
+        "level": level_of(v.severity),
+        "message": { "text": message },
+        "locations": [ root_location() ],
+        "partialFingerprints": { "postmortem/tree-fingerprint": tree_fingerprint(name, version, &v.id) },
+        "properties": { "security-severity": security_severity(v.severity), "advisory": v.id }
+    })
+}
+
+/// Stable fingerprint for a tree result so re-runs don't re-open the same alert.
+fn tree_fingerprint(name: &str, version: &str, discriminator: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    name.hash(&mut hasher);
+    version.hash(&mut hasher);
+    discriminator.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
 }
 
 fn collect_used_categories(findings: &[Finding]) -> Vec<Category> {
@@ -279,5 +453,85 @@ mod tests {
         let v: Value = serde_json::from_str(&s).unwrap();
         let loc = &v["runs"][0]["results"][0]["locations"][0]["physicalLocation"];
         assert_eq!(loc["region"]["startLine"], 1);
+    }
+
+    // --- tree SARIF ---
+
+    use crate::tree::{Node, Stats, Tree};
+    use crate::vuln::{Vuln, VulnPackage};
+
+    fn tnode(name: &str, sev: Option<Severity>, signals: &[&str]) -> Node {
+        Node {
+            name: name.into(),
+            version: "1.0.0".into(),
+            ecosystem: "node".into(),
+            direct: true,
+            deduped: false,
+            truncated: false,
+            repo: Some("acme/x".into()),
+            stars: Some(3),
+            signals: signals.iter().map(|s| s.to_string()).collect(),
+            severity: sev,
+            risk: Some(80),
+            dep: Some(0),
+            children: vec![],
+        }
+    }
+
+    fn ttree(roots: Vec<Node>, vulns: Vec<VulnPackage>) -> Tree {
+        Tree {
+            root: "/tmp/repo".into(),
+            ecosystems: vec!["node".into()],
+            stats: Stats { total: 0, direct: 0, transitive: 0, max_depth: 0, deduped: 0 },
+            diagnostics: vec![],
+            vulnerabilities: vulns,
+            scored: true,
+            roots,
+        }
+    }
+
+    #[test]
+    fn tree_sarif_has_risk_and_vuln_rules_and_results() {
+        let t = ttree(
+            vec![tnode("evil", Some(Severity::High), &["typosquat of event"])],
+            vec![VulnPackage {
+                name: "lodash".into(),
+                version: "4.17.11".into(),
+                ecosystem: "node".into(),
+                vulns: vec![Vuln { id: "GHSA-x".into(), severity: Severity::Medium, summary: "proto".into() }],
+            }],
+        );
+        let v: Value = serde_json::from_str(&render_tree(&t).unwrap()).unwrap();
+        assert_eq!(v["version"], "2.1.0");
+        let rules = v["runs"][0]["tool"]["driver"]["rules"].as_array().unwrap();
+        let ids: Vec<&str> = rules.iter().map(|r| r["id"].as_str().unwrap()).collect();
+        assert!(ids.contains(&"postmortem.dependency-risk"));
+        assert!(ids.contains(&"postmortem.known-vulnerability"));
+
+        let results = v["runs"][0]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2);
+        let risk = results.iter().find(|r| r["ruleId"] == "postmortem.dependency-risk").unwrap();
+        assert_eq!(risk["level"], "error");
+        assert!(risk["message"]["text"].as_str().unwrap().contains("typosquat"));
+        assert_eq!(risk["properties"]["security-severity"], "7.5");
+    }
+
+    #[test]
+    fn tree_sarif_dedups_flagged_by_name_version() {
+        let child = tnode("evil", Some(Severity::High), &["low-stars"]);
+        let mut root = tnode("root", None, &[]);
+        root.children = vec![tnode("evil", Some(Severity::High), &["low-stars"]), child];
+        let t = ttree(vec![root], vec![]);
+        let v: Value = serde_json::from_str(&render_tree(&t).unwrap()).unwrap();
+        let results = v["runs"][0]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 1, "evil@1.0.0 collapsed to a single result");
+    }
+
+    #[test]
+    fn tree_sarif_empty_when_nothing_flagged() {
+        let t = ttree(vec![tnode("clean", None, &[])], vec![]);
+        let v: Value = serde_json::from_str(&render_tree(&t).unwrap()).unwrap();
+        assert!(v["runs"][0]["results"].as_array().unwrap().is_empty());
+        assert!(v["runs"][0]["tool"]["driver"]["rules"].as_array().unwrap().is_empty());
     }
 }

@@ -46,6 +46,46 @@ pub struct Config {
     pub min_severity: Option<Severity>,
     #[serde(default, rename = "ignore")]
     pub ignores: Vec<IgnoreRule>,
+    /// CI-gate policy for `tree` (thresholds + allowlist). Ignored by `scan`.
+    #[serde(default)]
+    pub gate: GateConfig,
+}
+
+/// The `[gate]` table: thresholds and the allowlist consumed by `tree`'s CI
+/// gate. Every threshold is optional; CLI flags override these (see
+/// [`crate::gate`]). A threshold is a ceiling — the gate trips when the measured
+/// value is strictly greater, so `max_high = 0` tolerates no high-risk deps.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct GateConfig {
+    #[serde(default)]
+    pub max_risk: Option<u8>,
+    #[serde(default)]
+    pub max_dep: Option<u8>,
+    #[serde(default)]
+    pub max_high: Option<usize>,
+    #[serde(default)]
+    pub max_sus: Option<usize>,
+    #[serde(default)]
+    pub max_vulns: Option<usize>,
+    #[serde(default)]
+    pub fail_on_vuln: Option<Severity>,
+    /// Packages exempted from every gate count. Array-of-tables: `[[gate.allow]]`.
+    #[serde(default, rename = "allow")]
+    pub allow: Vec<AllowEntry>,
+}
+
+/// One `[[gate.allow]]` entry: a package (name or `name@version`) to exempt,
+/// with an optional human `reason` and an optional `expires` (`YYYY-MM-DD`)
+/// after which it stops bypassing and is reported.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct AllowEntry {
+    pub package: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub expires: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -4,6 +4,7 @@ mod cli;
 mod config;
 mod detect;
 mod enrich;
+mod gate;
 mod gochi;
 mod model;
 mod parsers;
@@ -150,8 +151,11 @@ fn run_scan(args: cli::ScanArgs) -> Result<()> {
 /// the lockfiles. Offline today; `--online` is reserved for repository-reputation
 /// resolution (see [`resolve`]). Exit 2 if no supported ecosystem was found.
 fn run_tree(args: cli::TreeArgs) -> Result<()> {
-    if args.paths.len() > 1 && args.json {
-        anyhow::bail!("--json supports a single path; got {}", args.paths.len());
+    if args.paths.len() > 1 && (args.json || args.sarif) {
+        anyhow::bail!(
+            "machine formats (--json/--sarif) support a single path; got {}",
+            args.paths.len()
+        );
     }
 
     let ui = ui::Ui::new(!args.no_progress);
@@ -186,7 +190,10 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
         None
     };
 
+    let today = chrono::Local::now().date_naive();
     let mut any_detected = false;
+    let mut gate_tripped = false;
+    let mut gate_misconfig = false;
     for path in &args.paths {
         let root = match path.canonicalize() {
             Ok(r) => r,
@@ -236,15 +243,105 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
         if args.json {
             let out = serde_json::to_string_pretty(&forest)?;
             cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "json").write(&out)?;
+        } else if args.sarif {
+            let out = report::sarif::render_tree(&forest)?;
+            cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "sarif").write(&out)?;
         } else {
             tree::render(&forest);
+        }
+
+        // CI gate: turn the online scores / vuln scan into a pass/fail exit code.
+        // The gate summary goes to stderr so it never corrupts `--json` on stdout.
+        let policy = resolve_gate_policy(&root, &args);
+        if policy.is_active() {
+            if policy.needs_scores() && !forest.scored {
+                eprintln!(
+                    "error: gate thresholds (--max-risk/--max-dep/--max-high/--max-sus) require \
+                     --online; no scores were computed for {}",
+                    root.display()
+                );
+                gate_misconfig = true;
+            } else if policy.needs_vulns() && !args.vulns {
+                eprintln!(
+                    "error: gate thresholds (--max-vulns/--fail-on-vuln) require --vulns; no vuln \
+                     scan was run for {}",
+                    root.display()
+                );
+                gate_misconfig = true;
+            } else {
+                if !forest.diagnostics.is_empty() {
+                    eprintln!(
+                        "  ⚠ {} graph diagnostic(s) present — gate metrics may be incomplete",
+                        forest.diagnostics.len()
+                    );
+                }
+                let baseline = match args.baseline.as_deref() {
+                    Some(p) => match gate::Baseline::load(p) {
+                        Ok(b) => Some(b),
+                        Err(e) => {
+                            eprintln!("error: {e:#}");
+                            gate_misconfig = true;
+                            continue;
+                        }
+                    },
+                    None => None,
+                };
+                let outcome = gate::evaluate(&policy, &forest, today, baseline.as_ref());
+                gate::report(&outcome, &policy);
+                gate_tripped |= outcome.tripped();
+            }
         }
     }
 
     if !any_detected {
         std::process::exit(2);
     }
-    Ok(())
+    if gate_misconfig {
+        std::process::exit(2);
+    }
+    std::process::exit(if gate_tripped { 1 } else { 0 });
+}
+
+/// Build the effective gate policy for `root`: the `[gate]` table from
+/// `--config` (or an auto-loaded `postmortem.conf`) with CLI flags layered on
+/// top (CLI wins on each threshold; allowlists are unioned).
+fn resolve_gate_policy(root: &Path, args: &cli::TreeArgs) -> gate::Policy {
+    let cfg_path = args.config.clone().or_else(|| {
+        let c = root.join(config::DEFAULT_FILENAME);
+        c.is_file().then_some(c)
+    });
+    let gc = match cfg_path {
+        Some(p) => match config::Config::load(&p) {
+            Ok(c) => c.gate,
+            Err(e) => {
+                eprintln!("warn: failed to load gate config {}: {e:#}", p.display());
+                config::GateConfig::default()
+            }
+        },
+        None => config::GateConfig::default(),
+    };
+    gate::Policy {
+        max_risk: args.max_risk.or(gc.max_risk),
+        max_dep: args.max_dep.or(gc.max_dep),
+        max_high: args.max_high.or(gc.max_high),
+        max_sus: args.max_sus.or(gc.max_sus),
+        max_vulns: args.max_vulns.or(gc.max_vulns),
+        fail_on_vuln: args.fail_on_vuln.or(gc.fail_on_vuln),
+        allow: gc
+            .allow
+            .iter()
+            .map(|e| gate::Allow {
+                package: e.package.clone(),
+                reason: e.reason.clone(),
+                expires: e.expires.clone(),
+            })
+            .chain(args.allow.iter().map(|p| gate::Allow {
+                package: p.clone(),
+                reason: None,
+                expires: None,
+            }))
+            .collect(),
+    }
 }
 
 /// Detected ecosystems, parsed dependencies, and any diagnostics.

@@ -39,6 +39,8 @@ postmortem tree ./my-project --vulns    # known CVEs via vuln.mlab.sh
   - [`--online`: reputation & the risk:dep scores](#--online-reputation--the-riskdep-scores)
   - [Identity & provenance signals](#identity--provenance-signals)
   - [`--vulns`: known vulnerabilities](#--vulns-known-vulnerabilities)
+  - [CI gate: fail the build on risk](#ci-gate-fail-the-build-on-risk)
+  - [GitHub Action](#github-action)
 - [`cache`](#cache)
 - [Configuration](#configuration)
   - [`postmortem.conf` (per project)](#postmortemconf-per-project)
@@ -86,7 +88,7 @@ Releases are built for four targets: `aarch64-apple-darwin`,
 `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.
 
 ```bash
-VERSION=1.1.0
+VERSION=2.0.0
 TARGET=aarch64-apple-darwin   # pick your target
 curl -L "https://github.com/mlab-sh/postmortem/releases/download/v${VERSION}/postmortem-${VERSION}-${TARGET}.tar.gz" \
   | tar xz
@@ -312,6 +314,89 @@ advisories per package. Independent of `--online`, and combinable with it.
 - **Formats:** npm (`package-lock.json`), Cargo, pip (`requirements.txt`),
   Composer, Gem, Go (`go.sum`). Others emit a diagnostic.
 
+### CI gate: fail the build on risk
+
+`tree` can turn the online scores and the vuln scan into a **pass/fail exit
+code**, so a CI job blocks a merge when the dependency risk crosses a line you
+set. Each threshold is a **ceiling** — the gate trips (exit `1`) when the
+measured value is *strictly greater*, so `--max-high 0` tolerates no high-risk
+dependency at all.
+
+```bash
+# Block if any high-risk dep appears, or any vuln is High+.
+postmortem tree . --online --vulns --max-high 0 --fail-on-vuln high
+```
+
+| Flag | Trips when | Needs |
+|---|---|---|
+| `--max-risk N` | worst own-risk score `> N` (0–100) | `--online` |
+| `--max-dep N` | any subtree (`dep`) score `> N` (0–100) | `--online` |
+| `--max-high N` | more than `N` high-risk deps | `--online` |
+| `--max-sus N` | more than `N` suspicious deps | `--online` |
+| `--max-vulns N` | more than `N` known vulnerabilities | `--vulns` |
+| `--fail-on-vuln SEV` | any vuln at severity `≥ SEV` | `--vulns` |
+| `--allow PKG` | — (exempts `name` or `name@version`, repeatable) | — |
+
+The gate summary prints to **stderr**, so it never corrupts `--json` on stdout.
+A gate that asks for scores it doesn't have (score thresholds without `--online`,
+or vuln thresholds without `--vulns`) is a **misconfiguration → exit `2`**, never
+a silent pass. When graph diagnostics are present, the gate warns that its
+metrics may be incomplete.
+
+`tree --sarif` emits the risk signals and known vulns as SARIF 2.1.0 (risk →
+`postmortem.dependency-risk`, vulns → `postmortem.known-vulnerability`) for
+GitHub Code Scanning — combinable with the gate flags in a single run.
+
+**Allowlist.** For a bypass with an audit trail — a reason and an expiry — put it
+in [`postmortem.conf`](#postmortemconf-per-project) rather than on the command
+line. An entry past its `expires` date stops bypassing and is reported, so a
+stale exception can't quietly hide a risk:
+
+```toml
+[gate]
+max_high = 0
+fail_on_vuln = "high"
+
+[[gate.allow]]
+package = "left-pad@1.3.0"   # bare name = every version; "name@version" pins
+reason  = "vendored mirror, audited 2026-07"
+expires = "2026-12-01"        # optional — omit for a permanent exception
+```
+
+CLI flags override the file's thresholds; allowlists from both are unioned.
+
+### GitHub Action
+
+[`action.yml`](action.yml) wraps the gate as a composite action: it downloads a
+pinned release, runs `tree`, uploads SARIF to Code Scanning, and writes a
+job-summary recap. Every gate flag is an input; `soft-fail` reports without
+failing the job.
+
+```yaml
+name: supply-chain
+on: [pull_request]
+permissions:
+  contents: read
+  security-events: write   # for the SARIF upload
+jobs:
+  postmortem:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlab-sh/postmortem@v2
+        with:
+          path: .
+          max-high: 0
+          fail-on-vuln: high
+          # only fail on newly-introduced risk vs the base branch:
+          # baseline: .postmortem/baseline.json
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          vuln-token: ${{ secrets.VULN_MLAB_TOKEN }}
+```
+
+> The action's `version` input pins the postmortem release it downloads
+> (default `v2.0.0`, the first release with the gate). Override it to upgrade.
+
 ---
 
 # `cache`
@@ -425,11 +510,21 @@ human can pivot in one click. It makes **no** network call itself.
 
 # Exit codes
 
+`scan`:
+
 | Code | Meaning |
 |------|---------|
 | `0`  | No findings at or above `--severity` (default `high`). |
 | `1`  | At least one finding at or above the threshold — block the build. |
 | `2`  | Execution error (no ecosystem detected, path unreadable, etc.). |
+
+`tree`:
+
+| Code | Meaning |
+|------|---------|
+| `0`  | No gate active, or every gate threshold satisfied. |
+| `1`  | A [CI-gate](#ci-gate-fail-the-build-on-risk) threshold was exceeded — block the build. |
+| `2`  | No ecosystem detected, or a gate was misconfigured (score thresholds without `--online`, vuln thresholds without `--vulns`). |
 
 # Fixtures
 

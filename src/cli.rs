@@ -76,6 +76,11 @@ pub struct TreeArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// Emit SARIF 2.1.0 — risk signals + known vulns as GitHub Code Scanning
+    /// alerts. Combine with --online / --vulns for content.
+    #[arg(long, conflicts_with = "json")]
+    pub sarif: bool,
+
     /// Write output to file. Pass `-` to force stdout. When omitted for --json a
     /// file named `postmortem-tree-[MM.DD.YYYY::HH:MM].json` is written in the cwd.
     #[arg(short, long)]
@@ -96,6 +101,48 @@ pub struct TreeArgs {
     /// or NO_COLOR / CI is set).
     #[arg(long)]
     pub no_progress: bool,
+
+    // --- CI gate (see `crate::gate`). Each threshold is a ceiling: the gate
+    // trips (exit 1) when the measured value is strictly greater. Score/count
+    // gates require --online; vuln gates require --vulns. ---
+    /// GATE: fail if the worst risk score exceeds this (0–100). Needs --online.
+    #[arg(long, value_name = "N")]
+    pub max_risk: Option<u8>,
+
+    /// GATE: fail if any dependency's subtree (dep) score exceeds this (0–100). Needs --online.
+    #[arg(long, value_name = "N")]
+    pub max_dep: Option<u8>,
+
+    /// GATE: fail if more than N high-risk deps are present. Needs --online.
+    #[arg(long, value_name = "N")]
+    pub max_high: Option<usize>,
+
+    /// GATE: fail if more than N suspicious deps are present. Needs --online.
+    #[arg(long, value_name = "N")]
+    pub max_sus: Option<usize>,
+
+    /// GATE: fail if more than N known vulnerabilities are present. Needs --vulns.
+    #[arg(long, value_name = "N")]
+    pub max_vulns: Option<usize>,
+
+    /// GATE: fail if any known vulnerability is at least this severe. Needs --vulns.
+    #[arg(long, value_enum, value_name = "SEV")]
+    pub fail_on_vuln: Option<Severity>,
+
+    /// GATE: allowlist a package (name or name@version) from every gate count.
+    /// Repeatable. For a reason/expiry, use a [[gate.allow]] block in postmortem.conf.
+    #[arg(long = "allow", value_name = "PKG")]
+    pub allow: Vec<String>,
+
+    /// GATE: diff mode — only count risk absent from this baseline (a prior
+    /// `tree --json` file), so the build fails on newly-introduced risk only.
+    #[arg(long, value_name = "FILE")]
+    pub baseline: Option<PathBuf>,
+
+    /// Path to a postmortem.conf supplying a [gate] policy. Defaults to
+    /// auto-loading postmortem.conf from the scanned directory when present.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 }
 
 /// Arguments for `postmortem scan <paths>...`.

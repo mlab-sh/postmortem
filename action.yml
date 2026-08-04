@@ -1,0 +1,187 @@
+name: postmortem supply-chain gate
+description: >-
+  Resolve the dependency tree, score reputation/identity risk and known vulns,
+  and fail the build when risk crosses your thresholds. Uploads SARIF to Code
+  Scanning and writes a job-summary recap.
+author: mlab-sh
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  path:
+    description: Project directory to scan.
+    default: "."
+  version:
+    description: >-
+      postmortem release tag to run (must include the tree CI gate, i.e. >= the
+      release that shipped --max-*/--fail-on-vuln). Pin this.
+    default: v2.0.0
+  online:
+    description: Resolve repositories and score reputation/identity (network).
+    default: "true"
+  vulns:
+    description: Query known vulnerabilities via vuln.mlab.sh (network).
+    default: "true"
+  depth:
+    description: Limit the tree to this many levels (optional).
+    default: ""
+
+  # --- gate thresholds (each a ceiling: trips when strictly exceeded) ---
+  max-risk:
+    description: "Fail if the worst risk score exceeds this (0-100). Needs online."
+    default: ""
+  max-dep:
+    description: "Fail if any subtree (dep) score exceeds this (0-100). Needs online."
+    default: ""
+  max-high:
+    description: "Fail if more than N high-risk deps are present. Needs online."
+    default: ""
+  max-sus:
+    description: "Fail if more than N suspicious deps are present. Needs online."
+    default: ""
+  max-vulns:
+    description: "Fail if more than N known vulnerabilities are present. Needs vulns."
+    default: ""
+  fail-on-vuln:
+    description: "Fail if any vuln is >= this severity (low|medium|high|critical). Needs vulns."
+    default: ""
+
+  allow:
+    description: >-
+      Newline-separated allowlist entries (name or name@version) exempted from
+      every gate count. For reasons/expiry use a [gate] block in postmortem.conf.
+    default: ""
+  config:
+    description: Path to a postmortem.conf supplying a [gate] policy (optional).
+    default: ""
+  baseline:
+    description: >-
+      Path to a prior `tree --json` file — diff mode: fail only on newly
+      introduced risk (optional).
+    default: ""
+
+  sarif:
+    description: Emit SARIF and upload it to GitHub Code Scanning.
+    default: "true"
+  soft-fail:
+    description: Report but never fail the job (exit 0 even when the gate trips).
+    default: "false"
+
+  github-token:
+    description: Token for the GitHub API (raises the reputation-scan rate limit).
+    default: ${{ github.token }}
+  vuln-token:
+    description: Token for vuln.mlab.sh (raises the vuln-scan rate limit).
+    default: ""
+
+outputs:
+  exit-code:
+    description: The postmortem exit code (0 pass, 1 gate tripped, 2 misconfig/no ecosystem).
+    value: ${{ steps.run.outputs.exit-code }}
+  sarif-file:
+    description: Path to the generated SARIF file (empty when sarif=false).
+    value: ${{ steps.run.outputs.sarif-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install postmortem
+      shell: bash
+      env:
+        VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        num="${VERSION#v}"
+        case "$(uname -s)-$(uname -m)" in
+          Linux-x86_64)   target=x86_64-unknown-linux-gnu ;;
+          Linux-aarch64)  target=aarch64-unknown-linux-gnu ;;
+          Darwin-x86_64)  target=x86_64-apple-darwin ;;
+          Darwin-arm64)   target=aarch64-apple-darwin ;;
+          *) echo "::error::unsupported runner $(uname -s)-$(uname -m)"; exit 1 ;;
+        esac
+        url="https://github.com/mlab-sh/postmortem/releases/download/${VERSION}/postmortem-${num}-${target}.tar.gz"
+        echo "Downloading $url"
+        dest="${RUNNER_TEMP:-/tmp}/postmortem"
+        mkdir -p "$dest"
+        curl -fsSL "$url" | tar xz -C "$dest"
+        bindir="$dest/postmortem-${num}-${target}"
+        chmod +x "$bindir/postmortem"
+        echo "$bindir" >> "$GITHUB_PATH"
+
+    - name: Run postmortem gate
+      id: run
+      shell: bash
+      env:
+        IN_PATH: ${{ inputs.path }}
+        IN_ONLINE: ${{ inputs.online }}
+        IN_VULNS: ${{ inputs.vulns }}
+        IN_DEPTH: ${{ inputs.depth }}
+        IN_MAX_RISK: ${{ inputs.max-risk }}
+        IN_MAX_DEP: ${{ inputs.max-dep }}
+        IN_MAX_HIGH: ${{ inputs.max-high }}
+        IN_MAX_SUS: ${{ inputs.max-sus }}
+        IN_MAX_VULNS: ${{ inputs.max-vulns }}
+        IN_FAIL_ON_VULN: ${{ inputs.fail-on-vuln }}
+        IN_ALLOW: ${{ inputs.allow }}
+        IN_CONFIG: ${{ inputs.config }}
+        IN_BASELINE: ${{ inputs.baseline }}
+        IN_SARIF: ${{ inputs.sarif }}
+        IN_SOFT_FAIL: ${{ inputs.soft-fail }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        VULN_MLAB_TOKEN: ${{ inputs.vuln-token }}
+      run: |
+        set -uo pipefail
+        args=()
+        [ "$IN_ONLINE" = "true" ] && args+=(--online)
+        [ "$IN_VULNS" = "true" ] && args+=(--vulns)
+        [ -n "$IN_DEPTH" ] && args+=(--depth "$IN_DEPTH")
+        [ -n "$IN_MAX_RISK" ] && args+=(--max-risk "$IN_MAX_RISK")
+        [ -n "$IN_MAX_DEP" ] && args+=(--max-dep "$IN_MAX_DEP")
+        [ -n "$IN_MAX_HIGH" ] && args+=(--max-high "$IN_MAX_HIGH")
+        [ -n "$IN_MAX_SUS" ] && args+=(--max-sus "$IN_MAX_SUS")
+        [ -n "$IN_MAX_VULNS" ] && args+=(--max-vulns "$IN_MAX_VULNS")
+        [ -n "$IN_FAIL_ON_VULN" ] && args+=(--fail-on-vuln "$IN_FAIL_ON_VULN")
+        [ -n "$IN_CONFIG" ] && args+=(--config "$IN_CONFIG")
+        [ -n "$IN_BASELINE" ] && args+=(--baseline "$IN_BASELINE")
+        while IFS= read -r line; do
+          [ -n "$line" ] && args+=(--allow "$line")
+        done <<< "$IN_ALLOW"
+
+        sarif_out=""
+        if [ "$IN_SARIF" = "true" ]; then
+          sarif_out="postmortem.sarif"
+          args+=(--sarif -o "$sarif_out")
+        fi
+
+        echo "+ postmortem tree $IN_PATH ${args[*]}"
+        postmortem tree "$IN_PATH" "${args[@]}" >tree.out 2>gate.txt
+        code=$?
+        cat gate.txt >&2
+        [ -s tree.out ] && cat tree.out
+
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        echo "sarif-file=$sarif_out" >> "$GITHUB_OUTPUT"
+
+        # Job summary — ANSI-stripped gate block.
+        {
+          echo "## postmortem supply-chain gate"
+          if [ "$code" = "0" ]; then echo "**Result: ✅ pass**"; \
+          elif [ "$code" = "1" ]; then echo "**Result: ❌ gate tripped**"; \
+          else echo "**Result: ⚠️ error / misconfigured (exit $code)**"; fi
+          echo '```'
+          sed -r 's/\x1b\[[0-9;]*m//g' gate.txt
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        if [ "$IN_SOFT_FAIL" = "true" ]; then
+          echo "::notice::soft-fail on — not failing the job (postmortem exit $code)"
+          exit 0
+        fi
+        exit "$code"
+
+    - name: Upload SARIF
+      if: ${{ inputs.sarif == 'true' && steps.run.outputs.sarif-file != '' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.run.outputs.sarif-file }}
