@@ -32,6 +32,15 @@ pub struct Settings {
     /// interactive prompt. Stored here so it's only entered once.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub github_token: Option<String>,
+    /// GitLab API token for repo stats (`gitlab.com/api/v4`). Falls back to
+    /// `$GITLAB_TOKEN`. Optional — public projects resolve anonymously.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gitlab_token: Option<String>,
+    /// Codeberg (Forgejo) API token for repo stats (`codeberg.org/api/v1`).
+    /// Falls back to `$CODEBERG_TOKEN`. Optional — public repos resolve
+    /// anonymously.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codeberg_token: Option<String>,
     /// Token for the mlab vuln-scan API (`vuln.mlab.sh`). Falls back to
     /// `$VULN_MLAB_TOKEN`; without one, scans use the anonymous 8/hr limit.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -122,6 +131,24 @@ impl Settings {
             eprintln!("saved to {where_to}");
         }
         Ok(Some(token))
+    }
+
+    /// Resolve the GitLab token: config → `$GITLAB_TOKEN`. No prompt — public
+    /// projects work anonymously, a token only raises the rate limit.
+    pub fn gitlab_token(&self) -> Option<String> {
+        self.gitlab_token
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| std::env::var("GITLAB_TOKEN").ok().filter(|t| !t.trim().is_empty()))
+    }
+
+    /// Resolve the Codeberg token: config → `$CODEBERG_TOKEN`. No prompt — public
+    /// repos work anonymously.
+    pub fn codeberg_token(&self) -> Option<String> {
+        self.codeberg_token
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| std::env::var("CODEBERG_TOKEN").ok().filter(|t| !t.trim().is_empty()))
     }
 
     /// Resolve the mlab vuln-scan token: config → `$VULN_MLAB_TOKEN`. No prompt —

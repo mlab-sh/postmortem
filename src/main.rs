@@ -165,14 +165,21 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
 
     let resolver = if args.online {
         gochi::greet(ui.animating()); // gochi says hi before the token prompt
-        let token = settings.resolve_github_token()?;
-        if token.is_none() {
+        let github = settings.resolve_github_token()?;
+        if github.is_none() {
             eprintln!(
                 "note: no GitHub token — using the anonymous GitHub API (60 req/h). \
                  Set GITHUB_TOKEN or add it to ~/.postmortem/config.yml to raise the limit."
             );
         }
-        Some(resolve::Resolver::new(token, settings.tree.clone()))
+        // GitLab/Codeberg stats resolve anonymously; a token only lifts the
+        // rate limit, so these are quiet (env/config only, no prompt).
+        let tokens = resolve::Tokens {
+            github,
+            gitlab: settings.gitlab_token(),
+            codeberg: settings.codeberg_token(),
+        };
+        Some(resolve::Resolver::new(tokens, settings.tree.clone()))
     } else {
         None
     };

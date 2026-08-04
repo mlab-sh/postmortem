@@ -1,19 +1,25 @@
 //! Online repository resolution — **the only networked part of postmortem**.
 //!
 //! For `postmortem tree --online`. Per dependency:
-//! 1. ask the **registry** for the source repository (npm's `repository` field),
-//! 2. resolve it to a GitHub `owner/repo` and pull **reputation stats** (stars,
-//!    created-at, last push, archived),
+//! 1. ask the dependency's **registry** for its source repository (npm's
+//!    `repository`, PyPI's `project_urls`, crates.io's `repository`, …),
+//! 2. resolve it to a `host/owner/repo` and pull **reputation stats** (stars,
+//!    created-at, last activity, archived) from that host's API,
 //! 3. score against risk thresholds and surface the suspicious ones — a fresh
 //!    package version now pointing at a low-star / days-old / stale / archived
 //!    repo, a classic supply-chain tell.
 //!
 //! Networking is blocking (`ureq`); responses are cached under
-//! `$HOME/.postmortem/cache/` (see [`crate::cache`]). A published npm version's
+//! `$HOME/.postmortem/cache/` (see [`crate::cache`]). A published version's
 //! manifest is immutable, so its repo resolution is cached forever.
 //!
-//! First (and currently only) registry: **npm**. Non-node dependencies are
-//! skipped by [`Resolver::resolve_all`].
+//! **Registries**, one per ecosystem: npm (Node), PyPI (Python), crates.io
+//! (Rust), RubyGems (Ruby), Packagist (PHP), deps.dev (Java/Maven). Go modules
+//! carry their repo in the module path itself, so they need no registry call.
+//!
+//! **Hosts** we pull reputation stats from: GitHub, GitLab, and Codeberg
+//! (Forgejo). A repo on any other host still resolves (the slug is shown) but
+//! its stats come back unavailable.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -30,12 +36,53 @@ use crate::ui::Ui;
 
 const NPM_REGISTRY: &str = "https://registry.npmjs.org";
 const GITHUB_API: &str = "https://api.github.com";
+const GITLAB_API: &str = "https://gitlab.com/api/v4";
+const CODEBERG_API: &str = "https://codeberg.org/api/v1";
 const USER_AGENT: &str = concat!("postmortem/", env!("CARGO_PKG_VERSION"));
 
-/// A source repository a dependency resolves to (GitHub only, today).
+/// A code-hosting provider we know how to pull reputation stats from. Each has
+/// its own API shape and auth header (see [`Resolver::stats_for`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Host {
+    GitHub,
+    GitLab,
+    Codeberg,
+}
+
+/// Every host we recognize, paired with the domain that identifies it in a repo
+/// URL. Order is the match priority when scanning a URL.
+const HOSTS: &[(&str, Host)] = &[
+    ("github.com", Host::GitHub),
+    ("gitlab.com", Host::GitLab),
+    ("codeberg.org", Host::Codeberg),
+];
+
+impl Host {
+    fn domain(self) -> &'static str {
+        match self {
+            Host::GitHub => "github.com",
+            Host::GitLab => "gitlab.com",
+            Host::Codeberg => "codeberg.org",
+        }
+    }
+}
+
+/// Per-host API tokens. All optional — public repos resolve anonymously, a token
+/// only raises the rate limit (and GitHub's anonymous 60/h is the tight one).
+#[derive(Debug, Clone, Default)]
+pub struct Tokens {
+    pub github: Option<String>,
+    pub gitlab: Option<String>,
+    pub codeberg: Option<String>,
+}
+
+/// A source repository a dependency resolves to, on one of the known [`Host`]s.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepoRef {
+    /// Host domain, e.g. `github.com`. Kept as a string so cached records stay
+    /// readable and forward-compatible.
     pub host: String,
+    /// Namespace: `owner`, or a nested `group/subgroup` on GitLab.
     pub owner: String,
     pub name: String,
 }
@@ -43,6 +90,11 @@ pub struct RepoRef {
 impl RepoRef {
     pub fn slug(&self) -> String {
         format!("{}/{}", self.owner, self.name)
+    }
+
+    /// Classify the host domain back into a [`Host`], if we recognize it.
+    fn kind(&self) -> Option<Host> {
+        HOSTS.iter().find(|(d, _)| *d == self.host).map(|(_, h)| *h)
     }
 }
 
@@ -181,42 +233,39 @@ const DORMANT_DAYS: i64 = 365;
 pub struct Resolver {
     agent: ureq::Agent,
     cache: Cache,
-    token: Option<String>,
+    tokens: Tokens,
     thresholds: TreeSettings,
     now: i64,
 }
 
 impl Resolver {
-    pub fn new(token: Option<String>, thresholds: TreeSettings) -> Self {
+    pub fn new(tokens: Tokens, thresholds: TreeSettings) -> Self {
         let agent = ureq::AgentBuilder::new()
             .timeout(Duration::from_secs(15))
             .build();
         Resolver {
             agent,
             cache: Cache::open(),
-            token,
+            tokens,
             thresholds,
             now: chrono::Utc::now().timestamp(),
         }
     }
 
     /// How many packages to resolve concurrently. Each unit is a blocking
-    /// npm+GitHub round-trip (I/O-bound), so we oversubscribe cores. With a
-    /// token GitHub allows 5000 req/h, so we fan out wide; anonymously it's
-    /// 60/h plus secondary abuse limits, so we stay gentle.
+    /// registry+host round-trip (I/O-bound), so we oversubscribe cores. GitHub's
+    /// anonymous 60/h (plus secondary abuse limits) is the tightest budget, so
+    /// without a GitHub token we stay gentle; with one we fan out wide.
     fn concurrency(&self) -> usize {
-        if self.token.is_some() { 8 } else { 2 }
+        if self.tokens.github.is_some() { 8 } else { 2 }
     }
 
-    /// Resolve every unique **node** dependency to its repo + stats, keyed by
+    /// Resolve every unique dependency to its repo + stats, keyed by
     /// `(name, version)`, across a small pool of worker threads. Best-effort: a
     /// failure on one package degrades to a `resolve-failed`/`stats-*` signal,
     /// never aborts the run.
     pub fn resolve_all(&self, deps: &[Dependency], ui: &Ui) -> HashMap<DepRef, Resolution> {
-        let mut unique: Vec<&Dependency> = deps
-            .iter()
-            .filter(|d| d.ecosystem == Ecosystem::Node)
-            .collect();
+        let mut unique: Vec<&Dependency> = deps.iter().collect();
         unique.sort_by(|a, b| (&a.name, &a.version).cmp(&(&b.name, &b.version)));
         unique.dedup_by(|a, b| a.name == b.name && a.version == b.version);
 
@@ -285,20 +334,23 @@ impl Resolver {
             Err(_) => vec![RiskSignal::ResolveFailed],
         };
 
-        // Identity / provenance signals (P2). Typosquat is offline; the version
-        // anomalies read the npm packument (cached).
-        if let Some(m) = crate::typosquat::check(&dep.name) {
-            signals.push(RiskSignal::Typosquat { target: m.target, kind: m.kind });
-        }
-        if let Ok(Some(meta)) = self.version_meta(dep) {
-            if meta.install_script_added {
-                signals.push(RiskSignal::InstallScriptAdded);
+        // Identity / provenance signals (P2). These are npm-specific: the
+        // typosquat corpus is npm's popular set, and the version anomalies read
+        // the npm packument. Other ecosystems skip them (for now).
+        if dep.ecosystem == Ecosystem::Node {
+            if let Some(m) = crate::typosquat::check(&dep.name) {
+                signals.push(RiskSignal::Typosquat { target: m.target, kind: m.kind });
             }
-            if let Some(gap) = meta.dormant_gap_days {
-                signals.push(RiskSignal::DormantRelease(gap));
-            }
-            if meta.new_publisher {
-                signals.push(RiskSignal::NewPublisher);
+            if let Ok(Some(meta)) = self.version_meta(dep) {
+                if meta.install_script_added {
+                    signals.push(RiskSignal::InstallScriptAdded);
+                }
+                if let Some(gap) = meta.dormant_gap_days {
+                    signals.push(RiskSignal::DormantRelease(gap));
+                }
+                if meta.new_publisher {
+                    signals.push(RiskSignal::NewPublisher);
+                }
             }
         }
 
@@ -312,18 +364,30 @@ impl Resolver {
         res
     }
 
-    /// npm version manifest → GitHub repo. Cached forever per `(name, version)`.
+    /// Registry manifest → source repo. Cached forever per
+    /// `(ecosystem, name, version)`. Dispatches to the ecosystem's registry and
+    /// pulls the first candidate URL that parses to a known [`Host`].
+    ///
+    /// Go is special: a module path *is* its repo (`github.com/gin-gonic/gin`),
+    /// so it's parsed directly with no network call.
     fn repo_for(&self, dep: &Dependency) -> Result<Option<RepoRef>> {
-        let key = format!("{}@{}", dep.name, dep.version);
-        if let Some(hit) = self.cache.get::<CachedRepo>("npm", &key) {
+        if dep.ecosystem == Ecosystem::Go {
+            return Ok(parse_repo(&dep.name));
+        }
+        let key = format!("{}:{}@{}", dep.ecosystem.as_str(), dep.name, dep.version);
+        if let Some(hit) = self.cache.get::<CachedRepo>("registry", &key) {
             return Ok(hit.repo);
         }
-        let url = format!("{NPM_REGISTRY}/{}/{}", dep.name, dep.version);
-        let repo = match self.get_json(&url, false)? {
-            Some(v) => extract_repo_url(&v).and_then(|u| parse_github(&u)),
-            None => None, // 404 — unpublished/private version
+        let Some(url) = registry_url(dep) else {
+            return Ok(None);
         };
-        self.cache.put("npm", &key, &CachedRepo { repo: repo.clone() });
+        let repo = match self.get_json(&url, &[])? {
+            Some(v) => repo_candidates(dep.ecosystem, &v)
+                .iter()
+                .find_map(|u| parse_repo(u)),
+            None => None, // 404 — unpublished/private/unknown package
+        };
+        self.cache.put("registry", &key, &CachedRepo { repo: repo.clone() });
         Ok(repo)
     }
 
@@ -336,7 +400,7 @@ impl Resolver {
             return Ok(Some(hit));
         }
         let url = format!("{NPM_REGISTRY}/{}", dep.name);
-        let meta = match self.get_json(&url, false)? {
+        let meta = match self.get_json(&url, &[])? {
             Some(doc) => compute_version_meta(&doc, &dep.version),
             None => VersionMeta::default(),
         };
@@ -344,25 +408,63 @@ impl Resolver {
         Ok(Some(meta))
     }
 
-    /// GitHub repo stats. Cached per `owner/repo`.
+    /// Repo reputation stats. Cached per `host/owner/repo` (host-qualified so an
+    /// `owner/repo` on GitHub never collides with the same slug on GitLab).
+    /// Dispatches to the host's API; an unrecognized host has no stats.
     fn stats_for(&self, repo: &RepoRef) -> Result<Option<RepoStats>> {
-        let key = repo.slug();
-        if let Some(hit) = self.cache.get::<RepoStats>("github", &key) {
+        let key = format!("{}/{}", repo.host, repo.slug());
+        if let Some(hit) = self.cache.get::<RepoStats>("repo", &key) {
             return Ok(Some(hit));
         }
-        let url = format!("{GITHUB_API}/repos/{}/{}", repo.owner, repo.name);
-        let Some(v) = self.get_json(&url, true)? else {
-            return Ok(None); // 404 — repo gone/renamed
+        let stats = match repo.kind() {
+            Some(Host::GitHub) => self.host_stats(
+                &format!("{GITHUB_API}/repos/{}/{}", repo.owner, repo.name),
+                self.tokens.github.as_deref().map(|t| ("Authorization", format!("Bearer {t}"))),
+                "stargazers_count",
+                "pushed_at",
+            )?,
+            Some(Host::GitLab) => self.host_stats(
+                &format!("{GITLAB_API}/projects/{}", urlencode(&repo.slug())),
+                self.tokens.gitlab.as_deref().map(|t| ("PRIVATE-TOKEN", t.to_string())),
+                "star_count",
+                "last_activity_at",
+            )?,
+            Some(Host::Codeberg) => self.host_stats(
+                &format!("{CODEBERG_API}/repos/{}/{}", repo.owner, repo.name),
+                self.tokens.codeberg.as_deref().map(|t| ("Authorization", format!("token {t}"))),
+                "stars_count",
+                "updated_at",
+            )?,
+            None => return Ok(None), // host we don't pull stats from
         };
-        let stats = RepoStats {
-            stars: v.get("stargazers_count").and_then(|s| s.as_u64()).unwrap_or(0),
+        if let Some(s) = &stats {
+            self.cache.put("repo", &key, s);
+        }
+        Ok(stats)
+    }
+
+    /// Fetch and normalize repo stats from a host API. The three hosts share a
+    /// JSON shape up to two field names: the star count and the "last activity"
+    /// timestamp. `created_at` and `archived` are spelled the same across all
+    /// three. `auth` is the host's optional auth header.
+    fn host_stats(
+        &self,
+        url: &str,
+        auth: Option<(&'static str, String)>,
+        stars_field: &str,
+        activity_field: &str,
+    ) -> Result<Option<RepoStats>> {
+        let headers: Vec<(&str, String)> = auth.into_iter().collect();
+        let Some(v) = self.get_json(url, &headers)? else {
+            return Ok(None); // 404 — repo gone/renamed/private
+        };
+        Ok(Some(RepoStats {
+            stars: v.get(stars_field).and_then(|s| s.as_u64()).unwrap_or(0),
             created_at: v.get("created_at").and_then(|s| s.as_str()).and_then(parse_ts),
-            pushed_at: v.get("pushed_at").and_then(|s| s.as_str()).and_then(parse_ts),
+            pushed_at: v.get(activity_field).and_then(|s| s.as_str()).and_then(parse_ts),
             archived: v.get("archived").and_then(|s| s.as_bool()).unwrap_or(false),
             fetched_at: self.now,
-        };
-        self.cache.put("github", &key, &stats);
-        Ok(Some(stats))
+        }))
     }
 
     fn assess(&self, stats: &RepoStats) -> Vec<RiskSignal> {
@@ -388,12 +490,14 @@ impl Resolver {
         signals
     }
 
-    /// GET + JSON. `Ok(None)` on 404 (a missing package/repo, not an error);
-    /// any other non-2xx or transport failure is an `Err`.
-    fn get_json(&self, url: &str, auth: bool) -> Result<Option<serde_json::Value>> {
+    /// GET + JSON, with arbitrary request headers (auth, etc.). `Ok(None)` on 404
+    /// (a missing package/repo, not an error); any other non-2xx or transport
+    /// failure is an `Err`. A `User-Agent` is always set — crates.io and the
+    /// GitHub API reject requests without one.
+    fn get_json(&self, url: &str, headers: &[(&str, String)]) -> Result<Option<serde_json::Value>> {
         let mut req = self.agent.get(url).set("User-Agent", USER_AGENT);
-        if auth && let Some(token) = &self.token {
-            req = req.set("Authorization", &format!("Bearer {token}"));
+        for (k, v) in headers {
+            req = req.set(k, v);
         }
         match req.call() {
             Ok(resp) => Ok(Some(serde_json::from_str(&resp.into_string()?)?)),
@@ -401,6 +505,111 @@ impl Resolver {
             Err(e) => Err(e.into()),
         }
     }
+}
+
+/// The registry endpoint that carries `dep`'s source-repo metadata. `None` for
+/// ecosystems resolved without a registry call (Go, whose module path is the
+/// repo). One endpoint per ecosystem:
+/// - **npm** (Node): the immutable version manifest.
+/// - **PyPI** (Python): the project JSON (`project_urls` + `home_page`).
+/// - **crates.io** (Rust): the crate record (`repository`).
+/// - **RubyGems** (Ruby): the gem JSON (`source_code_uri` / `homepage_uri`).
+/// - **Packagist** (PHP): the package JSON (`repository`).
+/// - **deps.dev** (Java/Maven): the version's `links` (avoids POM XML parsing).
+fn registry_url(dep: &Dependency) -> Option<String> {
+    Some(match dep.ecosystem {
+        Ecosystem::Node => format!("{NPM_REGISTRY}/{}/{}", dep.name, dep.version),
+        Ecosystem::Python => format!("https://pypi.org/pypi/{}/json", dep.name),
+        Ecosystem::Rust => format!("https://crates.io/api/v1/crates/{}", dep.name),
+        Ecosystem::Ruby => format!("https://rubygems.org/api/v1/gems/{}.json", dep.name),
+        Ecosystem::Php => format!("https://packagist.org/packages/{}.json", dep.name),
+        Ecosystem::Java => format!(
+            "https://api.deps.dev/v3/systems/maven/packages/{}/versions/{}",
+            urlencode(&dep.name),
+            urlencode(&dep.version),
+        ),
+        Ecosystem::Go => return None,
+    })
+}
+
+/// Candidate repo URLs from a registry manifest, in priority order. `repo_for`
+/// takes the first that parses to a known host, so listing a homepage last is a
+/// safe fallback — a non-repo homepage simply fails to parse and is skipped.
+fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<String> {
+    let s = |val: &serde_json::Value, key: &str| {
+        val.get(key).and_then(|x| x.as_str()).map(String::from)
+    };
+    match eco {
+        Ecosystem::Node => extract_repo_url(v).into_iter().collect(),
+        Ecosystem::Python => {
+            let Some(info) = v.get("info") else { return Vec::new() };
+            let mut out = Vec::new();
+            // Prefer explicitly repo-labelled project URLs, then any URL, then
+            // the home page.
+            if let Some(urls) = info.get("project_urls").and_then(|u| u.as_object()) {
+                for key in ["Source", "Source Code", "Repository", "Code", "GitHub", "Git"] {
+                    if let Some(u) = urls.get(key).and_then(|x| x.as_str()) {
+                        out.push(u.to_string());
+                    }
+                }
+                out.extend(urls.values().filter_map(|x| x.as_str()).map(String::from));
+            }
+            out.extend(s(info, "home_page"));
+            out
+        }
+        Ecosystem::Rust => v
+            .get("crate")
+            .and_then(|c| s(c, "repository"))
+            .into_iter()
+            .collect(),
+        Ecosystem::Ruby => [s(v, "source_code_uri"), s(v, "homepage_uri")]
+            .into_iter()
+            .flatten()
+            .collect(),
+        Ecosystem::Php => v
+            .get("package")
+            .and_then(|p| s(p, "repository"))
+            .into_iter()
+            .collect(),
+        Ecosystem::Java => v
+            .get("links")
+            .and_then(|l| l.as_array())
+            .map(|links| {
+                let mut out = Vec::new();
+                // deps.dev labels the canonical repo SOURCE_REPO; fall back to
+                // any other link (HOMEPAGE, etc.) that happens to be a repo.
+                for label in ["SOURCE_REPO"] {
+                    for l in links {
+                        if l.get("label").and_then(|x| x.as_str()) == Some(label)
+                            && let Some(u) = l.get("url").and_then(|x| x.as_str())
+                        {
+                            out.push(u.to_string());
+                        }
+                    }
+                }
+                out.extend(links.iter().filter_map(|l| s(l, "url")));
+                out
+            })
+            .unwrap_or_default(),
+        Ecosystem::Go => Vec::new(),
+    }
+}
+
+/// Minimal RFC-3986 percent-encoding for a single path component (encodes `/`,
+/// `:`, and everything else outside the unreserved set). Used for the GitLab
+/// project path (`group/sub/project` → `group%2Fsub%2Fproject`) and the
+/// deps.dev Maven coordinate (`group:artifact` → `group%3Aartifact`).
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// Pull a repository URL out of an npm version manifest's `repository` field,
@@ -413,36 +622,143 @@ fn extract_repo_url(manifest: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Parse the many shapes of a GitHub repo URL into `owner/repo`:
-/// `git+https://github.com/o/r.git`, `git://…`, `https://github.com/o/r`,
-/// `git+ssh://git@github.com/o/r.git`, and npm's `github:o/r` shorthand.
-/// Non-GitHub hosts return `None` (only GitHub stats are supported today).
-fn parse_github(url: &str) -> Option<RepoRef> {
+/// Parse the many shapes of a repo URL on a known [`Host`] into a [`RepoRef`]:
+/// `git+https://github.com/o/r.git`, `git://…`, `https://gitlab.com/o/r`,
+/// `git+ssh://git@codeberg.org/o/r.git`, and the npm `github:o/r` /
+/// `gitlab:o/r` shorthands. Hosts we don't recognize return `None`.
+///
+/// GitLab allows nested groups (`gitlab.com/group/sub/project`); the leading
+/// segments become the `owner` and the last is the `name`, so `slug()`
+/// round-trips the full project path. GitHub/Codeberg are always `owner/repo`.
+fn parse_repo(url: &str) -> Option<RepoRef> {
     let url = url.trim();
-    let rest = if let Some(short) = url.strip_prefix("github:") {
-        short.to_string()
+
+    // Some canonical SCM hosts have no reputation API but mirror to GitHub:
+    // Apache's gitbox, and Go's well-known vanity import paths. Rewrite to the
+    // mirror (recurses once; the mirror URL no longer matches, so it terminates).
+    if let Some(mirror) = apache_mirror(url).or_else(|| vanity_mirror(url)) {
+        return parse_repo(&mirror);
+    }
+
+    // npm-style `host:owner/repo` shorthands.
+    let (host, rest) = if let Some(r) = url.strip_prefix("github:") {
+        (Host::GitHub, r.to_string())
+    } else if let Some(r) = url.strip_prefix("gitlab:") {
+        (Host::GitLab, r.to_string())
     } else {
-        let idx = url.find("github.com")?;
-        url[idx + "github.com".len()..]
-            .trim_start_matches([':', '/'])
-            .to_string()
+        // Otherwise find whichever known host domain appears in the URL.
+        let (host, idx) = HOSTS
+            .iter()
+            .find_map(|(d, h)| url.find(d).map(|i| (*h, i + d.len())))?;
+        (host, url[idx..].trim_start_matches([':', '/']).to_string())
     };
 
+    // Trim GitLab's `/-/` sub-path marker, any trailing slash / `.git`, and a
+    // clinging `#ref` or `?query`.
+    let rest = rest.split("/-/").next().unwrap_or(&rest);
+    let rest = rest.split(['#', '?']).next().unwrap_or(rest);
     let rest = rest.trim_end_matches('/');
     let rest = rest.strip_suffix(".git").unwrap_or(rest);
-    let mut parts = rest.split('/');
-    let owner = parts.next()?.trim();
-    let name = parts.next()?.trim();
-    // A trailing `#ref` or `?query` can cling to the repo segment.
-    let name = name.split(['#', '?']).next().unwrap_or(name);
+
+    let segs: Vec<&str> = rest.split('/').map(str::trim).filter(|s| !s.is_empty()).collect();
+    if segs.len() < 2 {
+        return None;
+    }
+    let (owner, name) = match host {
+        // GitLab: everything up to the last segment is the (possibly nested)
+        // namespace.
+        Host::GitLab => (segs[..segs.len() - 1].join("/"), segs[segs.len() - 1]),
+        // GitHub / Codeberg: always exactly owner/repo; ignore deeper path.
+        _ => (segs[0].to_string(), segs[1]),
+    };
+    let name = name.strip_suffix(".git").unwrap_or(name);
     if owner.is_empty() || name.is_empty() {
         return None;
     }
     Some(RepoRef {
-        host: "github.com".into(),
-        owner: owner.to_string(),
+        host: host.domain().to_string(),
+        owner,
         name: name.to_string(),
     })
+}
+
+/// Map an Apache gitbox URL to its `github.com/apache/<repo>` mirror. Apache
+/// projects publish their SCM through `gitbox.apache.org` (a GitWeb frontend
+/// with no reputation API) but mirror every repo to GitHub, where the stars
+/// live. Forms handled:
+///   `https://gitbox.apache.org/repos/asf?p=commons-lang.git` (GitWeb `?p=`)
+///   `https://gitbox.apache.org/repos/asf/commons-lang.git`   (path)
+///   `git-wip-us.apache.org` is the old alias of the same host.
+fn apache_mirror(url: &str) -> Option<String> {
+    if !url.contains("gitbox.apache.org") && !url.contains("git-wip-us.apache.org") {
+        return None;
+    }
+    let repo = if let Some(i) = url.find("?p=") {
+        url[i + 3..].split(['&', '#']).next()?
+    } else if let Some(i) = url.find("/repos/asf/") {
+        url[i + "/repos/asf/".len()..].split(['/', '?', '#']).next()?
+    } else {
+        return None;
+    };
+    let repo = repo.trim().trim_end_matches(".git");
+    if repo.is_empty() {
+        return None;
+    }
+    Some(format!("github.com/apache/{repo}"))
+}
+
+/// Map a well-known Go **vanity import path** to the GitHub repo it stands for.
+/// These custom domains (`golang.org/x/…`, `k8s.io/…`, …) serve a `go-get` meta
+/// redirect rather than being real hosts; resolving them properly would need an
+/// extra fetch, but the common ones have fixed, documented mappings we can apply
+/// offline. Anything unrecognized returns `None` (stays `no-repository`).
+///
+/// Works on both a bare module path (`golang.org/x/net`, as Go deps arrive) and
+/// a full URL (`https://golang.org/x/net`). Only the leading domain segment is
+/// matched, so `google.golang.org/grpc` (irregular mapping) is left alone.
+fn vanity_mirror(url: &str) -> Option<String> {
+    let rest = url.rsplit("://").next().unwrap_or(url);
+    let segs: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
+    let (host, tail) = segs.split_first()?;
+    match *host {
+        // golang.org/x/<repo> → github.com/golang/<repo>
+        "golang.org" if tail.first() == Some(&"x") && tail.len() >= 2 => {
+            Some(format!("github.com/golang/{}", tail[1]))
+        }
+        // k8s.io/<repo> → github.com/kubernetes/<repo>
+        "k8s.io" if !tail.is_empty() => Some(format!("github.com/kubernetes/{}", tail[0])),
+        // sigs.k8s.io/<repo> → github.com/kubernetes-sigs/<repo>
+        "sigs.k8s.io" if !tail.is_empty() => {
+            Some(format!("github.com/kubernetes-sigs/{}", tail[0]))
+        }
+        // The `.vN` suffix marks which segment is the package (a subpath can
+        // follow either form, so segment *count* can't disambiguate):
+        //   gopkg.in/<pkg>.vN[/…]        → github.com/go-<pkg>/<pkg>
+        //   gopkg.in/<user>/<pkg>.vN[/…] → github.com/<user>/<pkg>
+        "gopkg.in" => {
+            if let Some(name) = tail.first().and_then(|s| strip_gopkg_version(s)) {
+                Some(format!("github.com/go-{name}/{name}"))
+            } else if let (Some(user), Some(name)) =
+                (tail.first(), tail.get(1).and_then(|s| strip_gopkg_version(s)))
+            {
+                Some(format!("github.com/{user}/{name}"))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Strip gopkg.in's `.vN` version suffix: `yaml.v2` → `yaml`. `None` if there's
+/// no such suffix (used to tell a `user/pkg.vN` path from a bare `pkg.vN`).
+fn strip_gopkg_version(seg: &str) -> Option<&str> {
+    let (name, ver) = seg.rsplit_once(".v")?;
+    if !name.is_empty() && ver.bytes().all(|b| b.is_ascii_digit()) && !ver.is_empty() {
+        Some(name)
+    } else {
+        None
+    }
 }
 
 /// RFC3339 (GitHub timestamps) → unix seconds.
@@ -593,7 +909,8 @@ mod tests {
             "https://github.com/expressjs/express/tree/master#readme",
         ];
         for c in cases {
-            let r = parse_github(c).unwrap_or_else(|| panic!("failed to parse {c}"));
+            let r = parse_repo(c).unwrap_or_else(|| panic!("failed to parse {c}"));
+            assert_eq!(r.host, "github.com", "host for {c}");
             assert_eq!(r.owner, "expressjs", "owner for {c}");
             assert_eq!(r.name, "express", "name for {c}");
             assert_eq!(r.slug(), "expressjs/express");
@@ -601,9 +918,110 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_github() {
-        assert!(parse_github("https://gitlab.com/o/r.git").is_none());
-        assert!(parse_github("not a url").is_none());
+    fn parses_gitlab_and_codeberg() {
+        // GitLab, including a nested group and the `/-/` sub-path marker.
+        let gl = parse_repo("https://gitlab.com/gitlab-org/gitlab.git").unwrap();
+        assert_eq!(gl.kind(), Some(Host::GitLab));
+        assert_eq!(gl.slug(), "gitlab-org/gitlab");
+        let nested = parse_repo("https://gitlab.com/group/sub/proj/-/tree/main").unwrap();
+        assert_eq!(nested.owner, "group/sub");
+        assert_eq!(nested.name, "proj");
+        assert_eq!(nested.slug(), "group/sub/proj");
+        assert_eq!(parse_repo("gitlab:group/proj").unwrap().slug(), "group/proj");
+
+        // Codeberg (Forgejo) is always owner/repo.
+        let cb = parse_repo("https://codeberg.org/forgejo/forgejo").unwrap();
+        assert_eq!(cb.kind(), Some(Host::Codeberg));
+        assert_eq!(cb.slug(), "forgejo/forgejo");
+    }
+
+    #[test]
+    fn go_module_path_is_its_repo() {
+        // A Go module path resolves directly, no registry call.
+        let r = parse_repo("github.com/gin-gonic/gin").unwrap();
+        assert_eq!(r.slug(), "gin-gonic/gin");
+    }
+
+    #[test]
+    fn apache_gitbox_maps_to_github_mirror() {
+        // Both the GitWeb `?p=` form (what deps.dev reports) and the path form
+        // resolve to github.com/apache/<repo>.
+        let gitweb = parse_repo("https://gitbox.apache.org/repos/asf?p=commons-lang.git").unwrap();
+        assert_eq!(gitweb.slug(), "apache/commons-lang");
+        assert_eq!(gitweb.kind(), Some(Host::GitHub));
+        let path = parse_repo("scm:git:https://gitbox.apache.org/repos/asf/kafka.git").unwrap();
+        assert_eq!(path.slug(), "apache/kafka");
+        // Old alias host, too.
+        let old = parse_repo("https://git-wip-us.apache.org/repos/asf?p=maven.git").unwrap();
+        assert_eq!(old.slug(), "apache/maven");
+    }
+
+    #[test]
+    fn go_vanity_paths_map_to_github() {
+        let cases = [
+            ("golang.org/x/net", "golang/net"),
+            ("https://golang.org/x/crypto", "golang/crypto"),
+            ("k8s.io/client-go", "kubernetes/client-go"),
+            ("sigs.k8s.io/yaml", "kubernetes-sigs/yaml"),
+            ("gopkg.in/yaml.v2", "go-yaml/yaml"),
+            ("gopkg.in/yaml.v3/subpkg", "go-yaml/yaml"), // subpath, bare form
+            ("gopkg.in/check.v1", "go-check/check"),
+            ("gopkg.in/square/go-jose.v2", "square/go-jose"), // user form
+        ];
+        for (path, want) in cases {
+            let r = parse_repo(path).unwrap_or_else(|| panic!("failed to resolve {path}"));
+            assert_eq!(r.slug(), want, "for {path}");
+            assert_eq!(r.kind(), Some(Host::GitHub));
+        }
+        // google.golang.org/* has an irregular mapping — deliberately left alone.
+        assert!(vanity_mirror("google.golang.org/grpc").is_none());
+        // A plain GitHub path isn't a vanity host.
+        assert!(vanity_mirror("github.com/golang/net").is_none());
+    }
+
+    #[test]
+    fn rejects_unknown_host() {
+        // A host we don't pull stats from doesn't resolve.
+        assert!(parse_repo("https://bitbucket.org/o/r.git").is_none());
+        assert!(parse_repo("https://sr.ht/~o/r").is_none());
+        assert!(parse_repo("not a url").is_none());
+    }
+
+    #[test]
+    fn urlencodes_path_and_coordinate() {
+        assert_eq!(urlencode("group/sub/proj"), "group%2Fsub%2Fproj");
+        assert_eq!(urlencode("com.google.guava:guava"), "com.google.guava%3Aguava");
+    }
+
+    #[test]
+    fn extracts_repo_candidates_per_ecosystem() {
+        let py = serde_json::json!({
+            "info": { "project_urls": { "Homepage": "https://x.dev", "Source": "https://github.com/psf/requests" } }
+        });
+        assert_eq!(
+            repo_candidates(Ecosystem::Python, &py).iter().find_map(|u| parse_repo(u)).unwrap().slug(),
+            "psf/requests"
+        );
+        let rs = serde_json::json!({ "crate": { "repository": "https://github.com/serde-rs/serde" } });
+        assert_eq!(
+            repo_candidates(Ecosystem::Rust, &rs).iter().find_map(|u| parse_repo(u)).unwrap().slug(),
+            "serde-rs/serde"
+        );
+        let rb = serde_json::json!({ "source_code_uri": "https://gitlab.com/o/r" });
+        assert_eq!(repo_candidates(Ecosystem::Ruby, &rb), vec!["https://gitlab.com/o/r"]);
+        let php = serde_json::json!({ "package": { "repository": "https://github.com/laravel/framework" } });
+        assert_eq!(
+            repo_candidates(Ecosystem::Php, &php).iter().find_map(|u| parse_repo(u)).unwrap().slug(),
+            "laravel/framework"
+        );
+        let java = serde_json::json!({
+            "links": [ { "label": "HOMEPAGE", "url": "https://guava.dev" },
+                       { "label": "SOURCE_REPO", "url": "https://github.com/google/guava" } ]
+        });
+        assert_eq!(
+            repo_candidates(Ecosystem::Java, &java).iter().find_map(|u| parse_repo(u)).unwrap().slug(),
+            "google/guava"
+        );
     }
 
     #[test]
@@ -621,7 +1039,7 @@ mod tests {
         let r = Resolver {
             agent: ureq::agent(),
             cache: Cache::open(),
-            token: None,
+            tokens: Tokens::default(),
             thresholds: TreeSettings { min_stars: 20, recent_days: 30, stale_days: 365 },
             now: 1_000_000_000,
         };
