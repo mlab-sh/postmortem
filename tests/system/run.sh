@@ -87,6 +87,24 @@ if container run --rm -v "$PWD:/src" -w /src docker.io/library/rust:latest \
   capture "fedora/dnf-system.txt"  container exec postmortem-fedora /usr/bin/pm system --no-progress
   capture "fedora/dnf-repos.txt"   container exec postmortem-fedora /usr/bin/pm system --repos --no-progress
   capture "fedora/dnf-system.json" container exec postmortem-fedora /usr/bin/pm system --json --no-progress
+  # Nix container: minimal userland (no FHS glibc loader), so it needs a STATIC
+  # musl binary rather than the glibc one used for the others.
+  mkdir -p "$OUT/nix"
+  if container run --rm -v "$PWD:/src" -w /src docker.io/library/rust:latest bash -c \
+       'rustup target add aarch64-unknown-linux-musl >/dev/null 2>&1 && \
+        apt-get update >/dev/null 2>&1 && apt-get install -y musl-tools musl-dev >/dev/null 2>&1 && \
+        cargo build --release --target aarch64-unknown-linux-musl --target-dir /src/target-musl' \
+       >/dev/null 2>&1; then
+    container start postmortem-nix >/dev/null 2>&1
+    container cp "$PWD/target-musl/aarch64-unknown-linux-musl/release/postmortem" postmortem-nix:/usr/bin/pm 2>/dev/null
+    container exec postmortem-nix chmod +x /usr/bin/pm 2>/dev/null
+    log "system (nix backend, Nix container)"
+    capture "nix/nix-system.txt"  container exec postmortem-nix /usr/bin/pm system --no-progress
+    capture "nix/nix-repos.txt"   container exec postmortem-nix /usr/bin/pm system --repos --no-progress
+    capture "nix/nix-system.json" container exec postmortem-nix /usr/bin/pm system --json --no-progress
+  else
+    echo "  SKIP nix musl build failed" | tee "$OUT/nix/BUILD-FAILED.txt"
+  fi
 else
   echo "  SKIP Linux build failed (network?) - re-run to retry" | tee "$OUT/arch/BUILD-FAILED.txt"
 fi

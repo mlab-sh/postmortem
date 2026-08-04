@@ -17,8 +17,8 @@ postmortem can actually audit:
 detected package managers: homebrew
 ```
 
-Recognized: `brew`, `apt`, `dpkg`, `pacman`, `dnf`, `rpm`, `apk`, `port`. If no
-**supported** manager is found, it exits `2`.
+Recognized: `brew`, `apt`, `dpkg`, `pacman`, `dnf`, `rpm`, `nix`, `apk`, `port`.
+If no **supported** manager is found, it exits `2`.
 
 ## Supported managers
 
@@ -31,6 +31,7 @@ manager.
 | pacman (+ AUR) | supported | [Pacman](Pacman) |
 | apt / dpkg | supported | [APT](Apt) |
 | dnf / rpm | supported | [DNF](Dnf) |
+| Nix | supported | [Nix](Nix) |
 | apk / macports | planned | (roadmap) |
 
 ## Common options

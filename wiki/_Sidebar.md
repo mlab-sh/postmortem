@@ -22,6 +22,7 @@
 - [Pacman](Pacman)
 - [APT](Apt)
 - [DNF](Dnf)
+- [Nix](Nix)
 
 **Concepts**
 - [Source-code scanning](Source-Code-Scanning)

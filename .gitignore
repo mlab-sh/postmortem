@@ -42,3 +42,4 @@ tests/system/reports/
 
 # cross-built Linux binary for container tests
 /target-linux
+/target-musl

@@ -20,6 +20,8 @@ pub enum Ecosystem {
     Apt,
     /// Fedora/RHEL `dnf`/`rpm` — an OS-level package manager (`system` command).
     Dnf,
+    /// Nix (the store / profiles) — an OS-level package manager (`system` command).
+    Nix,
 }
 
 impl Ecosystem {
@@ -36,6 +38,7 @@ impl Ecosystem {
             Ecosystem::Pacman => "pacman",
             Ecosystem::Apt => "apt",
             Ecosystem::Dnf => "dnf",
+            Ecosystem::Nix => "nix",
         }
     }
 }
