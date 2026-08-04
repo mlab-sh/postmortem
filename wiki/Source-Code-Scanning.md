@@ -26,10 +26,15 @@ or suspicious code. They power [`scan`](Scan) and the deep audit of
 | Java / Kotlin | `java kt` | yes | yes | yes |
 | C / C++ | `c h cpp cc cxx hpp hh hxx` | yes | yes | yes |
 | Perl | `pl pm t` | yes | yes | yes |
+| Shell | `sh bash zsh ksh` | yes | yes | yes |
+| Lua | `lua` | yes | yes | yes |
+
+Shell and Lua cover the OS-package install-hook surface (Debian maintainer
+scripts, pacman `.install`, RPM scriptlets which are shell or Lua).
 
 Adding a language: extend that analyzer's `Lang` enum (extensions), plus the
 per-language patterns for Obfuscation and Sensitive-API. IOC needs only the
-extensions. Next candidates: C#, Shell, Swift.
+extensions. Next candidates: C#, Swift, PowerShell.
 
 ## Test directories
 

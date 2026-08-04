@@ -35,6 +35,9 @@ pub enum Lang {
     /// C and C++ (shared headers, overlapping surface).
     Cpp,
     Perl,
+    /// Shell (sh/bash/zsh) - covers OS-package install hooks.
+    Shell,
+    Lua,
 }
 
 impl Lang {
@@ -49,6 +52,8 @@ impl Lang {
         Lang::Java,
         Lang::Cpp,
         Lang::Perl,
+        Lang::Shell,
+        Lang::Lua,
     ];
 
     fn exts(self) -> &'static [&'static str] {
@@ -62,6 +67,8 @@ impl Lang {
             Lang::Java => &["java", "kt"],
             Lang::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
             Lang::Perl => &["pl", "pm", "t"],
+            Lang::Shell => &["sh", "bash", "zsh", "ksh"],
+            Lang::Lua => &["lua"],
         }
     }
 }
@@ -240,6 +247,32 @@ fn scan_file(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
                 signals.push("base64/codecs decode");
             }
         }
+        Lang::Shell => {
+            if lower.contains("eval ") || lower.contains("eval \"") {
+                signals.push("eval()");
+            }
+            if lower.contains("base64 -d") || lower.contains("base64 --decode") {
+                signals.push("base64/codecs decode");
+            }
+            // Classic space/word hiding via the field separator.
+            if lower.contains("${IFS}") {
+                signals.push("IFS obfuscation");
+            }
+            if lower.contains("xxd -r") || lower.contains("od -c") {
+                signals.push("hex decode");
+            }
+        }
+        Lang::Lua => {
+            if lower.contains("loadstring") || lower.contains("load(") {
+                signals.push("eval()");
+            }
+            if lower.contains("string.dump") {
+                signals.push("bytecode dump");
+            }
+            if lower.contains("string.char") {
+                signals.push("string.char");
+            }
+        }
     }
 
     if hex_run_re().is_match(text) {
@@ -315,6 +348,7 @@ fn is_weak_signal(s: &str) -> bool {
             | "inline asm"
             | "rwx memory"
             | "pack/unpack"
+            | "string.char"
     )
 }
 
