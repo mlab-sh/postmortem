@@ -7,20 +7,20 @@ class Postmortem < Formula
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "aed3f3b070613a025ae66f31aad6450ca41c44febbf9b53153d175b27087878f"
+      sha256 "7d033299ffb6cffbab79831631754f7523e4558a1d6d31c8839ec836bfed5a1e"
     else
       url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "f7f71bc4db0d0610aa115ef2825940e3ecfa1771623d4705011347d3bf88d18a"
+      sha256 "724aafd8f128494e99962c1c40358bf24ffd86284a32b6096ce1336a3023e2ad"
     end
   end
 
   on_linux do
     if Hardware::CPU.intel?
       url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "46835ddf69110b76b16acb5ec6eb5916647c3e819229aa4c338c7e34af304374"
+      sha256 "bd35233a75ac732f4a8fdfc4a20a8681dce748e3184326bc01287232c1177abd"
     elsif Hardware::CPU.arm?
       url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "4a5d198b4dd46d84303232ff24a5d6f5647eb754cc2f5bc79c4e037e785b378a"
+      sha256 "441de99d6f7fc3eecb6fa79779071f4dfbaf1244504dd0faa5538ac4d0b8ea54"
     end
   end
 
