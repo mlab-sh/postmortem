@@ -11,7 +11,9 @@ postmortem tree <paths>... [options]
 
 Builds the recursive dependency graph straight from the lockfiles — the same
 parsers `scan` uses — with diamond/cycle dedup (`(*)`) and depth control. See
-[Ecosystems & Hosts](Ecosystems-and-Hosts) for supported lockfiles.
+[Ecosystems & Hosts](Ecosystems-and-Hosts) for the supported lockfiles, and each
+ecosystem's page for its quirks: [Node](Node) · [Python](Python) · [Rust](Rust) ·
+[Ruby](Ruby) · [PHP](PHP) · [Go](Go) · [Java](Java).
 
 ```bash
 postmortem tree . --depth 2

