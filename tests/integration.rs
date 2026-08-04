@@ -10,6 +10,14 @@ fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_postmortem")
 }
 
+/// A `postmortem scan ...` command. All end-to-end tests drive the `scan`
+/// subcommand, so the verb is baked in here.
+fn cmd() -> Command {
+    let mut c = Command::new(bin());
+    c.arg("scan");
+    c
+}
+
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -20,7 +28,7 @@ fn fixture(name: &str) -> PathBuf {
 /// Run postmortem in JSON mode and return (exit_code, parsed_json).
 /// Passes `-o -` so the default-file behavior doesn't intercept stdout.
 fn scan_json(fixture_name: &str, extra_args: &[&str]) -> (i32, Value) {
-    let mut cmd = Command::new(bin());
+    let mut cmd = cmd();
     cmd.arg(fixture(fixture_name))
         .arg("--json")
         .args(["-o", "-"])
@@ -495,7 +503,7 @@ reason = "test suppression"
     )
     .unwrap();
 
-    let out = Command::new(bin())
+    let out = cmd()
         .arg(&dst)
         .arg("--json")
         .args(["-o", "-"])
@@ -538,7 +546,7 @@ fn no_config_flag_disables_autoload() {
     )
     .unwrap();
 
-    let out = Command::new(bin())
+    let out = cmd()
         .arg(&dst)
         .arg("--json")
         .arg("--no-config")
@@ -621,7 +629,7 @@ fn enrich_flag_off_by_default() {
 
 #[test]
 fn sarif_output_is_well_formed() {
-    let out = Command::new(bin())
+    let out = cmd()
         .arg(fixture("malicious-node"))
         .arg("--sarif")
         .args(["-o", "-"])
@@ -661,7 +669,7 @@ fn sarif_output_is_well_formed() {
 
 #[test]
 fn sarif_includes_enrich_url_when_flag_set() {
-    let out = Command::new(bin())
+    let out = cmd()
         .arg(fixture("malicious-node"))
         .arg("--sarif")
         .arg("--enrich")
@@ -683,7 +691,7 @@ fn default_output_filename_when_no_dash_o() {
     let _ = std::fs::remove_dir_all(&tmp);
     std::fs::create_dir_all(&tmp).unwrap();
 
-    let out = Command::new(bin())
+    let out = cmd()
         .arg(fixture("clean-node"))
         .arg("--json")
         .current_dir(&tmp)
@@ -710,7 +718,7 @@ fn default_output_filename_when_no_dash_o() {
     // The file is valid JSON
     let body = std::fs::read_to_string(entries[0].path()).unwrap();
     let v: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["schema_version"], 2);
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -718,7 +726,7 @@ fn default_output_filename_when_no_dash_o() {
 #[test]
 fn dash_o_dash_forces_stdout() {
     // -o - explicitly routes to stdout instead of a default file.
-    let out = Command::new(bin())
+    let out = cmd()
         .arg(fixture("clean-node"))
         .arg("--json")
         .args(["-o", "-"])
@@ -726,12 +734,12 @@ fn dash_o_dash_forces_stdout() {
         .unwrap();
     let body = String::from_utf8(out.stdout).unwrap();
     let v: Value = serde_json::from_str(&body).expect("valid JSON on stdout");
-    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["schema_version"], 2);
 }
 
 #[test]
 fn html_output_is_self_contained() {
-    let out = Command::new(bin())
+    let out = cmd()
         .arg(fixture("malicious-node"))
         .arg("--html")
         .args(["-o", "-"])
@@ -741,4 +749,74 @@ fn html_output_is_self_contained() {
     assert!(body.starts_with("<!doctype html>"));
     assert!(body.contains("flatmap-stream"));
     assert!(!body.contains("<script src=")); // no external scripts
+}
+
+// ---------- tree command ----------
+
+/// Run `postmortem tree --json -o -` and return (exit_code, parsed_json).
+fn tree_json(fixture_name: &str, extra_args: &[&str]) -> (i32, Value) {
+    let out = Command::new(bin())
+        .arg("tree")
+        .arg(fixture(fixture_name))
+        .arg("--json")
+        .args(["-o", "-"])
+        .args(extra_args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("postmortem binary did not run");
+    let exit = out.status.code().unwrap_or(-1);
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "tree json parse failed (exit {exit}): {e}\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        )
+    });
+    (exit, parsed)
+}
+
+#[test]
+fn tree_resolves_event_stream_chain() {
+    let (exit, t) = tree_json("malicious-node", &[]);
+    assert_eq!(exit, 0, "tree is offline-only today, exit 0 expected");
+    assert_eq!(t["ecosystems"][0], "node");
+
+    // event-stream is the direct root; flatmap-stream hangs beneath it.
+    let root = &t["roots"][0];
+    assert_eq!(root["name"], "event-stream");
+    assert_eq!(root["direct"], true);
+    assert_eq!(root["children"][0]["name"], "flatmap-stream");
+    assert_eq!(root["children"][0]["direct"], false);
+
+    assert_eq!(t["stats"]["total"], 2);
+    assert_eq!(t["stats"]["max_depth"], 2);
+}
+
+#[test]
+fn tree_depth_truncates() {
+    let (_, t) = tree_json("malicious-node", &["--depth", "1"]);
+    let root = &t["roots"][0];
+    // At depth 1 the transitive child is hidden and the node is flagged.
+    assert_eq!(root["truncated"], true);
+    assert!(root["children"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn tree_online_is_wired_without_touching_the_network() {
+    // The rust fixture has zero node dependencies, so `--online` exercises the
+    // wiring (token resolution, resolver construction, empty resolution pass)
+    // without making any HTTP call — keeping the test hermetic.
+    let out = Command::new(bin())
+        .arg("tree")
+        .arg(fixture("malicious-rust"))
+        .arg("--online")
+        .arg("--no-progress")
+        .env_remove("GITHUB_TOKEN")
+        .stdin(Stdio::null()) // non-interactive → no token prompt
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "tree --online should succeed on a node-free project");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("rustdecimal"), "expected the tree to still render");
 }

@@ -22,6 +22,10 @@ pub fn render(report: &Report, show_deps: bool) {
         (report.dependencies.len() - direct).to_string().yellow()
     );
 
+    if !report.diagnostics.is_empty() {
+        crate::tree::render_diagnostics(&report.diagnostics);
+    }
+
     print_findings_summary(report);
 
     if show_deps && !report.dependencies.is_empty() {

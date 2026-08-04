@@ -185,9 +185,10 @@ mod tests {
 
     fn rep(findings: Vec<Finding>) -> Report {
         Report {
-            schema_version: 1,
+            schema_version: 2,
             root: "/tmp/repo".into(),
             ecosystems: vec!["node".into()],
+            diagnostics: vec![],
             dependencies: vec![],
             findings,
         }

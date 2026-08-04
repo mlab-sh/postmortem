@@ -1,27 +1,395 @@
 mod analyze;
+mod cache;
 mod cli;
 mod config;
 mod detect;
 mod enrich;
+mod gochi;
 mod model;
 mod parsers;
 mod report;
+mod resolve;
+mod settings;
+mod tree;
+mod typosquat;
+mod ui;
+mod vuln;
+
+use std::path::Path;
 
 use anyhow::Result;
 use clap::Parser;
 
 fn main() -> Result<()> {
-    let args = cli::Cli::parse();
-    let root = args
-        .path
-        .canonicalize()
-        .map_err(|e| anyhow::anyhow!("cannot resolve path {}: {e}", args.path.display()))?;
+    match cli::Cli::parse().command {
+        cli::Command::Scan(args) => run_scan(args),
+        cli::Command::Tree(args) => run_tree(args),
+        cli::Command::Cache(args) => run_cache(args),
+        cli::Command::Help => {
+            print_overview();
+            Ok(())
+        }
+    }
+}
 
-    let detected = detect::detect(&root)?;
-    if detected.is_empty() {
-        eprintln!("no supported ecosystem detected at {}", root.display());
+/// `postmortem cache <action>` — manage the `tree --online` cache.
+fn run_cache(args: cli::CacheArgs) -> Result<()> {
+    let cache = cache::Cache::open();
+    match args.action {
+        cli::CacheAction::Prune(p) => {
+            let report = cache.prune(p.older_than, p.dry_run);
+            let where_ = cache
+                .root()
+                .map(|r| r.display().to_string())
+                .unwrap_or_else(|| "(no cache)".into());
+            let verb = if p.dry_run { "would remove" } else { "removed" };
+            let scope = match p.older_than {
+                Some(d) => format!("older than {d}d"),
+                None => "all".into(),
+            };
+            println!(
+                "{verb} {} entr{} ({scope}, {}), kept {} — {where_}",
+                report.removed,
+                if report.removed == 1 { "y" } else { "ies" },
+                human_bytes(report.freed),
+                report.kept,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Compact byte count: `0 B`, `4.2 KB`, `1.3 MB`.
+fn human_bytes(n: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
+    let mut v = n as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
+}
+
+/// A branded, at-a-glance overview. This is intentionally a *start* — richer,
+/// per-command help still lives behind `--help` / `<command> --help`.
+fn print_overview() {
+    use owo_colors::OwoColorize;
+    println!("{} {}", "postmortem".bold(), env!("CARGO_PKG_VERSION").dimmed());
+    println!("{}", "Static supply-chain scanner — no network by default.".dimmed());
+    println!();
+    println!("{}", "USAGE".bold());
+    println!("  postmortem <command> [options]");
+    println!();
+    println!("{}", "COMMANDS".bold());
+    println!("  {}   Scan one or more project directories for malicious dependencies", "scan".cyan());
+    println!("  {}   Resolve the dependency tree from the lockfiles ({} for repo stats)", "tree".cyan(), "--online".dimmed());
+    println!("  {}  Manage the on-disk cache used by {}", "cache".cyan(), "tree --online".dimmed());
+    println!("  {}   Show this overview", "help".cyan());
+    println!();
+    println!("{}", "ECOSYSTEMS".bold());
+    println!("  {}", "node · python · rust · ruby · php · go · java".dimmed());
+    println!();
+    println!("{}", "EXAMPLES".bold());
+    println!("  postmortem scan .");
+    println!("  postmortem scan ./service-a ./service-b");
+    println!("  postmortem scan . --json -o report.json");
+    println!("  postmortem scan . --sarif        {}", "# GitHub Code Scanning".dimmed());
+    println!("  postmortem tree . --depth 2      {}", "# dependency forest".dimmed());
+    println!("  postmortem tree . --online --vulns {}", "# reputation + CVEs".dimmed());
+    println!();
+    println!(
+        "Run {} for the full flag reference.",
+        "postmortem scan --help".cyan()
+    );
+}
+
+/// `postmortem scan <paths>...` — scan each path in sequence. Exit code: 2 if no
+/// supported ecosystem was found at any path, 1 if any scan tripped the severity
+/// gate, else 0.
+fn run_scan(args: cli::ScanArgs) -> Result<()> {
+    if args.paths.len() > 1 && !matches!(args.format(), cli::Format::Terminal) {
+        anyhow::bail!(
+            "machine formats (--json/--html/--sarif) support a single path; got {}",
+            args.paths.len()
+        );
+    }
+
+    let ui = ui::Ui::new(!args.no_progress);
+
+    let mut any_detected = false;
+    let mut gate_tripped = false;
+    for path in &args.paths {
+        let root = match path.canonicalize() {
+            Ok(r) => r,
+            Err(e) => {
+                ui.note(format!("cannot resolve path {}: {e}", path.display()));
+                continue;
+            }
+        };
+        match scan_path(&root, &args, &ui)? {
+            Some(tripped) => {
+                any_detected = true;
+                gate_tripped |= tripped;
+            }
+            None => ui.note(format!("no supported ecosystem detected at {}", root.display())),
+        }
+    }
+
+    if !any_detected {
         std::process::exit(2);
     }
+    std::process::exit(if gate_tripped { 1 } else { 0 });
+}
+
+/// `postmortem tree <paths>...` — resolve and render the dependency forest from
+/// the lockfiles. Offline today; `--online` is reserved for repository-reputation
+/// resolution (see [`resolve`]). Exit 2 if no supported ecosystem was found.
+fn run_tree(args: cli::TreeArgs) -> Result<()> {
+    if args.paths.len() > 1 && args.json {
+        anyhow::bail!("--json supports a single path; got {}", args.paths.len());
+    }
+
+    let ui = ui::Ui::new(!args.no_progress);
+
+    // Online resolution shares one resolver (and its cache/token) across paths.
+    let mut settings = settings::Settings::load().unwrap_or_default();
+
+    let resolver = if args.online {
+        gochi::greet(ui.animating()); // gochi says hi before the token prompt
+        let token = settings.resolve_github_token()?;
+        if token.is_none() {
+            eprintln!(
+                "note: no GitHub token — using the anonymous GitHub API (60 req/h). \
+                 Set GITHUB_TOKEN or add it to ~/.postmortem/config.yml to raise the limit."
+            );
+        }
+        Some(resolve::Resolver::new(token, settings.tree.clone()))
+    } else {
+        None
+    };
+
+    // mlab vuln-scan context (agent + cache + token), independent of --online.
+    let vuln_ctx = if args.vulns {
+        if settings.vuln_token().is_none() {
+            eprintln!(
+                "note: no mlab token — vuln scans use the anonymous 8/h limit. \
+                 Set VULN_MLAB_TOKEN or vuln_token in ~/.postmortem/config.yml."
+            );
+        }
+        Some((vuln::agent(), cache::Cache::open(), settings.vuln_token()))
+    } else {
+        None
+    };
+
+    let mut any_detected = false;
+    for path in &args.paths {
+        let root = match path.canonicalize() {
+            Ok(r) => r,
+            Err(e) => {
+                ui.note(format!("cannot resolve path {}: {e}", path.display()));
+                continue;
+            }
+        };
+        let Some((detected, deps, diags)) = detect_and_parse(&root, &ui)? else {
+            ui.note(format!("no supported ecosystem detected at {}", root.display()));
+            continue;
+        };
+        any_detected = true;
+
+        let ecosystems: Vec<String> = detected.iter().map(|e| e.name().to_string()).collect();
+        let mut forest = tree::build(&root.display().to_string(), &ecosystems, &deps, args.depth);
+        forest.diagnostics = diags;
+
+        if let Some(resolver) = &resolver {
+            let resolutions = resolver.resolve_all(&deps, &ui);
+            tree::enrich(&mut forest, &resolutions);
+            tree::score(&mut forest);
+        }
+
+        if let Some((agent, cache, token)) = &vuln_ctx {
+            ui.note("scanning known vulnerabilities via vuln.mlab.sh…");
+            for d in &detected {
+                match mlab_target(d) {
+                    Some((lock, fmt)) => match vuln::scan(agent, cache, token.as_deref(), lock, fmt)
+                    {
+                        Ok(mut v) => forest.vulnerabilities.append(&mut v),
+                        Err(e) => forest.diagnostics.push(model::Diagnostic {
+                            ecosystem: d.name().into(),
+                            kind: "vuln_scan_failed".into(),
+                            message: format!("vuln scan failed: {e:#}"),
+                        }),
+                    },
+                    None => forest.diagnostics.push(model::Diagnostic {
+                        ecosystem: d.name().into(),
+                        kind: "vuln_unsupported".into(),
+                        message: "mlab vuln scan does not support this lockfile format".into(),
+                    }),
+                }
+            }
+        }
+
+        if args.json {
+            let out = serde_json::to_string_pretty(&forest)?;
+            cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "json").write(&out)?;
+        } else {
+            tree::render(&forest);
+        }
+    }
+
+    if !any_detected {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
+/// Detected ecosystems, parsed dependencies, and any diagnostics.
+type ParsedProject = (Vec<detect::Detected>, Vec<model::Dependency>, Vec<model::Diagnostic>);
+
+/// Map a detected ecosystem to the lockfile + mlab `format` its vuln API
+/// accepts, or `None` when mlab doesn't support that format (pnpm/yarn, poetry/
+/// Pipfile, Java).
+fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)> {
+    let base = |p: &Path| p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+    match d {
+        detect::Detected::Node { lockfile, .. } => {
+            matches!(base(lockfile).as_str(), "package-lock.json" | "npm-shrinkwrap.json")
+                .then_some((lockfile.as_path(), "npm"))
+        }
+        detect::Detected::Rust { lockfile, .. } => Some((lockfile.as_path(), "cargo")),
+        detect::Detected::Php { lockfile, .. } => Some((lockfile.as_path(), "composer")),
+        detect::Detected::Ruby { lockfile, .. } => Some((lockfile.as_path(), "gem")),
+        detect::Detected::Go { lockfile: Some(go_sum), .. } => Some((go_sum.as_path(), "go")),
+        detect::Detected::Python { lockfile, manifest, .. } => {
+            if lockfile.as_ref().is_some_and(|p| base(p) == "requirements.txt") {
+                lockfile.as_deref().map(|p| (p, "pip"))
+            } else if base(manifest) == "requirements.txt" {
+                Some((manifest.as_path(), "pip"))
+            } else {
+                None
+            }
+        }
+        detect::Detected::Go { .. } | detect::Detected::Java { .. } => None,
+    }
+}
+
+/// Detect ecosystems and parse every lockfile at `root`. Shared by `scan` and
+/// `tree`. Returns `None` when no supported ecosystem is present, else the
+/// detected ecosystems, the parsed dependencies, and any diagnostics (parse
+/// failures / incomplete graphs) so a `0` result is never mistaken for "clean".
+fn detect_and_parse(root: &Path, ui: &ui::Ui) -> Result<Option<ParsedProject>> {
+    let detect_phase = ui.phase("detecting ecosystems");
+    let detected = detect::detect(root)?;
+    if detected.is_empty() {
+        detect_phase.abandon();
+        return Ok(None);
+    }
+    detect_phase.done(format!(
+        "detected {}: {}",
+        detected.len(),
+        detected
+            .iter()
+            .map(|e| e.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+
+    let parse_phase = ui.phase("parsing dependencies");
+    let mut deps = Vec::new();
+    let mut diags: Vec<model::Diagnostic> = Vec::new();
+    let mut diag = |eco: &str, kind: &str, message: String| {
+        parse_phase.note(format!("warn: {message}"));
+        diags.push(model::Diagnostic { ecosystem: eco.into(), kind: kind.into(), message });
+    };
+
+    for eco in &detected {
+        parse_phase.set(format!("parsing {} manifest", eco.name()));
+        match eco {
+            // Dispatch Node by lockfile flavor: npm (JSON), pnpm (YAML), yarn (v1/berry).
+            detect::Detected::Node { manifest, lockfile, .. } => {
+                let fname = lockfile.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let parsed = match fname {
+                    "pnpm-lock.yaml" => parsers::pnpm::parse(lockfile),
+                    "yarn.lock" => parsers::yarn::parse(manifest, lockfile),
+                    _ => parsers::node::parse_lockfile(lockfile),
+                };
+                match parsed {
+                    Ok(mut d) => deps.append(&mut d),
+                    Err(e) => diag("node", "parse_failed", format!("{fname} parse failed: {e:#}")),
+                }
+            }
+            detect::Detected::Python { manifest, lockfile, .. } => {
+                match parsers::python::parse_any(manifest, lockfile.as_deref()) {
+                    Ok(mut d) => deps.append(&mut d),
+                    Err(e) => diag("python", "parse_failed", format!("python parse failed: {e:#}")),
+                }
+            }
+            detect::Detected::Rust { manifest, lockfile, .. } => {
+                match parsers::rust::parse_lockfile(lockfile, Some(manifest)) {
+                    Ok(mut d) => deps.append(&mut d),
+                    Err(e) => diag("rust", "parse_failed", format!("Cargo.lock parse failed: {e:#}")),
+                }
+            }
+            detect::Detected::Ruby { manifest, lockfile, .. } => {
+                match parsers::ruby::parse_lockfile(lockfile, manifest.as_deref()) {
+                    Ok(mut d) => deps.append(&mut d),
+                    Err(e) => diag("ruby", "parse_failed", format!("Gemfile.lock parse failed: {e:#}")),
+                }
+            }
+            detect::Detected::Php { manifest, lockfile, .. } => {
+                match parsers::php::parse_lockfile(lockfile, manifest.as_deref()) {
+                    Ok(mut d) => deps.append(&mut d),
+                    Err(e) => diag("php", "parse_failed", format!("composer.lock parse failed: {e:#}")),
+                }
+            }
+            detect::Detected::Go { manifest, lockfile, .. } => {
+                match parsers::go::parse(manifest, lockfile.as_deref()) {
+                    Ok(mut d) => deps.append(&mut d),
+                    Err(e) => diag("go", "parse_failed", format!("go.mod parse failed: {e:#}")),
+                }
+                // go.mod carries no edge data — the graph is a flat classified list.
+                diag(
+                    "go",
+                    "flat_graph",
+                    "go graph is flat — transitive parent edges are not reconstructed offline (needs `go mod graph`)".into(),
+                );
+                for (from, to) in parsers::go::replaces(manifest) {
+                    diag(
+                        "go",
+                        "replace_directive",
+                        format!("go.mod replaces {from} => {to} (module redirected — verify the target)"),
+                    );
+                }
+            }
+            detect::Detected::Java { manifest, lockfile, .. } => {
+                match parsers::java::parse(manifest.as_deref(), lockfile.as_deref()) {
+                    Ok(mut d) => deps.append(&mut d),
+                    Err(e) => diag("java", "parse_failed", format!("JVM manifest/lockfile parse failed: {e:#}")),
+                }
+                diag(
+                    "java",
+                    "flat_graph",
+                    "JVM graph is flat — Maven lists direct deps only and Gradle locks carry no edges (no transitive closure offline)".into(),
+                );
+            }
+        }
+    }
+    parse_phase.done(format!("parsed {} dependencies", deps.len()));
+
+    Ok(Some((detected, deps, diags)))
+}
+
+/// Scan a single already-canonicalized project root. Returns `None` when no
+/// supported ecosystem is present, otherwise `Some(gate_tripped)` where
+/// `gate_tripped` is true if any finding meets or exceeds `--severity`.
+fn scan_path(root: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<bool>> {
+    let Some((detected, deps, diagnostics)) = detect_and_parse(root, ui)? else {
+        return Ok(None);
+    };
 
     // Resolve the config: explicit --config wins; otherwise auto-load <root>/postmortem.conf
     // unless --no-config is set.
@@ -36,11 +404,11 @@ fn main() -> Result<()> {
     let config = match cfg_path {
         Some(p) => match config::Config::load(&p) {
             Ok(c) => {
-                eprintln!("loaded config from {}", p.display());
+                ui.note(format!("loaded config from {}", p.display()));
                 c
             }
             Err(e) => {
-                eprintln!("warn: failed to load config {}: {e:#}", p.display());
+                ui.note(format!("warn: failed to load config {}: {e:#}", p.display()));
                 config::Config::default()
             }
         },
@@ -48,70 +416,28 @@ fn main() -> Result<()> {
     };
     let config = config.merge_cli(&args.skip_category, args.min_severity);
 
-    let mut deps = Vec::new();
-    for eco in &detected {
-        match eco {
-            detect::Detected::Node { lockfile, .. } => match parsers::node::parse_lockfile(lockfile) {
-                Ok(mut d) => deps.append(&mut d),
-                Err(e) => eprintln!("warn: node lockfile parse failed: {e:#}"),
-            },
-            detect::Detected::Python { manifest, lockfile, .. } => {
-                match parsers::python::parse_any(manifest, lockfile.as_deref()) {
-                    Ok(mut d) => deps.append(&mut d),
-                    Err(e) => eprintln!("warn: python parse failed: {e:#}"),
-                }
-            }
-            detect::Detected::Rust { manifest, lockfile, .. } => {
-                match parsers::rust::parse_lockfile(lockfile, Some(manifest)) {
-                    Ok(mut d) => deps.append(&mut d),
-                    Err(e) => eprintln!("warn: cargo lockfile parse failed: {e:#}"),
-                }
-            }
-            detect::Detected::Ruby { manifest, lockfile, .. } => {
-                match parsers::ruby::parse_lockfile(lockfile, manifest.as_deref()) {
-                    Ok(mut d) => deps.append(&mut d),
-                    Err(e) => eprintln!("warn: Gemfile.lock parse failed: {e:#}"),
-                }
-            }
-            detect::Detected::Php { manifest, lockfile, .. } => {
-                match parsers::php::parse_lockfile(lockfile, manifest.as_deref()) {
-                    Ok(mut d) => deps.append(&mut d),
-                    Err(e) => eprintln!("warn: composer.lock parse failed: {e:#}"),
-                }
-            }
-            detect::Detected::Go { manifest, lockfile, .. } => {
-                match parsers::go::parse(manifest, lockfile.as_deref()) {
-                    Ok(mut d) => deps.append(&mut d),
-                    Err(e) => eprintln!("warn: go.mod parse failed: {e:#}"),
-                }
-            }
-            detect::Detected::Java { manifest, lockfile, .. } => {
-                match parsers::java::parse(manifest.as_deref(), lockfile.as_deref()) {
-                    Ok(mut d) => deps.append(&mut d),
-                    Err(e) => eprintln!("warn: JVM manifest/lockfile parse failed: {e:#}"),
-                }
-            }
-        }
-    }
-
     let raw_findings = if args.skip_analyze {
         Vec::new()
     } else {
-        analyze::run_all(&detected, &deps)
+        analyze::run_all(&detected, &deps, ui)
     };
 
     let (mut findings, suppressed) = config.apply(raw_findings);
     if suppressed > 0 {
-        eprintln!("config suppressed {suppressed} finding(s)");
+        ui.note(format!("config suppressed {suppressed} finding(s)"));
     }
     if args.enrich {
+        let enrich_phase = ui.phase("enriching findings");
         enrich::annotate(&mut findings);
+        let n = findings.iter().filter(|f| f.enrich_url.is_some()).count();
+        enrich_phase.done(format!("enriched {n} finding(s)"));
     }
 
     let report = model::Report {
-        schema_version: 1,
+        schema_version: 2,
         root: root.display().to_string(),
         ecosystems: detected.iter().map(|e| e.name().to_string()).collect(),
+        diagnostics,
         dependencies: deps,
         findings,
     };
@@ -132,14 +458,6 @@ fn main() -> Result<()> {
         }
     }
 
-    let exit = if report
-        .findings
-        .iter()
-        .any(|f| f.severity >= args.severity)
-    {
-        1
-    } else {
-        0
-    };
-    std::process::exit(exit);
+    let gate_tripped = report.findings.iter().any(|f| f.severity >= args.severity);
+    Ok(Some(gate_tripped))
 }

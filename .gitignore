@@ -33,3 +33,5 @@ postmortem-report-[*
 # that excludes node_modules.
 !tests/fixtures/**/node_modules/
 !tests/fixtures/**/node_modules/**
+
+realrepo

@@ -49,6 +49,41 @@ pub fn parse(manifest: &Path, lockfile: Option<&Path>) -> Result<Vec<Dependency>
         .collect())
 }
 
+/// `replace` directives from a go.mod. Each redirects a module to a fork, a
+/// local path, or a different version — supply-chain-relevant on its own, so we
+/// surface them rather than silently ignore them. Returns `(from, to)` strings.
+pub fn replaces(manifest: &Path) -> Vec<(String, String)> {
+    let Ok(text) = std::fs::read_to_string(manifest) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut in_block = false;
+    for raw in text.lines() {
+        let line = raw.split("//").next().unwrap_or("").trim();
+        if line == "replace (" {
+            in_block = true;
+            continue;
+        }
+        if in_block && line == ")" {
+            in_block = false;
+            continue;
+        }
+        let body = if let Some(rest) = line.strip_prefix("replace ") {
+            Some(rest)
+        } else if in_block && !line.is_empty() {
+            Some(line)
+        } else {
+            None
+        };
+        if let Some(body) = body
+            && let Some((from, to)) = body.split_once("=>")
+        {
+            out.push((from.trim().to_string(), to.trim().to_string()));
+        }
+    }
+    out
+}
+
 struct Require {
     path: String,
     version: String,

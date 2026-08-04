@@ -91,11 +91,25 @@ pub struct Finding {
     pub enrich_url: Option<String>,
 }
 
+/// A first-class signal that the dependency graph is incomplete — so a `0`
+/// result is never silently mistaken for "clean". Emitted when a lockfile fails
+/// to parse, or when an ecosystem's transitive edges can't be reconstructed
+/// offline (Go, Java).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Diagnostic {
+    pub ecosystem: String,
+    /// `parse_failed` | `flat_graph` | `replace_directive`
+    pub kind: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Report {
     pub schema_version: u32,
     pub root: String,
     pub ecosystems: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<Diagnostic>,
     pub dependencies: Vec<Dependency>,
     pub findings: Vec<Finding>,
 }

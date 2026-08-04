@@ -4,99 +4,72 @@
 
 # postmortem
 
-A static dependency scanner for **Node.js, Python, Rust, Ruby, PHP, Go, and
-JVM (Java/Kotlin)** projects. It resolves the lockfile graph, walks the vendored
-sources, and flags the patterns that typically show up in supply-chain
-compromises: install hooks, obfuscation, embedded IOCs (URLs, IPs, crypto
-wallets), and dangerous API surface.
+A supply-chain security scanner for **Node.js, Python, Rust, Ruby, PHP, Go, and
+JVM (Java/Kotlin)** projects. It has two complementary engines:
 
-Offline by default: no network calls, no telemetry, no daemon. One binary,
-about 2.7 MB.
+- **`scan`** — *content analysis.* Resolves the lockfile graph, walks the
+  vendored sources, and flags the patterns that show up in real compromises:
+  install hooks, obfuscation, embedded IOCs (URLs, IPs, crypto wallets), and
+  dangerous API surface. Fully **offline**.
+- **`tree`** — *graph & intelligence.* Renders the dependency forest and,
+  optionally, goes online to score each dependency on repository reputation and
+  identity/provenance (typosquatting, install-script-added, maintainer changes),
+  and to pull known CVE/GHSA advisories.
 
+One static binary, no telemetry, no daemon. `scan` never touches the network;
+`tree` only does so behind explicit `--online` / `--vulns` flags.
+
+```bash
+postmortem scan ./my-project            # find malicious code, offline
+postmortem tree ./my-project --online   # score deps by reputation + identity
+postmortem tree ./my-project --vulns    # known CVEs via vuln.mlab.sh
 ```
-postmortem ./my-project
-postmortem ./my-project --json -o report.json
-postmortem ./my-project --html -o report.html
-postmortem ./my-project --skip-category ioc
+
+## Table of contents
+
+- [Quick start](#quick-start)
+- [Install](#install)
+- [Commands](#commands)
+- [Language coverage](#language-coverage)
+- [`scan` — content analysis](#scan--content-analysis)
+  - [Analyzers](#analyzers)
+  - [False-positive controls](#false-positive-controls)
+- [`tree` — dependency graph & intelligence](#tree--dependency-graph--intelligence)
+  - [The offline graph](#the-offline-graph)
+  - [`--online`: reputation & the risk:dep scores](#--online-reputation--the-riskdep-scores)
+  - [Identity & provenance signals](#identity--provenance-signals)
+  - [`--vulns`: known vulnerabilities](#--vulns-known-vulnerabilities)
+- [`cache`](#cache)
+- [Configuration](#configuration)
+  - [`postmortem.conf` (per project)](#postmortemconf-per-project)
+  - [`~/.postmortem/config.yml` (global)](#postmortemconfigyml-global)
+- [Output formats](#output-formats)
+- [Exit codes](#exit-codes)
+- [Fixtures](#fixtures)
+- [Development](#development)
+- [License](#license)
+
+## Quick start
+
+```bash
+# 1. Scan vendored code for malicious patterns (offline, CI-friendly)
+postmortem scan ./my-project
+
+# 2. See the dependency tree
+postmortem tree ./my-project --depth 2
+
+# 3. Go online: reputation, typosquatting, maintainer anomalies, per-dep scores
+postmortem tree ./my-project --online
+
+# 4. Add known-vulnerability intel (OSV / GHSA / CVE)
+postmortem tree ./my-project --online --vulns
 ```
 
-## Supported ecosystems
-
-| Ecosystem | Lockfiles parsed | Source scanned for findings |
-|---|---|---|
-| Node.js | `package-lock.json` v2/v3, `npm-shrinkwrap.json`, `pnpm-lock.yaml`, `yarn.lock` | `node_modules/` on disk |
-| Python | `poetry.lock`, `Pipfile.lock`, `requirements*.txt` | project root, `.venv/.../site-packages/` |
-| Rust | `Cargo.lock` | the project's own `src/` |
-| Ruby | `Gemfile.lock` (Bundler) | the project's own source (`lib/`, `app/`, ...) |
-| PHP | `composer.lock` (Composer) | project root, including a committed `vendor/` tree |
-| Go | `go.mod` (with `go.sum` for checksums) | the project's own source and a committed `vendor/` tree |
-| JVM | Maven `pom.xml` (direct deps), Gradle `gradle.lockfile` (full resolved set) | the project's own `.java` / `.kt` source |
-
-## Features
-
-- **Multi-ecosystem SBOM.** Resolves the full dependency graph from each
-  lockfile, including parent edges (npm hoisting is fully resolved) and a
-  direct-vs-transitive classification per package.
-- **Four static analyzers** that run against vendored source on disk:
-  - `install_hook`: npm `pre/post-install` scripts, and Python `setup.py`
-    invoking `subprocess`, `os.system`, `exec`, or network primitives.
-  - `obfuscation`: Shannon entropy plus language-specific signals (`eval`,
-    `Function`, `charCodeAt` chains, long `\xNN` runs, base64 blobs, PHP
-    `gzinflate`/`str_rot13`, Ruby `Marshal.load`). Multi-signal scoring, with a
-    minified-bundle dampener so legit bundles do not raise alarms. A lone weak
-    signal (a bare `eval(` or `compile(`) is never reported on its own.
-  - `ioc`: embedded URLs, IPv4 and IPv6 addresses, bare domain names, and
-    Bitcoin (Base58-validated) and Ethereum addresses. Heavily filtered to stay
-    high-signal (see [False-positive controls](#false-positive-controls)).
-  - `sensitive_api`: dangerous primitives per language, such as
-    `child_process`/`net`/`https` (Node), `subprocess`/`socket`/`os.system`
-    (Python), `std::process`/`std::net`/`Command::new` (Rust),
-    `system`/`Net::HTTP`/`Open3` (Ruby), `shell_exec`/`proc_open`/`fsockopen`
-    (PHP), `exec.Command`/`net.Dial`/`plugin.Open` (Go), and
-    `Runtime.exec`/`ProcessBuilder`/`Class.forName` (JVM).
-- **Four output formats:** colored terminal, stable versioned JSON, a
-  self-contained HTML report, and SARIF 2.1.0 for GitHub Code Scanning and other
-  SARIF-aware tools.
-- **CI-friendly exit codes:** `0` clean, `1` findings at or above `--severity`,
-  `2` execution error.
-- **Suppression** via CLI flags and/or a `postmortem.conf` file in the scanned
-  directory.
-
-## False-positive controls
-
-The `ioc` analyzer is tuned for a high signal-to-noise ratio on real codebases:
-
-- **Scope operators are not addresses.** `web::get`, `Foo::<T>`, and other
-  `::` paths in Rust, PHP, and Ruby are never mistaken for compressed IPv6.
-- **Comments and docstrings are skipped.** A URL or IP in a `#`, `//`, `///`, or
-  `/* */` line is documentation, not an exfil endpoint.
-- **Non-routable ranges are dropped.** RFC1918, loopback, link-local, CGNAT, and
-  TEST-NET IPv4, plus documentation (`2001:db8::/32`), link-local, and
-  unique-local IPv6, are treated as config/test data.
-- **Member access is not a domain.** `self.name`, `logging.info`, `tc.in`,
-  `this.ch`, and other attribute accesses whose trailing label happens to be a
-  TLD (including short ccTLDs like `.in` or `.ch`) are filtered out, as are
-  reverse-DNS package paths (`com.google.gson`, `org.apache.commons`).
-- **Reference hosts are allow-listed.** Registry, docs, knowledge, and
-  module-host sites (npm, PyPI, crates.io, `golang.org`, `gopkg.in`, Wikipedia,
-  Stack Overflow, and more) are treated as noise, and hosts already covered by a
-  URL match are not double-reported.
+Run `postmortem help` for an at-a-glance overview.
 
 ## Install
 
-### From a prebuilt release (recommended)
-
-Each release is built by [`.github/workflows/release.yml`](.github/workflows/release.yml)
-for four targets:
-
-| Target triple | Platform |
-|---|---|
-| `aarch64-apple-darwin`        | macOS, Apple Silicon |
-| `x86_64-apple-darwin`         | macOS, Intel |
-| `x86_64-unknown-linux-gnu`    | Linux, x86_64 |
-| `aarch64-unknown-linux-gnu`   | Linux, arm64 |
-
-#### Homebrew
+### Homebrew
 
 ```bash
 brew tap mlab-sh/postmortem https://github.com/mlab-sh/postmortem.git
@@ -104,305 +77,413 @@ brew install postmortem
 ```
 
 The formula at [`Formula/postmortem.rb`](Formula/postmortem.rb) is
-auto-regenerated by the release workflow with live sha256 hashes. Never edit it
+auto-regenerated by the release workflow with live sha256 hashes — never edit it
 by hand.
 
-#### Direct tarball
+### Prebuilt tarball
 
-URL template: `https://github.com/mlab-sh/postmortem/releases/download/v<VERSION>/postmortem-<VERSION>-<TARGET>.tar.gz`
+Releases are built for four targets: `aarch64-apple-darwin`,
+`x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`.
 
 ```bash
-VERSION=1.0.1
-TARGET=aarch64-apple-darwin   # pick your target from the table above
+VERSION=1.1.0
+TARGET=aarch64-apple-darwin   # pick your target
 curl -L "https://github.com/mlab-sh/postmortem/releases/download/v${VERSION}/postmortem-${VERSION}-${TARGET}.tar.gz" \
   | tar xz
 sudo mv "postmortem-${VERSION}-${TARGET}/postmortem" /usr/local/bin/
 ```
 
-#### Ad-hoc CI build (no tagged release needed)
+The [release workflow](.github/workflows/release.yml) is `workflow_dispatch`-only;
+trigger it manually to build a binary from an untagged commit (artifacts are kept
+90 days).
 
-The release workflow is `workflow_dispatch`-only, with no automatic builds on
-push or tag. To grab a binary from an untagged commit, trigger it manually:
-
-1. Open the [Release workflow](https://github.com/mlab-sh/postmortem/actions/workflows/release.yml).
-2. Click **Run workflow**, pick the branch or commit, run it.
-3. Either download the per-platform `*.tar.gz` from the run-summary **Artifacts**
-   panel (kept 90 days), or grab it from the `v<version>` Release the run
-   publishes when it finishes.
-
-### Local build
+### From source
 
 ```bash
 git clone https://github.com/mlab-sh/postmortem.git
 cd postmortem
-cargo build --release
+cargo build --release        # stripped + thin-LTO, ~2.7 MB
 ./target/release/postmortem --help
 ```
 
-Requires a recent stable Rust toolchain (1.80+). For an editable, install-on-path
-build, `cargo install --path .` puts the binary in `~/.cargo/bin/`.
+Requires a recent stable Rust toolchain. `cargo install --path .` puts the
+binary on your `PATH`.
 
-## Usage
+## Commands
 
 ```text
-postmortem [OPTIONS] <PATH>
+postmortem <COMMAND>
 
-Arguments:
-  <PATH>  Path to the project to scan
-
-Options:
-      --json                     Emit JSON
-      --html                     Emit a self-contained HTML report
-      --sarif                    Emit SARIF 2.1.0 (GitHub Code Scanning)
-  -o, --output <OUTPUT>          Write output to this path. Pass `-` to force
-                                 stdout. When omitted for --json/--html/--sarif,
-                                 a file is auto-created in the cwd named
-                                 `postmortem-report-[MM.DD.YYYY::HH:MM].<ext>`
-      --severity <SEVERITY>      Min severity that causes a non-zero exit code
-                                 [default: high]  [info|low|medium|high|critical]
-      --min-severity <SEV>       Hide findings below this severity from the report
-      --skip-analyze             Skip every analyzer and only emit the SBOM
-      --enrich                   Attach mlab.sh deep-links to every IOC finding
-                                 so you can click straight through to enrichment
-                                 (WHOIS / passive DNS / abuse). Link emission
-                                 only, no HTTP is made.
-      --skip-category <CAT>...   Hide entire finding categories. Repeatable, or
-                                 comma-separated. [ioc|obfuscation|install_hook
-                                 |sensitive_api]
-      --config <PATH>            Path to a postmortem.conf
-      --no-config                Disable auto-loading of postmortem.conf
-      --no-deps                  Skip the dependency table in terminal output
-  -h, --help                     Print help
-  -V, --version                  Print version
+Commands:
+  scan   Scan one or more project directories for malicious dependencies
+  tree   Resolve the dependency tree; --online scores it, --vulns adds CVEs
+  cache  Manage the on-disk cache used by tree --online / --vulns
+  help   At-a-glance overview
 ```
 
-### Exit codes
+`postmortem <command> --help` prints the full flag reference for any command.
 
-| Code | Meaning |
-|------|---------|
-| `0`  | No findings at or above `--severity` (default: `high`). |
-| `1`  | At least one finding at or above the threshold. Block the build. |
-| `2`  | Execution error (no ecosystem detected, lockfile unreadable, etc.). |
+## Language coverage
 
-## `postmortem.conf`
+Coverage differs by **layer**. The dependency graph works for all seven
+ecosystems; the online intelligence layer is currently **npm-only**; vulnerability
+scanning covers what the mlab API accepts.
 
-Drop a `postmortem.conf` at the root of the project you scan to suppress noise
-without typing flags every time. It is auto-loaded when present; CLI flags take
-precedence and are unioned with the file's settings.
+| Language | Graph (offline `tree`/`scan`) | `--online` intel¹ | `--vulns`² |
+|---|---|---|---|
+| **Node** (npm / pnpm / yarn) | ✅ full parent edges | ✅ | ✅ (package-lock) |
+| **Python** | ✅ poetry · ⚠️ pip/Pipfile flat | ❌ | ✅ (requirements.txt) |
+| **Rust** | ✅ | ❌ | ✅ (Cargo.lock) |
+| **PHP** | ✅ | ❌ | ✅ (composer.lock) |
+| **Ruby** | ✅ | ❌ | ✅ (Gemfile.lock) |
+| **Go** | ⚠️ flat — no edges | ❌ | ✅ (go.sum) |
+| **JVM** (Java/Kotlin) | ⚠️ flat — no edges | ❌ | ❌ |
 
-Full schema (all fields optional):
+¹ Reputation, typosquatting, and maintainer/version anomalies need a per-registry
+resolver; only the npm resolver (npm registry → GitHub) exists today. ² Via the
+mlab SBOM API — see [`--vulns`](#--vulns-known-vulnerabilities).
+
+**Completeness is never silent.** When a lockfile fails to parse, or a graph is
+inherently flat (Go, JVM), postmortem emits a **diagnostic** rather than
+returning an empty result — so `0 findings` is never mistaken for "clean":
+
+```text
+⚠ 1 graph diagnostic(s) — results may be incomplete
+  [go] flat-graph  go graph is flat — transitive parent edges are not reconstructed offline
+```
+
+Diagnostics appear in `scan` and `tree` output and in `--json`.
+
+---
+
+# `scan` — content analysis
+
+```text
+postmortem scan [OPTIONS] <PATHS>...
+
+Arguments:
+  <PATHS>...  One or more project directories. Multiple paths are scanned in
+              sequence; machine formats (--json/--html/--sarif) require one path.
+
+Options:
+      --json / --html / --sarif   Emit JSON / self-contained HTML / SARIF 2.1.0
+  -o, --output <PATH>             Output path (`-` = stdout; default: timestamped file)
+      --severity <SEV>            Min severity for a non-zero exit [default: high]
+      --min-severity <SEV>        Hide findings below this severity from the report
+      --skip-analyze              Emit the SBOM only, no analysis
+      --skip-category <CAT>...    Drop categories [ioc|obfuscation|install_hook|sensitive_api]
+      --enrich                    Attach mlab.sh IOC deep-links (no network call)
+      --config <PATH> / --no-config
+      --no-deps                   Hide the dependency table in terminal output
+      --no-progress               Disable the animated progress UI
+```
+
+### Analyzers
+
+Four static analyzers run against vendored source on disk (`node_modules/`,
+`site-packages/`, committed `vendor/`, the project's own `src/`):
+
+| Analyzer | What it flags |
+|---|---|
+| `install_hook` | npm `pre/post-install` scripts, Python `setup.py` invoking `subprocess`/`os.system`/`exec`/network primitives. |
+| `obfuscation` | Shannon entropy + language signals (`eval`, `Function`, `charCodeAt` chains, long `\xNN` runs, base64 blobs, PHP `gzinflate`/`str_rot13`, Ruby `Marshal.load`). Multi-signal scoring; a lone weak signal is never reported alone; a minified-bundle dampener spares legit bundles. |
+| `ioc` | Embedded URLs, IPv4/IPv6, bare domains, and Bitcoin (Base58-validated) / Ethereum addresses. Heavily filtered — see below. |
+| `sensitive_api` | Dangerous primitives per language: `child_process`/`net` (Node), `subprocess`/`socket` (Python), `std::process`/`std::net` (Rust), `system`/`Net::HTTP` (Ruby), `shell_exec`/`fsockopen` (PHP), `exec.Command`/`plugin.Open` (Go), `Runtime.exec`/`Class.forName` (JVM). |
+
+### False-positive controls
+
+The `ioc` analyzer is tuned for high signal-to-noise on real codebases:
+
+- **Scope operators are not addresses.** `web::get`, `Foo::<T>`, and other `::`
+  paths are never mistaken for compressed IPv6.
+- **Comments and docstrings are skipped.** A URL/IP in a `#`, `//`, `///`, or
+  `/* */` line is documentation, not exfil.
+- **Non-routable ranges are dropped.** RFC1918, loopback, link-local, CGNAT, and
+  TEST-NET IPv4, plus doc/link-local/unique-local IPv6.
+- **Member access is not a domain.** `self.name`, `logging.info`, reverse-DNS
+  package paths (`com.google.gson`), and short-ccTLD look-alikes are filtered.
+- **Reference hosts are allow-listed.** Registries, docs, and module hosts (npm,
+  PyPI, crates.io, `golang.org`, Stack Overflow…) are treated as noise.
+
+---
+
+# `tree` — dependency graph & intelligence
+
+```text
+postmortem tree [OPTIONS] <PATHS>...
+
+Options:
+      --depth <N>       Limit the tree to N levels
+      --online          Resolve repos + reputation + identity/provenance signals
+      --vulns           Query known vulnerabilities via vuln.mlab.sh
+      --json -o <PATH>  Emit the resolved tree as JSON
+      --no-progress
+```
+
+### The offline graph
+
+Renders the recursive dependency forest straight from the lockfiles, reusing the
+same parsers as `scan`. Node lockfiles are all supported — `package-lock.json`
+(v2/v3), `pnpm-lock.yaml` (v5/v6/v9), and `yarn.lock` (classic v1 and Berry v2+)
+— each with full transitive edge reconstruction.
+
+```text
+my-project (node)
+├── express@4.18.2
+│   └── cookie@0.5.0
+└── lodash@4.17.21
+
+3 nodes · 2 direct · 1 transitive · depth 2
+```
+
+### `--online`: reputation & the risk:dep scores
+
+`--online` walks each **npm** dependency out to its source repository and pulls
+reputation stats (stars, age, last push, archived). Every node gets two scores,
+shown as **`(risk:dep)`**:
+
+- **`risk`** (0–100) — the package's *own* risk from its own flags. Clean → `0`.
+- **`dep`** (0–100) — how rotten its *dependency subtree* is; grows with the
+  count of distinct sketchy transitive deps and saturates to `100` for a
+  thoroughly rotten tree.
+
+```text
+my-project (node)
+├── @napi-rs/nice@1.1.1 ★5 ⚠ low-stars (5★) (30:0)
+│   └── @napi-rs/nice-linux-x64-gnu@1.1.1 ★5 ⚠ low-stars (5★) (30:0)
+└── qs@6.15.1 ★8942 (0:100)
+    ├── side-channel@1.1.0 ★18 ⚠ low-stars (18★) (30:0)
+    └── es-errors@1.3.0 ★11 ⚠ low-stars, stale (878d idle) (50:0)
+
+  (@_@)  gochi's recap
+    overall  risk 50/100 · dep 100/100
+     18  high-risk    typosquat / install-hook / low stars / fresh repo
+      2  suspicious   new maintainer / dormant / stale / no repo
+      0  unchecked    couldn't verify
+```
+
+**Coloring:** a package that's risky *itself* is red/orange; one that's clean
+but drags in a bad tree (high `dep`, like `qs`) is **blue**. Same-module splits
+collapse — `@napi-rs/nice`'s `@napi-rs/nice-<platform>` packages (same repo /
+name prefix) don't inflate its `dep`, so it reads `0`.
+
+**Auth & cache:** reads `github_token` from `~/.postmortem/config.yml`, else
+`$GITHUB_TOKEN`, else prompts (anonymous GitHub API is 60/hr). Responses are
+cached under `~/.postmortem/cache/`; an npm version's repo resolution is
+immutable and kept for good, so re-runs are near-instant. Fetches run in
+parallel (8 workers with a token). Thresholds live in the [global
+config](#postmortemconfigyml-global).
+
+### Identity & provenance signals
+
+Under `--online`, postmortem also flags the attack class that trojanized-*code*
+analysis misses — how a package *presents itself* — the tells behind
+account-takeover and trojanized updates (event-stream, ua-parser-js, crossenv):
+
+- **Typosquatting** — a high-confidence near-miss of a popular package (one edit
+  away, transposition, punctuation variant like `crossenv` vs `cross-env`, or a
+  homoglyph like `l0dash`). Offline, corpus-based.
+- **Install-script added** — a lifecycle script present in the installed version
+  but not its predecessor.
+- **Dormant release** — published after a long dormancy (≥1 year).
+- **New publisher** — a publisher who never shipped an earlier version.
+
+```text
+crossenv@1.0.0 ⚠ typosquat of cross-env (punctuation variant), new-publisher (95:0)
+```
+
+### `--vulns`: known vulnerabilities
+
+`--vulns` sends the lockfile to the [mlab SBOM API](https://vuln.mlab.sh)
+(`POST /api/v2/scan`), which resolves it recursively and returns OSV/GHSA/CVE
+advisories per package. Independent of `--online`, and combinable with it.
+
+```text
+🛡 10 known vulnerabilities  via vuln.mlab.sh
+  lodash@4.17.11 GHSA-jf85-cpcp-j695, GHSA-p6mc-m468-83gw, …
+  minimist@1.2.0 GHSA-xvch-5gv4-984h, …
+```
+
+- **Auth:** `vuln_token` from the [global config](#postmortemconfigyml-global),
+  else `$VULN_MLAB_TOKEN`. Anonymous is 8 scans/hr; a token (from
+  <https://vuln.mlab.sh/me/tokens>) raises it to 25/hr.
+- **Cache:** scans are cached by lockfile content hash, and each vulnerable
+  package is written to a `name@version`-keyed store.
+- **Formats:** npm (`package-lock.json`), Cargo, pip (`requirements.txt`),
+  Composer, Gem, Go (`go.sum`). Others emit a diagnostic.
+
+---
+
+# `cache`
+
+Manage the `~/.postmortem/cache/` used by `tree --online` / `--vulns`:
+
+```bash
+postmortem cache prune                    # remove everything
+postmortem cache prune --older-than 30    # keep entries touched in the last 30 days
+postmortem cache prune --dry-run          # show what would go, delete nothing
+```
+
+npm version→repo resolutions are immutable and cached forever; `prune` reclaims
+space or forces fresh GitHub stats.
+
+---
+
+# Configuration
+
+## `postmortem.conf` (per project)
+
+Drop a `postmortem.conf` at a scanned project's root to suppress noise without
+retyping flags. Auto-loaded when present; CLI flags take precedence and are
+unioned with the file.
 
 ```toml
 # Drop entire finding categories.
 skip_categories = ["ioc"]
 
-# Drop everything attributed to these dependencies. A bare name matches every
-# version of that dep; "name@version" pins to a specific version.
+# Drop everything from these deps. Bare name = every version; "name@version" pins.
 skip_dependencies = ["lodash", "left-pad@1.3.0"]
 
-# Raise the noise floor: findings below this severity are dropped before
-# rendering and never count toward the CI exit code.
+# Raise the noise floor: findings below this severity are dropped entirely.
 min_severity = "medium"
 
-# Fine-grained ignore rules. A finding is suppressed when ALL specified fields
-# match. An empty rule (no fields) is ignored on purpose so a typo cannot
-# accidentally mute everything.
+# Fine-grained ignore rules — a finding is suppressed when ALL fields match.
 [[ignore]]
 category = "obfuscation"
 dependency = "uglify-js"
 reason = "known minifier, expected high-entropy output"
 
 [[ignore]]
-path = "**/test/**"
-reason = "test fixtures legitimately contain weird strings"
-
-[[ignore]]
 path = "**/*.min.js"
 reason = "minified bundles"
 ```
 
-Path matching uses globs: `*` matches anything except `/`, `**` matches anything
-including `/`, `?` matches one non-slash char. Matching is substring (no implicit
-anchoring), so `**/test/**` works regardless of the absolute prefix.
+Paths use globs (`*` ≠ `/`, `**` = anything, `?` = one char), matched as a
+substring. Use `--no-config` to skip auto-loading, or `--config <path>` for a
+file outside the project.
 
-Use `--no-config` to scan without auto-loading, or `--config <path>` to point at
-a file outside the project root.
+## `~/.postmortem/config.yml` (global)
 
-## Output
+Machine-wide settings for the networked `tree` paths (written `0600` when saved):
 
-### Terminal
+```yaml
+# Tokens (optional — also read from $GITHUB_TOKEN / $VULN_MLAB_TOKEN).
+github_token: ghp_xxxxxxxxxxxx
+vuln_token:   xxxxxxxxxxxx
 
-```
-postmortem scan of ./tests/fixtures/malicious-node
-ecosystems: node
-dependencies: 2 total, 1 direct, 1 transitive
-findings: 1 critical, 3 high, 1 medium, 1 low, 0 info
-┌──────────────┬─────────┬────────────┬────────────────────┐
-│ name         ┆ version ┆ kind       ┆ parents            │
-├──────────────┼─────────┼────────────┼────────────────────┤
-│ event-stream ┆ 3.3.6   ┆ direct     ┆ -                  │
-│ flatmap-…    ┆ 0.1.1   ┆ transitive ┆ event-stream@3.3.6 │
-└──────────────┴─────────┴────────────┴────────────────────┘
-… findings table follows …
+# Reputation thresholds for tree --online.
+tree:
+  min_stars: 20      # flag repos below this
+  recent_days: 30    # flag repos created within this window
+  stale_days: 365    # flag repos with no push in this window
 ```
 
-### JSON
+---
 
-Stable schema versioned via `schema_version` (currently `1`). Safe for CI
-pipelines:
+# Output formats
+
+**Terminal** — colored tables + the animated progress UI (auto-disabled when
+stderr isn't a TTY, or `NO_COLOR`/`CI` is set).
+
+**JSON** (`--json`) — stable, versioned via `schema_version` (currently `2`),
+including a `diagnostics` array. Safe for pipelines:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "root": "/path/to/project",
   "ecosystems": ["node"],
+  "diagnostics": [],
   "dependencies": [ /* ... */ ],
   "findings": [
-    {
-      "dependency": "flatmap-stream",
-      "severity": "critical",
-      "category": "obfuscation",
-      "detail": "6 obfuscation signal(s): high-entropy, eval(), …",
-      "location": "…/flatmap-stream/index.js"
-    }
+    { "dependency": "flatmap-stream", "severity": "critical",
+      "category": "obfuscation", "detail": "6 obfuscation signal(s): …",
+      "location": "…/flatmap-stream/index.js" }
   ]
 }
 ```
 
-### HTML
+**HTML** (`--html`) — a self-contained single file (no external CSS/JS/fonts).
 
-`--html -o report.html` produces a self-contained single-file report, with no
-external CSS, JS, fonts, or images. Safe to attach to a ticket or upload to
-artifact storage.
-
-### SARIF (GitHub Code Scanning)
-
-`--sarif -o report.sarif` produces a [SARIF 2.1.0](https://sarifweb.azurewebsites.net/)
-document: one rule per analyzer category (`postmortem.ioc`, `.obfuscation`,
-`.install_hook`, `.sensitive_api`), one result per finding. Severity maps to
-SARIF levels as `critical/high` to `error`, `medium` to `warning`, `low` to
-`note`, and `info` to `none`. Each result carries a stable `partialFingerprints`
-entry so re-runs do not re-open the same alert, and paths are made relative to a
-`SRCROOT` URI base so the same SARIF file makes sense on any reviewer's machine.
-When combined with `--enrich`, the mlab.sh deep-link is surfaced as
-`properties.enrichUrl` on each IOC result.
-
-Wire into GitHub Code Scanning:
+**SARIF 2.1.0** (`--sarif`) — one rule per analyzer category, one result per
+finding, with stable `partialFingerprints` (re-runs don't re-open alerts) and
+`SRCROOT`-relative paths. Severity maps `critical/high`→`error`,
+`medium`→`warning`, `low`→`note`, `info`→`none`. Wire into GitHub Code Scanning:
 
 ```yaml
 - name: Run postmortem
-  run: postmortem . --sarif -o postmortem.sarif
-
+  run: postmortem scan . --sarif -o postmortem.sarif
 - name: Upload SARIF
   uses: github/codeql-action/upload-sarif@v3
   with:
     sarif_file: postmortem.sarif
 ```
 
-## Enrichment links
+**Enrichment links** — `scan --enrich` adds clickable [mlab.sh](https://mlab.sh)
+deep-links per IOC (`/ip/<addr>`, `/domain/<host>`, `/crypto/<address>`) so a
+human can pivot in one click. It makes **no** network call itself.
 
-The scanner never makes network calls. The optional `--enrich` flag emits
-clickable [mlab.sh](https://mlab.sh) deep-links per IOC finding so a human can
-pivot to enrichment in one click. It does **not** call any network itself.
+# Exit codes
 
-| IOC kind | mlab.sh link template |
-|---|---|
-| URL | `https://mlab.sh/domain/<host>` (host extracted from the URL) |
-| IPv4 | `https://mlab.sh/ip/<addr>` |
-| IPv6 | `https://mlab.sh/ip/<addr>` |
-| Domain | `https://mlab.sh/domain/<name>` |
-| BTC / ETH wallet | `https://mlab.sh/crypto/<address>` (chain auto-detected) |
+| Code | Meaning |
+|------|---------|
+| `0`  | No findings at or above `--severity` (default `high`). |
+| `1`  | At least one finding at or above the threshold — block the build. |
+| `2`  | Execution error (no ecosystem detected, path unreadable, etc.). |
 
-## Fixtures
+# Fixtures
 
-The test corpus emulates **real public supply-chain incidents** with inert
-payloads (see [tests/fixtures/README.md](tests/fixtures/README.md) for
-references). Each fixture reproduces patterns from the incident, not the original
-malicious code:
+The test corpus reproduces **real public supply-chain incidents** with inert
+payloads (see [tests/fixtures/README.md](tests/fixtures/README.md)):
 
-| Fixture | Models incident | Year | Triggers |
-|---|---|---|---|
-| [`malicious-node/`](tests/fixtures/malicious-node) | `event-stream@3.3.6` to `flatmap-stream@0.1.1` Copay wallet stealer | 2018 | `install_hook` HIGH, `obfuscation` CRITICAL, `ioc` HIGH (BTC + ETH wallets), `sensitive_api` |
-| [`malicious-python/`](tests/fixtures/malicious-python) | `ctx@0.2.6` PyPI hijack, AWS-key exfil via `setup.py` | 2022 | `install_hook` CRITICAL (6 primitives), `ioc` HIGH (wallet), `sensitive_api` |
-| [`malicious-rust/`](tests/fixtures/malicious-rust) | `rustdecimal` typosquat of `rust_decimal` | 2022 | SBOM resolves typosquat, `sensitive_api` MEDIUM on local `src/` |
-| [`malicious-ruby/`](tests/fixtures/malicious-ruby) | `rest-client 1.6.13` / `strong_password` hijack shape | 2019 | SBOM resolves typosquat, `obfuscation` (eval + base64), `sensitive_api`, `ioc` |
-| [`malicious-php/`](tests/fixtures/malicious-php) | Composer package-hijack webshell shape | n/a | SBOM resolves typosquat, `obfuscation` HIGH (eval + gzinflate + base64), `sensitive_api`, `ioc` |
-| [`malicious-go/`](tests/fixtures/malicious-go) | Go module-typosquat payload shape | n/a | SBOM resolves typosquat and `// indirect` split, `obfuscation` (base64 blob), `sensitive_api`, `ioc` |
-| [`malicious-java/`](tests/fixtures/malicious-java) | Maven artifact-typosquat payload shape | n/a | SBOM reads pom direct deps and skips the BOM, `obfuscation` (base64 blob), `sensitive_api`, `ioc` |
-| [`clean-node/`](tests/fixtures/clean-node) | benign baseline | n/a | no findings, exit `0` |
+| Fixture | Models incident | Year |
+|---|---|---|
+| [`malicious-node/`](tests/fixtures/malicious-node) | `event-stream`→`flatmap-stream` Copay wallet stealer | 2018 |
+| [`malicious-python/`](tests/fixtures/malicious-python) | `ctx` PyPI hijack, AWS-key exfil via `setup.py` | 2022 |
+| [`malicious-rust/`](tests/fixtures/malicious-rust) | `rustdecimal` typosquat of `rust_decimal` | 2022 |
+| [`malicious-ruby/`](tests/fixtures/malicious-ruby) | `strong_password`/`rest-client` hijack shape | 2019 |
+| [`malicious-php/`](tests/fixtures/malicious-php) | Composer package-hijack webshell shape | — |
+| [`malicious-go/`](tests/fixtures/malicious-go) | Go module-typosquat payload shape | — |
+| [`malicious-java/`](tests/fixtures/malicious-java) | Maven artifact-typosquat payload shape | — |
+| [`clean-node/`](tests/fixtures/clean-node) | benign baseline — no findings, exit `0` | — |
 
-Run the live demo:
+# Development
 
 ```bash
-postmortem ./tests/fixtures/malicious-node
-postmortem ./tests/fixtures/malicious-python
-postmortem ./tests/fixtures/malicious-rust
-postmortem ./tests/fixtures/malicious-ruby
-postmortem ./tests/fixtures/malicious-php
-postmortem ./tests/fixtures/malicious-go
-postmortem ./tests/fixtures/malicious-java
+cargo build --release    # stripped, thin-LTO, ~2.7 MB
+cargo test               # unit + integration
+cargo clippy --all-targets
 ```
 
-## Development
-
-```bash
-cargo build              # debug build
-cargo build --release    # stripped, LTO, about 2.7 MB
-cargo test               # 61 unit + 36 integration tests
-```
-
-### False-positive harness
-
-[`scripts/fp-harness.sh`](scripts/fp-harness.sh) clones a set of well-known,
-legitimate repositories (algorithm collections and popular libraries) across all
-supported ecosystems, runs postmortem on each, and summarizes the findings.
-Because the repos are trusted, essentially every finding is a candidate false
-positive, so the breakdown doubles as a regression harness for the IOC and
-obfuscation heuristics. It also runs a few per-repo sanity checks (determinism,
-SARIF validity, `--skip-category`, and the CI gate).
-
-```bash
-scripts/fp-harness.sh              # all ecosystems
-scripts/fp-harness.sh rust ruby    # a subset
-```
+[`scripts/fp-harness.sh`](scripts/fp-harness.sh) clones well-known legitimate
+repos across every ecosystem and runs postmortem on each — a regression harness
+for the IOC/obfuscation heuristics, since essentially every finding there is a
+candidate false positive.
 
 ### Architecture
 
 ```
 src/
-  main.rs                # orchestration, exit codes
-  cli.rs                 # clap definitions
-  config.rs              # postmortem.conf loader + filter engine
-  detect.rs              # detect ecosystems + locate manifests/lockfiles
-  model.rs               # Dependency, Finding, Severity, Category, Report
-  parsers/
-    node.rs              # package-lock.json v2/v3 + npm hoist resolution
-    python.rs            # poetry.lock / Pipfile.lock / requirements*.txt
-    rust.rs              # Cargo.lock
-    ruby.rs              # Gemfile.lock (Bundler)
-    php.rs               # composer.lock (Composer)
-    go.rs                # go.mod / go.sum (Go modules)
-    java.rs              # Maven pom.xml / Gradle gradle.lockfile
-  analyze/
-    install_hooks.rs     # npm pre/post-install + Python setup.py
-    obfuscation.rs       # entropy + eval + hex/base64 heuristics
-    ioc.rs               # URL / IPv4 / IPv6 / domain / BTC / ETH extraction
-    sensitive_api.rs     # dangerous primitives by language
-    util.rs              # walkers, entropy, path to package mapping
-  report/
-    terminal.rs          # colored TUI table
-    json.rs              # schema-stable JSON
-    html.rs              # self-contained HTML
-    sarif.rs             # SARIF 2.1.0
-scripts/
-  fp-harness.sh          # false-positive harness over real repos
-  fp_summarize.py        # JSON report summarizer used by the harness
-tests/
-  integration.rs         # end-to-end against fixtures
-  fixtures/              # reproductions of real public incidents
+  main.rs        # command dispatch, detect+parse, exit codes
+  cli.rs         # clap definitions
+  detect.rs      # ecosystem detection + manifest/lockfile location
+  model.rs       # Dependency, Finding, Diagnostic, Report, Severity
+  config.rs      # postmortem.conf loader + filter engine
+  settings.rs    # ~/.postmortem/config.yml (tokens + thresholds)
+  cache.rs       # immutable on-disk cache + prune
+  parsers/       # node · pnpm · yarn · python · rust · ruby · php · go · java
+  analyze/       # install_hooks · obfuscation · ioc · sensitive_api · util
+  report/        # terminal · json · html · sarif
+  enrich/        # mlab.sh IOC deep-links (scan --enrich)
+  tree.rs        # dependency-forest build + scoring + render
+  resolve.rs     # tree --online: npm→GitHub repo resolution, reputation, identity
+  typosquat.rs   # popular-name proximity check (data/npm-popular.txt)
+  vuln.rs        # tree --vulns: mlab SBOM scan API client
+  ui.rs, gochi.rs  # animated progress UI + the gochi companion
+tests/           # end-to-end against the fixtures above
 ```
 
-## License
+# License
 
 See [LICENSE](LICENSE).
 
