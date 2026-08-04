@@ -26,7 +26,7 @@ pub fn run(args: &crate::cli::InspectArgs) -> Result<()> {
     let ui = ui::Ui::new(!args.no_progress);
 
     // Read the installed inventory once (also carries the offline risk signals).
-    let loader = gochi::Loader::spinner("gochi — reading installed packages", ui.animating());
+    let loader = gochi::Loader::spinner("gochi reading installed packages", ui.animating());
     let inv = match system::brew_inventory() {
         Ok(inv) => {
             loader.finish(gochi::HAPPY, &format!("read {} package(s)", inv.deps.len()));
@@ -66,7 +66,7 @@ fn deep(args: &crate::cli::InspectArgs, sub: &[Dependency], ui: &ui::Ui) -> Resu
         bail!("`git` is required for --deep but was not found on PATH");
     }
     if !confirm(&args.package, sub.len(), args.yes)? {
-        eprintln!("aborted — no changes made.");
+        eprintln!("aborted, no changes made.");
         return Ok(());
     }
 
@@ -109,7 +109,7 @@ fn deep(args: &crate::cli::InspectArgs, sub: &[Dependency], ui: &ui::Ui) -> Resu
         bar.step(format!("git clone {}", repo.slug()));
         let dest = work.join(sanitize(&repo.slug()));
         if git_clone(&clone_url(repo), &dest) {
-            analyzed.push(audit_clone(name, repo, &dest, &vuln_ctx));
+            analyzed.push(audit_clone(name, repo, &dest, &vuln_ctx, args.allow_test_files));
         } else {
             analyzed.push(RepoAudit::clone_failed(name, repo));
         }
@@ -118,7 +118,7 @@ fn deep(args: &crate::cli::InspectArgs, sub: &[Dependency], ui: &ui::Ui) -> Resu
     let findings_total: usize = analyzed.iter().map(|a| a.findings.len()).sum();
     bar.finish(
         if findings_total > 0 { gochi::ALERT } else { gochi::HAPPY },
-        &format!("analyzed {} repo(s) — {findings_total} finding(s)", analyzed.len()),
+        &format!("analyzed {} repo(s), {findings_total} finding(s)", analyzed.len()),
     );
 
     // 4. Write the Markdown report, then delete the cloned source.
@@ -158,6 +158,7 @@ fn audit_clone(
     repo: &RepoRef,
     dir: &Path,
     vuln_ctx: &(ureq::Agent, crate::cache::Cache, Option<String>),
+    allow_test_files: bool,
 ) -> RepoAudit {
     // Rewrite finding locations relative to the clone (the absolute temp path is
     // meaningless once the workspace is deleted).
@@ -171,6 +172,9 @@ fn audit_clone(
             f
         })
         .collect();
+    // Drop IOC noise from test/fixture trees unless asked to keep it. Locations
+    // are already relative to the clone, so the base is empty.
+    let findings = analyze::drop_test_iocs(findings, allow_test_files, Path::new(""));
 
     // --vulns: scan any lockfile the upstream repo commits (best-effort).
     let (agent, cache, token) = vuln_ctx;
@@ -198,7 +202,7 @@ fn render_report(
     let mut md = String::new();
     let flagged = audits.iter().filter(|a| !a.findings.is_empty() || a.vulns > 0).count();
 
-    let _ = writeln!(md, "# postmortem — deep inspection of `{pkg}`\n");
+    let _ = writeln!(md, "# postmortem deep inspection of `{pkg}`\n");
     let _ = writeln!(
         md,
         "{} dependencies · {} repos analyzed · **{flagged} with findings**{}\n",
@@ -215,9 +219,9 @@ fn render_report(
     rows.sort_by(|a, b| a.name.cmp(&b.name));
     for d in rows {
         if let Some(r) = resolutions.get(&(d.name.clone(), d.version.clone())) {
-            let repo = r.repo.as_ref().map(|x| x.slug()).unwrap_or_else(|| "—".into());
-            let stars = r.stats.as_ref().map(|s| s.stars.to_string()).unwrap_or_else(|| "—".into());
-            let sig = if r.signals.is_empty() { "—".into() } else { r.signals.join(", ") };
+            let repo = r.repo.as_ref().map(|x| x.slug()).unwrap_or_else(|| "-".into());
+            let stars = r.stats.as_ref().map(|s| s.stars.to_string()).unwrap_or_else(|| "-".into());
+            let sig = if r.signals.is_empty() { "-".into() } else { r.signals.join(", ") };
             let _ = writeln!(md, "| `{}` | {} | {} | {} | {} |", d.name, repo, stars, r.risk, sig);
         }
     }
@@ -231,7 +235,7 @@ fn render_report(
         let _ = writeln!(md, "_No findings across the cloned sources._");
     }
     for a in with_findings {
-        let _ = writeln!(md, "### `{}` — {}", a.dep, a.slug);
+        let _ = writeln!(md, "### `{}` ({})", a.dep, a.slug);
         if a.vulns > 0 {
             let _ = writeln!(md, "- **{} known vulnerabilit{}** (via vuln.mlab.sh)", a.vulns, if a.vulns == 1 { "y" } else { "ies" });
         }
@@ -239,13 +243,16 @@ fn render_report(
         fs.sort_by(|x, y| y.severity.cmp(&x.severity));
         for f in fs.iter().take(50) {
             let loc = f.location.as_deref().map(|l| format!(" ({l})")).unwrap_or_default();
+            // The matched value (IP / domain / URL / wallet), after the location.
+            let val = f.evidence.as_deref().map(|e| format!(" [`{}`]", e.trim())).unwrap_or_default();
             let _ = writeln!(
                 md,
-                "- `{}` **{}** — {}{}",
+                "- `{}` **{}**: {}{}{}",
                 sev_label(f.severity),
                 f.category.as_str(),
                 f.detail,
-                loc
+                loc,
+                val
             );
         }
         if a.findings.len() > 50 {
@@ -259,7 +266,7 @@ fn render_report(
     if !failed.is_empty() {
         let _ = writeln!(md, "## Not analyzed (clone failed / private)\n");
         for a in failed {
-            let _ = writeln!(md, "- `{}` — {}", a.dep, a.slug);
+            let _ = writeln!(md, "- `{}` ({})", a.dep, a.slug);
         }
     }
     md
@@ -330,7 +337,7 @@ fn confirm(pkg: &str, deps: usize, yes: bool) -> Result<bool> {
     );
     eprintln!("      {}", "This can take a while and use network + disk.".dimmed());
     if !std::io::stdin().is_terminal() {
-        eprintln!("      {}", "non-interactive — pass -y to proceed.".dimmed());
+        eprintln!("      {}", "non-interactive, pass -y to proceed.".dimmed());
         return Ok(false);
     }
     eprint!("  proceed? [y/N]: ");

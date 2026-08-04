@@ -31,6 +31,15 @@ Adding a language: extend that analyzer's `Lang` enum (extensions), plus the
 per-language patterns for Obfuscation and Sensitive-API. IOC needs only the
 extensions. Next candidates: C#, Shell, Swift.
 
+## Test directories
+
+By default, **IOC** findings inside test or fixture directories (`test`, `tests`,
+`testdata`, `__tests__`, `spec`, `fixtures`, `__mocks__`) are dropped: test code
+routinely embeds fake IPs, URLs, and domains that are pure noise. The check is
+relative to the scanned project root. Pass `--allow-test-files` to keep them.
+Only IOC is filtered; obfuscation, sensitive-API, and install-hook findings in
+tests are always kept.
+
 ## Install-hooks (ecosystem-specific)
 
 | Ecosystem | Detects |

@@ -117,6 +117,18 @@ pub fn snippet(s: &str, max: usize) -> String {
     }
 }
 
+/// True when a path lives under a test/fixture directory. Test trees routinely
+/// embed fake IPs / URLs / domains that are pure IOC noise, so IOC detection
+/// skips them by default (override with `--allow-test-files`).
+pub fn is_test_path(path: &str) -> bool {
+    path.split(['/', '\\']).any(|c| {
+        matches!(
+            c,
+            "test" | "tests" | "testdata" | "__tests__" | "spec" | "specs" | "fixtures" | "__mocks__"
+        )
+    })
+}
+
 /// Owning-dependency derivation: pick the most specific source.
 pub fn owner(path: &Path, project_label: &str) -> String {
     if let Some(p) = node_pkg_from_path(path) {

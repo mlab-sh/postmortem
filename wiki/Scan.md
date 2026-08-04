@@ -36,6 +36,7 @@ language coverage matrix.
 | `--severity <SEV>` | Minimum severity that trips a non-zero exit (CI gate). Default: `high`. |
 | `--min-severity <SEV>` | Hide findings below this severity from the report. |
 | `--skip-category <C,...>` | Hide whole categories (`ioc`, `obfuscation`, `install_hook`, `sensitive_api`). |
+| `--allow-test-files` | Report IOC findings inside test/fixture directories too. Off by default: test code routinely embeds fake IPs, URLs, and domains that are pure noise. |
 | `--skip-analyze` | Emit only the SBOM (dependency inventory), no analysis. |
 | `--no-deps` | Terminal only: omit the dependency table, show findings only. |
 | `--enrich` | Attach mlab.sh investigation links to IOC findings. |

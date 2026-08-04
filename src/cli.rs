@@ -97,6 +97,10 @@ pub struct InspectArgs {
     #[arg(short = 'y', long)]
     pub yes: bool,
 
+    /// Report IOC findings inside test/fixture directories too (off by default).
+    #[arg(long)]
+    pub allow_test_files: bool,
+
     /// Disable the animated progress UI.
     #[arg(long)]
     pub no_progress: bool,
@@ -280,6 +284,11 @@ pub struct ScanArgs {
     /// Hide findings whose severity is below this threshold from the report
     #[arg(long, value_enum)]
     pub min_severity: Option<Severity>,
+
+    /// Report IOC findings inside test/fixture directories too. Off by default:
+    /// test code routinely embeds fake IPs/URLs/domains (pure noise).
+    #[arg(long)]
+    pub allow_test_files: bool,
 
     /// Disable the animated progress UI. Progress is also auto-disabled when
     /// stderr is not a TTY, or when NO_COLOR / CI is set.

@@ -10,8 +10,30 @@ use std::borrow::Cow;
 use std::path::Path;
 
 use crate::detect::Detected;
-use crate::model::{Dependency, Finding};
+use crate::model::{Category, Dependency, Finding};
 use crate::ui::Ui;
+
+/// Drop IOC findings located in test/fixture directories, unless
+/// `allow_test_files`. The test-dir check is made **relative to `base`** (the
+/// scanned project root), so a `test/` component that belongs to the harness's
+/// own path (e.g. `.../tests/fixtures/...`) doesn't count. Only IOCs are filtered
+/// (test code legitimately embeds fake IPs/URLs/domains); obfuscation /
+/// sensitive-API / install-hook findings in tests are kept.
+pub fn drop_test_iocs(findings: Vec<Finding>, allow_test_files: bool, base: &Path) -> Vec<Finding> {
+    if allow_test_files {
+        return findings;
+    }
+    let base = base.to_string_lossy();
+    findings
+        .into_iter()
+        .filter(|f| {
+            !(matches!(f.category, Category::Ioc)
+                && f.location.as_deref().is_some_and(|loc| {
+                    util::is_test_path(loc.strip_prefix(base.as_ref()).unwrap_or(loc))
+                }))
+        })
+        .collect()
+}
 
 /// A boxed analyzer invocation that appends its findings to the shared vec.
 type RunFn<'a> = Box<dyn FnOnce(&mut Vec<Finding>) + 'a>;
@@ -145,6 +167,55 @@ fn plan(detected: &[Detected]) -> Vec<Step<'_>> {
     }
 
     steps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Severity;
+
+    fn ioc(loc: &str) -> Finding {
+        Finding {
+            dependency: "x".into(),
+            severity: Severity::Medium,
+            category: Category::Ioc,
+            detail: "d".into(),
+            location: Some(loc.into()),
+            evidence: None,
+            enrich_url: None,
+        }
+    }
+
+    #[test]
+    fn drops_test_iocs_by_default_only() {
+        let base = std::path::Path::new("");
+        let fs = vec![ioc("src/a.rs:1"), ioc("test/b.py:2"), ioc("pkg/tests/c.rs:3")];
+        let kept = drop_test_iocs(fs.clone(), false, base);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].location.as_deref(), Some("src/a.rs:1"));
+        // A file merely named `test_*` is NOT a test dir.
+        assert_eq!(drop_test_iocs(vec![ioc("src/test_util.rs:1")], false, base).len(), 1);
+        // --allow-test-files keeps everything.
+        assert_eq!(drop_test_iocs(fs, true, base).len(), 3);
+    }
+
+    #[test]
+    fn test_check_is_relative_to_base() {
+        // A `tests` component that belongs to the base path must NOT count.
+        let base = std::path::Path::new("/repo/tests/fixtures/proj");
+        let f = ioc("/repo/tests/fixtures/proj/node_modules/evil/x.js:1");
+        assert_eq!(drop_test_iocs(vec![f], false, base).len(), 1, "harness path ignored");
+        // But a test dir *below* the base is filtered.
+        let f2 = ioc("/repo/tests/fixtures/proj/test/x.js:1");
+        assert_eq!(drop_test_iocs(vec![f2], false, base).len(), 0);
+    }
+
+    #[test]
+    fn non_ioc_findings_in_tests_are_kept() {
+        let mut f = ioc("test/x.rs:1");
+        f.category = Category::SensitiveApi;
+        assert_eq!(drop_test_iocs(vec![f], false, std::path::Path::new("")).len(), 1);
+    }
 }
 
 /// Python is scanned identically at the repo root and (if present) the venv's

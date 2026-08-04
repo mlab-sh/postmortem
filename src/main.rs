@@ -608,7 +608,8 @@ fn scan_path(root: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<bo
     let raw_findings = if args.skip_analyze {
         Vec::new()
     } else {
-        analyze::run_all(&detected, &deps, ui)
+        let f = analyze::run_all(&detected, &deps, ui);
+        analyze::drop_test_iocs(f, args.allow_test_files, root)
     };
 
     let (mut findings, suppressed) = config.apply(raw_findings);
