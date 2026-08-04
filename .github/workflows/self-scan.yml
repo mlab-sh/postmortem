@@ -1,0 +1,38 @@
+name: Supply-chain self-scan
+
+# Dogfood: run the published postmortem Action against postmortem's own
+# dependency graph. postmortem is a Rust project, so the meaningful signal is
+# the vulnerability scan of Cargo.lock (`--vulns`); reputation scoring
+# (`--online`) is npm-only and left off here.
+
+on:
+  push:
+    branches: [main]
+    paths: ["Cargo.lock", "Cargo.toml"]
+  pull_request:
+    paths: ["Cargo.lock", "Cargo.toml"]
+  schedule:
+    - cron: "0 6 * * 1" # weekly — catch newly-published advisories on pinned deps
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write # for the SARIF upload to Code Scanning
+
+jobs:
+  scan:
+    name: postmortem gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: postmortem supply-chain gate
+        uses: mlab-sh/postmortem@v2
+        with:
+          path: .
+          online: false # reputation scoring is npm-only; this repo is Rust
+          vulns: true
+          fail-on-vuln: high # block only on High+ advisories
+          sarif: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          vuln-token: ${{ secrets.VULN_MLAB_TOKEN }} # optional — raises the rate limit
