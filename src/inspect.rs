@@ -25,11 +25,16 @@ const MAX_CLONES: usize = 60;
 pub fn run(args: &crate::cli::InspectArgs) -> Result<()> {
     let ui = ui::Ui::new(!args.no_progress);
 
-    // Read the installed inventory once (also carries the offline risk signals).
+    // Read the installed inventory once (via whichever backend is available).
+    let Some(backend) =
+        system::detect().into_iter().find(|m| m.available && m.implemented).map(|m| m.name)
+    else {
+        bail!("no supported system package manager found");
+    };
     let loader = gochi::Loader::spinner("gochi reading installed packages", ui.animating());
-    let inv = match system::brew_inventory() {
+    let inv = match system::inventory(backend, system::Opts::default()) {
         Ok(inv) => {
-            loader.finish(gochi::HAPPY, &format!("read {} package(s)", inv.deps.len()));
+            loader.finish(gochi::HAPPY, &format!("read {}", inv.summary));
             inv
         }
         Err(e) => {
@@ -41,7 +46,7 @@ pub fn run(args: &crate::cli::InspectArgs) -> Result<()> {
     // The package's dependency subtree (itself + everything it pulls in).
     let sub = subtree_deps(&args.package, &inv.deps);
     if sub.is_empty() {
-        bail!("'{}' is not installed (via Homebrew), or has no dependency record", args.package);
+        bail!("'{}' is not installed, or has no dependency record", args.package);
     }
 
     if !args.deep {
@@ -52,7 +57,8 @@ pub fn run(args: &crate::cli::InspectArgs) -> Result<()> {
 
 /// Basic mode: the offline subtree with the same signals/scoring as `system`.
 fn render_focused(pkg: &str, sub: &[Dependency], inv: &system::Inventory) -> Result<()> {
-    let mut forest = tree::build_focused(pkg, &["brew".to_string()], sub, None, pkg);
+    let eco = sub.first().map(|d| d.ecosystem.as_str()).unwrap_or("system").to_string();
+    let mut forest = tree::build_focused(pkg, &[eco], sub, None, pkg);
     system::annotate(&mut forest, &inv.signals);
     tree::score(&mut forest);
     tree::render(&forest);

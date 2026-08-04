@@ -423,9 +423,10 @@ impl Resolver {
         };
         // Homebrew third-party taps aren't on formulae.brew.sh (404 above), but
         // the tap *is* a repo — fall back to it (carried in `resolved_url`) so we
-        // assess the tap rather than flag "no repository". Gated to Brew: other
-        // ecosystems' `resolved_url` is a tarball/registry URL, not a repo.
-        if repo.is_none() && dep.ecosystem == Ecosystem::Brew {
+        // assess the tap rather than flag "no repository". Pacman has no registry
+        // and carries the package's upstream URL the same way. Gated to these two:
+        // other ecosystems' `resolved_url` is a tarball/registry URL, not a repo.
+        if repo.is_none() && matches!(dep.ecosystem, Ecosystem::Brew | Ecosystem::Pacman) {
             repo = dep.resolved_url.as_deref().and_then(parse_repo);
         }
         self.cache.put("registry", &key, &CachedRepo { repo: repo.clone() });
@@ -611,7 +612,9 @@ fn registry_url(dep: &Dependency) -> Option<String> {
         // Homebrew: the formula JSON carries `homepage` (often a GitHub repo).
         // The name can contain `@` (`openssl@3`); the API path takes it verbatim.
         Ecosystem::Brew => format!("https://formulae.brew.sh/api/formula/{}.json", dep.name),
-        Ecosystem::Go => return None,
+        // Go's module path and Pacman's package URL resolve without a registry
+        // call (repo parsed from the name / `resolved_url`).
+        Ecosystem::Go | Ecosystem::Pacman => return None,
     })
 }
 
@@ -683,7 +686,8 @@ fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<String> {
         .into_iter()
         .flatten()
         .collect(),
-        Ecosystem::Go => Vec::new(),
+        // Resolved directly from the name / resolved_url, never via a registry.
+        Ecosystem::Go | Ecosystem::Pacman => Vec::new(),
     }
 }
 

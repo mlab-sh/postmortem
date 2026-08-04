@@ -70,6 +70,11 @@ pub struct SystemArgs {
     #[arg(long)]
     pub languages: bool,
 
+    /// Force foreign/AUR detection even when the package DB looks un-synced
+    /// (pacman): normally that state is skipped to avoid flagging everything.
+    #[arg(long)]
+    pub force_aur: bool,
+
     /// Disable the animated progress UI.
     #[arg(long)]
     pub no_progress: bool,

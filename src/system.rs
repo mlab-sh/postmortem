@@ -49,9 +49,9 @@ pub struct Manager {
 /// rest are detected-and-reported so the roadmap is visible.
 const KNOWN: &[(&str, &str, bool)] = &[
     ("homebrew", "brew", true),
+    ("pacman", "pacman", true),
     ("apt", "apt", false),
     ("dpkg", "dpkg", false),
-    ("pacman", "pacman", false),
     ("dnf", "dnf", false),
     ("apk", "apk", false),
     ("macports", "port", false),
@@ -103,19 +103,49 @@ impl SysSignal {
     }
 }
 
+/// One configured source repo, generic across backends (a Homebrew tap, a
+/// pacman repo, an apt source, …).
+pub struct Repo {
+    /// Handle / section name, e.g. `homebrew/core`, `core`, `sn0walice/sshm`.
+    pub name: String,
+    /// Its URL/remote when known (empty otherwise).
+    pub url: String,
+    /// A first-party / trusted source (vs. a third-party one).
+    pub official: bool,
+}
+
 /// The installed inventory for one system manager, in the shared `tree` model.
 pub struct Inventory {
     pub manager: &'static str,
-    /// Installed packages as `Dependency` nodes (ecosystem `brew`): formulae
-    /// (with dependency edges) followed by casks (flat roots).
+    /// Installed packages as `Dependency` nodes.
     pub deps: Vec<Dependency>,
-    /// Configured source repos (taps).
-    pub taps: Vec<Tap>,
-    /// Number of installed casks (for the summary line).
-    pub casks: usize,
-    /// Offline risk signals per package name (third-party taps + cask analysis),
-    /// merged onto the tree by [`annotate`].
+    /// Configured source repos.
+    pub repos: Vec<Repo>,
+    /// Offline risk signals per package name, merged onto the tree by [`annotate`].
     pub signals: HashMap<String, Vec<SysSignal>>,
+    /// A one-line human count, e.g. `117 formula(e) + 2 cask(s)`.
+    pub summary: String,
+    /// A caveat to surface after loading (e.g. an un-synced pacman DB).
+    pub note: Option<String>,
+}
+
+/// Options for [`inventory`].
+#[derive(Default, Clone, Copy)]
+pub struct Opts {
+    /// Pull networked provenance during inventory (pacman's AUR RPC).
+    pub online: bool,
+    /// Force foreign/AUR detection past the un-synced-DB guard (pacman).
+    pub force_aur: bool,
+}
+
+/// Build the installed inventory for a supported backend. Homebrew ignores
+/// `opts` (its reputation comes from the shared `--online` path).
+pub fn inventory(manager: &str, opts: Opts) -> Result<Inventory> {
+    match manager {
+        "homebrew" => brew_inventory(),
+        "pacman" => pacman_inventory(opts),
+        other => anyhow::bail!("no inventory backend for '{other}'"),
+    }
 }
 
 // --- Homebrew JSON (`brew info --json=v2 --installed`) --------------------------
@@ -226,7 +256,12 @@ pub fn brew_inventory() -> Result<Inventory> {
     for (name, (installed, current)) in read_outdated() {
         signals.entry(name).or_default().push(outdated_signal(&installed, &current));
     }
-    Ok(Inventory { manager: "homebrew", deps, taps, casks, signals })
+    let summary = format!("{} formula(e) + {casks} cask(s)", deps.len() - casks);
+    let repos = taps
+        .into_iter()
+        .map(|t| Repo { name: t.name, url: t.remote, official: t.official })
+        .collect();
+    Ok(Inventory { manager: "homebrew", deps, repos, signals, summary, note: None })
 }
 
 /// The output of [`analyze`]: the packages (formulae forest + cask roots), the
@@ -467,13 +502,313 @@ fn read_outdated() -> HashMap<String, (String, String)> {
         .collect()
 }
 
+// --- pacman backend (`pacman -Qi`) -------------------------------------------
+
+/// Read the installed pacman forest into an [`Inventory`]. `pacman -Qi` dumps
+/// every installed package's info in one call: name, version, deps, URL,
+/// signature status, install-reason (explicit vs pulled-in), and whether it
+/// ships an install hook. `online` additionally enriches foreign/AUR packages
+/// via the AUR RPC.
+pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
+    let out = Command::new("pacman").arg("-Qi").output().context("running `pacman -Qi`")?;
+    if !out.status.success() {
+        anyhow::bail!("`pacman -Qi` failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+    }
+    let (deps, mut signals) = pacman_graph(&String::from_utf8_lossy(&out.stdout));
+
+    // Foreign packages (not from an official repo) = AUR builds / manual installs
+    // — the untrusted surface. An un-synced sync-DB reports ~everything foreign,
+    // which is useless, so it's skipped unless forced.
+    let raw = read_foreign();
+    let unsynced = !raw.is_empty() && raw.len() * 10 >= deps.len() * 9;
+    let mut note = None;
+    let foreign = if unsynced && !opts.force_aur {
+        note = Some(
+            "package DB not synced, so AUR/foreign detection is unavailable. \
+             Run `sudo pacman -Sy` first, or pass --force-aur to scan anyway."
+                .to_string(),
+        );
+        Vec::new()
+    } else {
+        raw
+    };
+
+    if !foreign.is_empty() {
+        let aur = if opts.online { aur_info(&foreign) } else { HashMap::new() };
+        let version_of: HashMap<&str, &str> =
+            deps.iter().map(|d| (d.name.as_str(), d.version.as_str())).collect();
+        for name in &foreign {
+            for sig in foreign_signals(aur.get(name)) {
+                push_signal(&mut signals, name, sig);
+            }
+            // Static-analyze the local `.install` hook (the shell that runs on
+            // this machine at install/upgrade/removal) — offline.
+            if let Some(ver) = version_of.get(name.as_str()) {
+                for sig in analyze_pacman_install(name, ver) {
+                    push_signal(&mut signals, name, sig);
+                }
+            }
+            // Static-analyze the AUR PKGBUILD (the untrusted build recipe) — online.
+            if opts.online
+                && aur.contains_key(name)
+                && let Some(pkgbuild) = fetch_pkgbuild(name)
+            {
+                for sig in analyze_recipe(name, &pkgbuild, "sh") {
+                    push_signal(&mut signals, name, sig);
+                }
+            }
+        }
+    }
+
+    // Version drift (needs a synced DB; best-effort).
+    for (name, (old, new)) in read_pacman_outdated() {
+        signals.entry(name).or_default().push(outdated_signal(&old, &new));
+    }
+
+    let explicit = deps.iter().filter(|d| d.direct).count();
+    let extra = if foreign.is_empty() {
+        String::new()
+    } else {
+        format!(", {} foreign", foreign.len())
+    };
+    let summary = format!("{} package(s) ({explicit} explicit{extra})", deps.len());
+    Ok(Inventory { manager: "pacman", deps, repos: pacman_repos(), signals, summary, note })
+}
+
+// --- AUR (foreign packages + aur.archlinux.org RPC) --------------------------
+
+const UA: &str = concat!("postmortem/", env!("CARGO_PKG_VERSION"));
+
+/// Installed packages not provided by any sync repo (`pacman -Qm`) — AUR builds
+/// and manual installs. The caller applies the un-synced-DB guard.
+fn read_foreign() -> Vec<String> {
+    let Ok(out) = Command::new("pacman").arg("-Qm").output() else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+        .collect()
+}
+
+#[derive(Deserialize, Default)]
+struct AurResp {
+    #[serde(default)]
+    results: Vec<AurPkg>,
+}
+
+#[derive(Deserialize)]
+struct AurPkg {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Maintainer")]
+    maintainer: Option<String>,
+    #[serde(rename = "OutOfDate")]
+    out_of_date: Option<i64>,
+    #[serde(rename = "NumVotes")]
+    num_votes: Option<i64>,
+}
+
+/// Query the AUR RPC v5 `info` endpoint (batched) for a set of package names.
+/// Best-effort: network failures yield an empty map.
+fn aur_info(names: &[String]) -> HashMap<String, AurPkg> {
+    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)).build();
+    let mut out = HashMap::new();
+    for chunk in names.chunks(120) {
+        let query: String = chunk.iter().map(|n| format!("&arg[]={n}")).collect();
+        let url =
+            format!("https://aur.archlinux.org/rpc/v5/info?{}", query.trim_start_matches('&'));
+        let Ok(resp) = agent.get(&url).set("User-Agent", UA).call() else {
+            continue;
+        };
+        let Ok(text) = resp.into_string() else { continue };
+        if let Ok(parsed) = serde_json::from_str::<AurResp>(&text) {
+            out.extend(parsed.results.into_iter().map(|p| (p.name.clone(), p)));
+        }
+    }
+    out
+}
+
+/// Static-analyze a foreign package's local `.install` hook (shell), if any. The
+/// hook lives on-disk and runs on this machine, so this is offline.
+fn analyze_pacman_install(name: &str, version: &str) -> Vec<SysSignal> {
+    let path = format!("/var/lib/pacman/local/{name}-{version}/install");
+    match std::fs::read_to_string(&path) {
+        Ok(code) => analyze_recipe(name, &code, "sh"),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Fetch a package's AUR PKGBUILD (its untrusted build recipe). Best-effort.
+fn fetch_pkgbuild(name: &str) -> Option<String> {
+    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)).build();
+    let url = format!("https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h={name}");
+    agent.get(&url).set("User-Agent", UA).call().ok()?.into_string().ok()
+}
+
+/// `pacman -Qu` → packages behind the synced repos, `name → (installed, current)`.
+/// Best-effort: needs a synced DB, empty otherwise.
+fn read_pacman_outdated() -> HashMap<String, (String, String)> {
+    let Ok(out) = Command::new("pacman").arg("-Qu").output() else {
+        return HashMap::new();
+    };
+    if !out.status.success() {
+        return HashMap::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            // "name old_ver -> new_ver [ignored]"
+            let mut p = l.split_whitespace();
+            let name = p.next()?.to_string();
+            let old = p.next()?.to_string();
+            if p.next() != Some("->") {
+                return None;
+            }
+            Some((name, (old, p.next()?.to_string())))
+        })
+        .collect()
+}
+
+/// Signals for one foreign package: always `foreign-package`, plus AUR RPC
+/// provenance (orphaned / out-of-date / unpopular) when the metadata is present.
+fn foreign_signals(aur: Option<&AurPkg>) -> Vec<SysSignal> {
+    let mut v = vec![SysSignal::new(
+        "foreign-package (not from an official repo)",
+        Severity::Medium,
+        30,
+    )];
+    if let Some(p) = aur {
+        if p.maintainer.is_none() {
+            v.push(SysSignal::new("aur-orphaned (no maintainer)", Severity::Medium, 30));
+        }
+        if p.out_of_date.is_some() {
+            v.push(SysSignal::new("aur-out-of-date", Severity::Medium, 20));
+        }
+        let votes = p.num_votes.unwrap_or(0);
+        if votes < 10 {
+            v.push(SysSignal::new(format!("aur-unpopular ({votes} votes)"), Severity::Low, 10));
+        }
+    }
+    v
+}
+
+/// Parse `pacman -Qi` output (blank-line-separated `Key : Value` blocks) into a
+/// dependency forest + offline signals (`unsigned`, `install-script`).
+fn pacman_graph(text: &str) -> (Vec<Dependency>, HashMap<String, Vec<SysSignal>>) {
+    struct P {
+        name: String,
+        version: String,
+        url: String,
+        depends: Vec<String>,
+        explicit: bool,
+        unsigned: bool,
+        has_install: bool,
+    }
+    let mut pkgs: Vec<P> = Vec::new();
+    for block in text.split("\n\n") {
+        let (mut name, mut version, mut url) = (String::new(), String::new(), String::new());
+        let (mut depends, mut explicit, mut unsigned, mut has_install) =
+            (Vec::new(), false, false, false);
+        for line in block.lines() {
+            let Some((k, v)) = line.split_once(':') else { continue };
+            let (k, v) = (k.trim(), v.trim());
+            match k {
+                "Name" => name = v.to_string(),
+                "Version" => version = v.to_string(),
+                "URL" => url = v.to_string(),
+                "Depends On" if v != "None" => {
+                    depends = v.split_whitespace().filter_map(pacman_dep_name).collect();
+                }
+                "Install Reason" => explicit = v.starts_with("Explicitly"),
+                "Validated By" => unsigned = v == "None",
+                "Install Script" => has_install = v == "Yes",
+                _ => {}
+            }
+        }
+        if !name.is_empty() {
+            pkgs.push(P { name, version, url, depends, explicit, unsigned, has_install });
+        }
+    }
+
+    let installed: HashMap<&str, &str> =
+        pkgs.iter().map(|p| (p.name.as_str(), p.version.as_str())).collect();
+    let mut parents: HashMap<String, Vec<DepRef>> = HashMap::new();
+    for p in &pkgs {
+        for d in &p.depends {
+            if installed.contains_key(d.as_str()) {
+                parents.entry(d.clone()).or_default().push((p.name.clone(), p.version.clone()));
+            }
+        }
+    }
+
+    let mut signals: HashMap<String, Vec<SysSignal>> = HashMap::new();
+    let mut deps = Vec::with_capacity(pkgs.len());
+    for p in &pkgs {
+        if p.unsigned {
+            push_signal(&mut signals, &p.name, SysSignal::new("unsigned", Severity::High, 40));
+        }
+        if p.has_install {
+            push_signal(
+                &mut signals,
+                &p.name,
+                SysSignal::new("install-script (runs code at install)", Severity::Info, 0),
+            );
+        }
+        deps.push(Dependency {
+            name: p.name.clone(),
+            version: p.version.clone(),
+            ecosystem: Ecosystem::Pacman,
+            direct: p.explicit,
+            resolved_url: (!p.url.is_empty()).then(|| p.url.clone()),
+            integrity: None,
+            parents: parents.remove(&p.name).unwrap_or_default(),
+        });
+    }
+    (deps, signals)
+}
+
+/// A pacman `Depends On` token → package name: strip a version constraint
+/// (`glibc>=2.0` → `glibc`) and drop soname deps (`libreadline.so=8-64`), which
+/// are provided by an already-listed package.
+fn pacman_dep_name(tok: &str) -> Option<String> {
+    if tok.contains(".so") {
+        return None;
+    }
+    let name = tok.split(['>', '<', '=']).next()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Configured pacman repos from `/etc/pacman.conf`. Arch/ALARM official sections
+/// are trusted; anything else is third-party.
+fn pacman_repos() -> Vec<Repo> {
+    const OFFICIAL: &[&str] = &[
+        "core", "extra", "multilib", "testing", "core-testing", "extra-testing",
+        "multilib-testing", "community", "community-testing", "alarm", "aur-disabled",
+    ];
+    let Ok(text) = std::fs::read_to_string("/etc/pacman.conf") else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|l| l.trim().strip_prefix('[')?.strip_suffix(']').map(str::to_string))
+        .filter(|s| s != "options")
+        .map(|s| {
+            let official = OFFICIAL.contains(&s.as_str());
+            Repo { name: s, url: String::new(), official }
+        })
+        .collect()
+}
+
 // --- install-recipe static analysis (third-party packages only) --------------
 
 /// Fetch a package's Homebrew recipe (its Ruby) via `brew cat` and static-analyze
 /// it. Only called for third-party packages — the untrusted install code.
 fn analyze_install_code(name: &str, is_cask: bool) -> Vec<SysSignal> {
     match brew_cat(name, is_cask) {
-        Some(ruby) => recipe_signals(name, &ruby),
+        Some(ruby) => analyze_recipe(name, &ruby, "rb"),
         None => Vec::new(),
     }
 }
@@ -491,26 +826,16 @@ fn brew_cat(name: &str, is_cask: bool) -> Option<String> {
         .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Static-analyze a recipe's Ruby source. Reuses the language analyzers (IOC /
-/// obfuscation / sensitive-API, `Lang::Ruby`) by staging the source in a temp
-/// dir, plus a brew-specific pass for install-time remote code execution.
-/// Pure of subprocesses, so it's unit-testable on a raw recipe string.
-fn recipe_signals(name: &str, ruby: &str) -> Vec<SysSignal> {
+/// Static-analyze an install recipe's source (a Homebrew Ruby formula, an Arch
+/// PKGBUILD / `.install` shell hook, …). Stages the code as `recipe.<ext>` and
+/// runs the full analyzer suite over it (matched by extension), plus a pass for
+/// install-time remote code execution. Subprocess-free, so unit-testable on a
+/// raw string.
+fn analyze_recipe(name: &str, code: &str, ext: &str) -> Vec<SysSignal> {
     let mut sigs = Vec::new();
 
-    if let Some(dir) = stage_recipe(name, ruby) {
-        let mut findings = Vec::new();
-        crate::analyze::ioc::scan_dir(&dir, &mut findings, crate::analyze::ioc::Lang::Ruby);
-        crate::analyze::obfuscation::scan_dir(
-            &dir,
-            &mut findings,
-            crate::analyze::obfuscation::Lang::Ruby,
-        );
-        crate::analyze::sensitive_api::scan_dir(
-            &dir,
-            &mut findings,
-            crate::analyze::sensitive_api::Lang::Ruby,
-        );
+    if let Some(dir) = stage_recipe(name, code, ext) {
+        let findings = crate::analyze::scan_source_tree(&dir);
         let _ = std::fs::remove_dir_all(&dir);
         // Cap so one noisy recipe can't flood the node with signals.
         sigs.extend(findings.iter().take(6).map(finding_to_signal));
@@ -520,7 +845,7 @@ fn recipe_signals(name: &str, ruby: &str) -> Vec<SysSignal> {
     // clearest install-time remote-code-execution tell.
     let pipe = regex::Regex::new(r"(?i)(curl|wget|fetch)\b[^\n|]*\|\s*(sudo\s+)?(sh|bash|zsh|ruby|python)")
         .expect("static regex");
-    if pipe.is_match(ruby) {
+    if pipe.is_match(code) {
         sigs.push(SysSignal::new("install-remote-exec (pipe to shell)", Severity::High, 40));
     }
     sigs
@@ -540,14 +865,14 @@ fn finding_to_signal(f: &crate::model::Finding) -> SysSignal {
     SysSignal::new(label, f.severity, points)
 }
 
-/// Write a recipe to a fresh temp dir as `recipe.rb`, so the directory-oriented
-/// analyzers can read it. Returns the dir (caller removes it).
-fn stage_recipe(name: &str, ruby: &str) -> Option<std::path::PathBuf> {
+/// Write a recipe to a fresh temp dir as `recipe.<ext>`, so the directory-oriented
+/// analyzers pick it up by extension. Returns the dir (caller removes it).
+fn stage_recipe(name: &str, code: &str, ext: &str) -> Option<std::path::PathBuf> {
     let safe: String =
         name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
     let dir = std::env::temp_dir().join(format!("postmortem-recipe-{}-{safe}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
-    std::fs::write(dir.join("recipe.rb"), ruby).ok()?;
+    std::fs::write(dir.join(format!("recipe.{ext}")), code).ok()?;
     Some(dir)
 }
 
@@ -662,29 +987,30 @@ pub fn render_detected(managers: &[Manager]) {
     );
 }
 
-/// The `--repos` view: configured taps, official first, with their source repo.
+/// The `--repos` view: configured source repos, official first.
 pub fn render_repos(inv: &Inventory) {
     println!("{} {}", "source repos".bold(), format!("({})", inv.manager).dimmed());
-    if inv.taps.is_empty() {
+    if inv.repos.is_empty() {
         println!("  {}", "none configured".dimmed());
         return;
     }
-    let (official, third): (Vec<&Tap>, Vec<&Tap>) = inv.taps.iter().partition(|t| t.official);
-    for t in official {
-        println!("  {}", t.name.green());
+    let (official, third): (Vec<&Repo>, Vec<&Repo>) = inv.repos.iter().partition(|r| r.official);
+    for r in official {
+        println!("  {}", r.name.green());
     }
-    for t in &third {
+    for r in &third {
+        let url = if r.url.is_empty() { String::new() } else { format!("[{}]  ", r.url).dimmed().to_string() };
         println!(
-            "  {}  {}  {}",
-            t.name.truecolor(255, 165, 0),
-            format!("[{}]", t.remote).dimmed(),
+            "  {}  {}{}",
+            r.name.truecolor(255, 165, 0),
+            url,
             "third-party".truecolor(255, 165, 0),
         );
     }
     if !third.is_empty() {
         println!(
             "\n{}",
-            format!("⚠ {} third-party tap(s) bypass Homebrew-core review", third.len())
+            format!("⚠ {} third-party source(s) outside the official repos", third.len())
                 .truecolor(255, 165, 0)
         );
     }
@@ -832,7 +1158,7 @@ mod tests {
             end
         "#;
         let labels: Vec<String> =
-            recipe_signals("evil", ruby).into_iter().map(|s| s.label).collect();
+            analyze_recipe("evil", ruby, "rb").into_iter().map(|s| s.label).collect();
         assert!(
             labels.iter().any(|l| l.contains("install-remote-exec")),
             "curl|bash pipe flagged: {labels:?}"
@@ -847,7 +1173,76 @@ mod tests {
               url "https://github.com/o/r/archive/1.0.tar.gz"
               def install; bin.install "ok"; end
             end"#;
-        assert!(recipe_signals("ok", clean).is_empty(), "clean recipe is quiet");
+        assert!(analyze_recipe("ok", clean, "rb").is_empty(), "clean recipe is quiet");
+    }
+
+    #[test]
+    fn pacman_graph_parses_qi_output() {
+        // Two packages: `app` (explicit, unsigned, has install script) depends on
+        // `lib`; `lib` is a pulled-in dependency. `libfoo.so` and a versioned dep
+        // must reduce to package names / be dropped.
+        let qi = "\
+Name            : app
+Version         : 1.2-1
+URL             : https://github.com/o/app
+Depends On      : lib  libfoo.so=1-64  glibc>=2.0
+Install Script  : Yes
+Validated By    : None
+Install Reason  : Explicitly installed
+
+Name            : lib
+Version         : 0.9-1
+URL             : https://example.org/lib
+Depends On      : None
+Install Script  : No
+Validated By    : Signature
+Install Reason  : Installed as a dependency of app
+";
+        let (deps, signals) = pacman_graph(qi);
+        assert_eq!(deps.len(), 2);
+        let app = deps.iter().find(|d| d.name == "app").unwrap();
+        let lib = deps.iter().find(|d| d.name == "lib").unwrap();
+        assert!(app.direct, "explicit ⇒ direct/root");
+        assert!(!lib.direct);
+        assert_eq!(app.resolved_url.as_deref(), Some("https://github.com/o/app"));
+        // `lib` is a real dep edge; `libfoo.so` dropped, `glibc` not installed → dropped.
+        assert_eq!(lib.parents, vec![("app".to_string(), "1.2-1".to_string())]);
+        // unsigned (High) + install-script (Info) on app; lib is signed/clean.
+        let al: Vec<&str> = signals["app"].iter().map(|s| s.label.as_str()).collect();
+        assert!(al.contains(&"unsigned"));
+        assert!(al.iter().any(|l| l.contains("install-script")));
+        assert!(!signals.contains_key("lib"));
+    }
+
+    #[test]
+    fn aur_foreign_signals() {
+        // Not in AUR (manual install) → just foreign-package.
+        let none = foreign_signals(None);
+        assert_eq!(none.len(), 1);
+        assert!(none[0].label.starts_with("foreign-package"));
+
+        // Orphaned + out-of-date + unpopular AUR package → all three on top.
+        let bad = AurPkg { name: "x".into(), maintainer: None, out_of_date: Some(1), num_votes: Some(3) };
+        let sigs = foreign_signals(Some(&bad));
+        let labels: Vec<&str> = sigs.iter().map(|s| s.label.as_str()).collect();
+        assert!(labels.iter().any(|l| l.contains("aur-orphaned")));
+        assert!(labels.iter().any(|l| l.contains("aur-out-of-date")));
+        assert!(labels.iter().any(|l| l.contains("aur-unpopular")));
+
+        // Healthy AUR package → foreign-package only (maintained, popular, current).
+        let good = AurPkg { name: "y".into(), maintainer: Some("dev".into()), out_of_date: None, num_votes: Some(500) };
+        assert_eq!(foreign_signals(Some(&good)).len(), 1);
+    }
+
+    #[test]
+    fn aur_rpc_response_parses() {
+        let json = r#"{"resultcount":1,"results":[
+          {"Name":"yay","Maintainer":"jguer","OutOfDate":null,"NumVotes":2641,"Popularity":50.3}]}"#;
+        let r: AurResp = serde_json::from_str(json).unwrap();
+        assert_eq!(r.results.len(), 1);
+        assert_eq!(r.results[0].maintainer.as_deref(), Some("jguer"));
+        assert_eq!(r.results[0].num_votes, Some(2641));
+        assert!(r.results[0].out_of_date.is_none());
     }
 
     #[test]

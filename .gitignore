@@ -37,3 +37,8 @@ postmortem-report-[*
 realrepo
 
 postmortem-*.md
+# generated test reports (system / container runs)
+tests/system/reports/
+
+# cross-built Linux binary for container tests
+/target-linux

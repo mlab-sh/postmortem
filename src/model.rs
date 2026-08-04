@@ -14,6 +14,8 @@ pub enum Ecosystem {
     /// Homebrew (macOS/Linux) — an OS-level package manager, surfaced by the
     /// `system` command rather than the project-lockfile parsers.
     Brew,
+    /// Arch Linux `pacman` — an OS-level package manager (`system` command).
+    Pacman,
 }
 
 impl Ecosystem {
@@ -27,6 +29,7 @@ impl Ecosystem {
             Ecosystem::Go => "go",
             Ecosystem::Java => "java",
             Ecosystem::Brew => "brew",
+            Ecosystem::Pacman => "pacman",
         }
     }
 }

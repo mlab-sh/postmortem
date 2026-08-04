@@ -77,21 +77,20 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
 
     system::render_detected(&managers);
 
-    // Homebrew is the only backend today; require it.
-    if !managers.iter().any(|m| m.name == "homebrew" && m.available) {
-        eprintln!("no supported system package manager found (need Homebrew).");
+    // Use the first available manager we have a backend for (Homebrew, pacman).
+    let Some(backend) =
+        managers.iter().find(|m| m.available && m.implemented).map(|m| m.name)
+    else {
+        eprintln!("no supported system package manager found.");
         std::process::exit(2);
-    }
+    };
 
-    // gochi rides the (indeterminate) load while `brew info` reads the forest.
-    let loader = gochi::Loader::spinner("gochi — reading installed packages", ui.animating());
-    let inv = match system::brew_inventory() {
+    // gochi rides the (indeterminate) load while the manager is read.
+    let opts = system::Opts { online: args.online, force_aur: args.force_aur };
+    let loader = gochi::Loader::spinner("gochi reading installed packages", ui.animating());
+    let inv = match system::inventory(backend, opts) {
         Ok(inv) => {
-            let formulae = inv.deps.len() - inv.casks;
-            loader.finish(
-                gochi::HAPPY,
-                &format!("read {formulae} formula(e) + {} cask(s)", inv.casks),
-            );
+            loader.finish(gochi::HAPPY, &format!("read {}", inv.summary));
             inv
         }
         Err(e) => {
@@ -99,6 +98,11 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
             return Err(e);
         }
     };
+    // Surface any backend caveat (e.g. an un-synced pacman DB) as a gochi alert.
+    if let Some(note) = &inv.note {
+        use owo_colors::OwoColorize;
+        eprintln!("  {}  {}", gochi::ALERT.cyan(), note.yellow());
+    }
 
     // `--repos`: just the source-repo view.
     if args.repos {
@@ -106,7 +110,8 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
         return Ok(());
     }
 
-    let mut forest = tree::build("homebrew", &["brew".to_string()], &inv.deps, args.depth);
+    let eco = inv.deps.first().map(|d| d.ecosystem.as_str()).unwrap_or(backend).to_string();
+    let mut forest = tree::build(inv.manager, &[eco], &inv.deps, args.depth);
 
     // `--online`: resolve each formula's repo reputation through the shared
     // resolver (same token/cache/scoring path as `tree --online`).

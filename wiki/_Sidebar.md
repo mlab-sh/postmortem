@@ -19,6 +19,7 @@
 
 **System managers**
 - [Homebrew](Homebrew)
+- [Pacman](Pacman)
 
 **Concepts**
 - [Source-code scanning](Source-Code-Scanning)

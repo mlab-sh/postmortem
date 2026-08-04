@@ -27,10 +27,10 @@ manager.
 
 | Manager | Status | Page |
 | --- | --- | --- |
-| Homebrew | ✅ supported | [Homebrew](Homebrew) |
-| apt / dpkg | planned | - |
-| pacman (+ AUR) | planned | - |
-| dnf / apk | planned | - |
+| Homebrew | supported | [Homebrew](Homebrew) |
+| pacman (+ AUR) | supported | [Pacman](Pacman) |
+| apt / dpkg | planned | (roadmap) |
+| dnf / apk | planned | (roadmap) |
 
 ## Common options
 
