@@ -36,8 +36,12 @@ reputation, not a "no repository").
 | Signal | Severity | Meaning |
 | --- | --- | --- |
 | `third-party-tap (owner/name)` | Medium | Installed from a tap outside `homebrew/*` — bypasses core review. |
+| `unofficial-bottle (host)` | Medium | The prebuilt binary is pulled from a bottle registry outside Homebrew's official `ghcr.io/v2/homebrew/*`. |
+| `insecure-tap-remote (http)` | High | The tap's git remote is plain HTTP. |
+| `exotic-tap-host (host)` | Low | The tap's remote is on a host we can't vouch for (not GitHub/GitLab/Codeberg/…). |
 | `deprecated` | Medium | Formula/cask marked deprecated or disabled — unmaintained. |
 | `outdated (installed → current)` | Low | Behind the current version — missing upstream (incl. security) fixes. |
+| `installs-service (runs at boot/login)` | Info | Installs a launchd/systemd service — runs automatically, higher attack surface. |
 
 ### Casks — the download-and-run surface
 

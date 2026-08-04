@@ -17,8 +17,11 @@ use serde::Serialize;
 use crate::model::{Dependency, DepRef, Severity};
 use crate::resolve::Resolution;
 
-/// Amber/orange for the "inactive" tier (true-color; degrades gracefully).
+/// Amber/orange for the "inactive"/suspicious tier (true-color; degrades gracefully).
 const ORANGE: (u8, u8, u8) = (255, 165, 0);
+/// A clearer yellow for the informational "services" line — deliberately pulled
+/// away from the amber warning above so the two don't read alike.
+const YELLOW: (u8, u8, u8) = (232, 218, 92);
 
 /// A resolved dependency forest, serializable for `--json` so downstream tooling
 /// can consume the graph (the "use this data later" foundation).
@@ -484,33 +487,51 @@ pub fn render_diagnostics(diags: &[crate::model::Diagnostic]) {
     }
 }
 
-/// gochi's closing recap: the overall scores and a headcount of the three
-/// flag categories (high-risk / suspicious / unchecked), deduped by name@version.
-/// gochi's face reacts to the worst tier present.
+/// gochi's closing recap: the overall scores and a per-category headcount,
+/// deduped by name@version. Packages flagged only by **soft** signals (version
+/// drift / persistence) get their own yellow lines instead of the amber
+/// "suspicious" bucket. gochi's face reacts to the worst *real* tier present.
 fn render_recap(tree: &Tree) {
+    #[derive(Default)]
+    struct Counts {
+        high: usize,
+        suspicious: usize,
+        unchecked: usize,
+        outdated: usize,
+        services: usize,
+    }
     let mut seen = HashSet::new();
-    let (mut high, mut medium, mut info) = (0usize, 0usize, 0usize);
-    fn walk(node: &Node, seen: &mut HashSet<DepRef>, h: &mut usize, m: &mut usize, i: &mut usize) {
-        if let Some(sev) = node.severity
-            && seen.insert((node.name.clone(), node.version.clone()))
-        {
-            match sev {
-                Severity::Critical | Severity::High => *h += 1,
-                Severity::Medium | Severity::Low => *m += 1,
-                Severity::Info => *i += 1,
+    let mut c = Counts::default();
+    fn walk(node: &Node, seen: &mut HashSet<DepRef>, c: &mut Counts) {
+        if node.severity.is_some() && seen.insert((node.name.clone(), node.version.clone())) {
+            if soft_tint(&node.signals) {
+                // Soft-only: count under the yellow lines (a package can be both).
+                if node.signals.iter().any(|s| s.starts_with("outdated")) {
+                    c.outdated += 1;
+                }
+                if node.signals.iter().any(|s| s.starts_with("installs-service")) {
+                    c.services += 1;
+                }
+            } else {
+                match node.severity {
+                    Some(Severity::Critical | Severity::High) => c.high += 1,
+                    Some(Severity::Medium | Severity::Low) => c.suspicious += 1,
+                    _ => c.unchecked += 1,
+                }
             }
         }
-        for c in &node.children {
-            walk(c, seen, h, m, i);
+        for child in &node.children {
+            walk(child, seen, c);
         }
     }
     for r in &tree.roots {
-        walk(r, &mut seen, &mut high, &mut medium, &mut info);
+        walk(r, &mut seen, &mut c);
     }
 
-    let face = if high > 0 {
+    // Soft-only packages don't alarm gochi — only real risk tiers do.
+    let face = if c.high > 0 {
         crate::gochi::ALERT
-    } else if medium > 0 {
+    } else if c.suspicious > 0 {
         crate::gochi::IDLE
     } else {
         crate::gochi::HAPPY
@@ -518,6 +539,7 @@ fn render_recap(tree: &Tree) {
     let (risk, dep) = project_scores(tree);
     let pad = |n: usize| format!("{n:>3}");
     let orange = |s: String| s.truecolor(ORANGE.0, ORANGE.1, ORANGE.2).to_string();
+    let yellow = |s: String| s.truecolor(YELLOW.0, YELLOW.1, YELLOW.2).to_string();
 
     println!("\n  {}  {}", face.cyan(), "gochi's recap".bold());
     println!(
@@ -528,22 +550,39 @@ fn render_recap(tree: &Tree) {
     );
     println!(
         "    {}  {}   {}",
-        pad(high).red().bold(),
+        pad(c.high).red().bold(),
         "high-risk".red(),
         "typosquat / install-hook / low stars / fresh repo".dimmed()
     );
     println!(
         "    {}  {}  {}",
-        orange(pad(medium)),
+        orange(pad(c.suspicious)),
         orange("suspicious".into()),
         "new maintainer / dormant / stale / archived".dimmed()
     );
     println!(
         "    {}  {}   {}",
-        pad(info).dimmed(),
+        pad(c.unchecked).dimmed(),
         "unchecked".dimmed(),
-        "no repo / couldn't verify".dimmed()
+        "no repo / informational / couldn't verify".dimmed()
     );
+    // Soft categories — noted, not scored. Same yellow for both.
+    if c.outdated > 0 {
+        println!(
+            "    {}  {}    {}",
+            yellow(pad(c.outdated)),
+            yellow("outdated".into()),
+            "behind current version".dimmed()
+        );
+    }
+    if c.services > 0 {
+        println!(
+            "    {}  {}    {}",
+            yellow(pad(c.services)),
+            yellow("services".into()),
+            "runs at boot/login".dimmed()
+        );
+    }
     let vulns: usize = tree.vulnerabilities.iter().map(|p| p.vulns.len()).sum();
     if vulns > 0 {
         println!(
@@ -555,11 +594,40 @@ fn render_recap(tree: &Tree) {
     }
 }
 
-/// Color a package by its own risk (red/orange/dimmed) if it's flagged; else
-/// blue when its dependency tree is bad (clean code, rotten deps); else plain.
+/// True if the node carries a signal starting with `prefix` (e.g.
+/// `installs-service`). Used to surface a specific signal regardless of severity.
+fn has_signal(node: &Node, prefix: &str) -> bool {
+    node.signals.iter().any(|s| s.starts_with(prefix))
+}
+
+/// A "soft" signal — version drift or persistence. Noted, but not a security
+/// risk that meaningfully touches the score.
+fn is_soft_signal(s: &str) -> bool {
+    s.starts_with("outdated") || s.starts_with("installs-service")
+}
+
+/// A node flagged ONLY by soft signals (`outdated` and/or `installs-service`),
+/// nothing more severe. Painted with the recap's soft yellow — the same for
+/// both — rather than the amber "suspicious" tint or the default dim.
+fn soft_tint(signals: &[String]) -> bool {
+    !signals.is_empty() && signals.iter().all(|s| is_soft_signal(s))
+}
+
+/// Color `text` for a node: the soft yellow when [`soft_tint`] applies,
+/// otherwise by severity ([`colorize`]).
+fn tint(text: &str, severity: Option<Severity>, signals: &[String]) -> String {
+    if soft_tint(signals) {
+        text.truecolor(YELLOW.0, YELLOW.1, YELLOW.2).to_string()
+    } else {
+        colorize(text, severity)
+    }
+}
+
+/// Color a package by its own risk (red/orange/yellow/dimmed) if it's flagged;
+/// else blue when its dependency tree is bad (clean code, rotten deps); else plain.
 fn paint(text: &str, node: &Node) -> String {
-    if let Some(sev) = node.severity {
-        colorize(text, Some(sev))
+    if node.severity.is_some() {
+        tint(text, node.severity, &node.signals)
     } else if node.dep.is_some_and(|d| d >= BLUE_DEP_THRESHOLD) {
         text.blue().to_string()
     } else {
@@ -633,7 +701,7 @@ fn render_node(node: &Node, prefix: &str, is_last: bool, scored: bool) {
     }
     if !node.signals.is_empty() {
         let tag = format!("⚠ {}", node.signals.join(", "));
-        label.push_str(&format!(" {}", colorize(&tag, node.severity)));
+        label.push_str(&format!(" {}", tint(&tag, node.severity, &node.signals)));
     }
     if scored {
         let scores = format!("({}:{})", node.risk.unwrap_or(0), node.dep.unwrap_or(0));
@@ -670,7 +738,11 @@ type Flagged = BTreeMap<(String, String), Flag>;
 fn render_flagged(tree: &Tree) {
     let mut flagged: Flagged = BTreeMap::new();
     fn collect(node: &Node, out: &mut Flagged) {
-        if node.severity.is_some_and(|s| s >= Severity::Medium) && !node.signals.is_empty() {
+        // Real flags (Medium+), plus persistence (`installs-service`) which is
+        // surfaced regardless of its low severity.
+        let surface = node.severity.is_some_and(|s| s >= Severity::Medium)
+            || has_signal(node, "installs-service");
+        if surface && !node.signals.is_empty() {
             out.insert(
                 (node.name.clone(), node.version.clone()),
                 Flag {
@@ -701,10 +773,10 @@ fn render_flagged(tree: &Tree) {
         let repo = flag.repo.as_deref().unwrap_or("—");
         println!(
             "  {}{} {} {}",
-            colorize(name, flag.severity),
+            tint(name, flag.severity, &flag.signals),
             format!("@{version}").dimmed(),
             format!("[{repo}]").dimmed(),
-            colorize(&flag.signals.join(", "), flag.severity)
+            tint(&flag.signals.join(", "), flag.severity, &flag.signals)
         );
     }
 }
@@ -798,6 +870,18 @@ mod tests {
         score(&mut t);
         assert!(t.roots[0].dep.unwrap() >= BLUE_DEP_THRESHOLD);
         assert_eq!(t.roots[0].severity, None); // stays clean -> painter picks blue
+    }
+
+    #[test]
+    fn soft_tint_only_for_outdated_and_service() {
+        // Either soft signal alone, or both together → soft.
+        assert!(soft_tint(&["installs-service (runs at boot/login)".into()]));
+        assert!(soft_tint(&["outdated (1.0 → 1.1)".into()]));
+        assert!(soft_tint(&["outdated (a → b)".into(), "installs-service (x)".into()]));
+        // Any non-soft signal alongside disqualifies it.
+        assert!(!soft_tint(&["installs-service (x)".into(), "stale (100d idle)".into()]));
+        assert!(!soft_tint(&["no-repository".into()]));
+        assert!(!soft_tint(&[]));
     }
 
     #[test]

@@ -138,6 +138,24 @@ struct Formula {
     deprecated: bool,
     #[serde(default)]
     disabled: bool,
+    /// Presence means the formula installs a launchd/systemd service (persistence).
+    #[serde(default)]
+    service: Option<serde_json::Value>,
+    #[serde(default)]
+    bottle: Option<Bottle>,
+}
+
+#[derive(Deserialize)]
+struct Bottle {
+    #[serde(default)]
+    stable: Option<BottleStable>,
+}
+
+#[derive(Deserialize)]
+struct BottleStable {
+    /// The registry the prebuilt binary is pulled from. Official bottles live
+    /// under `ghcr.io/v2/homebrew/*`; a third-party tap can point elsewhere.
+    root_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -263,9 +281,27 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> 
         if let Some(t) = tap {
             push_signal(&mut signals, &f.name, third_party_tap(t));
             third_party.push((f.name.clone(), false));
+            if let Some(sig) = tap_remote.get(t).and_then(|r| tap_remote_signal(r)) {
+                push_signal(&mut signals, &f.name, sig);
+            }
         }
         if f.deprecated || f.disabled {
             push_signal(&mut signals, &f.name, deprecated_signal());
+        }
+        // Persistence: installs a background service that runs at boot/login.
+        if f.service.is_some() {
+            push_signal(&mut signals, &f.name, service_signal());
+        }
+        // Bottle provenance: a prebuilt binary pulled from a non-official host.
+        if let Some(host) = f
+            .bottle
+            .as_ref()
+            .and_then(|b| b.stable.as_ref())
+            .and_then(|s| s.root_url.as_deref())
+            .filter(|r| !is_official_bottle(r))
+            .and_then(host_domain)
+        {
+            push_signal(&mut signals, &f.name, unofficial_bottle_signal(&host));
         }
         deps.push(Dependency {
             name: f.name.clone(),
@@ -285,6 +321,9 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> 
         if let Some(tap) = c.tap.as_deref().filter(|t| !is_official_tap(t)) {
             sigs.push(third_party_tap(tap));
             third_party.push((c.token.clone(), true));
+            if let Some(sig) = tap_remote.get(tap).and_then(|r| tap_remote_signal(r)) {
+                sigs.push(sig);
+            }
         }
         if !sigs.is_empty() {
             signals.entry(c.token.clone()).or_default().extend(sigs);
@@ -318,6 +357,37 @@ fn deprecated_signal() -> SysSignal {
 /// upstream (including security) fixes. Mild on its own.
 fn outdated_signal(installed: &str, current: &str) -> SysSignal {
     SysSignal::new(format!("outdated ({installed} → {current})"), Severity::Low, 10)
+}
+
+/// The formula installs a launchd/systemd service — it runs automatically at
+/// boot/login. Higher attack surface; informational (many are legitimate).
+fn service_signal() -> SysSignal {
+    SysSignal::new("installs-service (runs at boot/login)", Severity::Info, 0)
+}
+
+/// The prebuilt binary is pulled from a bottle registry outside Homebrew's
+/// official `ghcr.io/v2/homebrew/*` — an arbitrary binary host.
+fn unofficial_bottle_signal(host: &str) -> SysSignal {
+    SysSignal::new(format!("unofficial-bottle ({host})"), Severity::Medium, 30)
+}
+
+/// Is a bottle `root_url` Homebrew's official registry?
+fn is_official_bottle(root_url: &str) -> bool {
+    root_url.contains("ghcr.io/v2/homebrew/")
+}
+
+/// Flag a tap whose git remote is insecure (`http`) or on a host we can't vouch
+/// for. `None` for an https remote on a known code host.
+fn tap_remote_signal(remote: &str) -> Option<SysSignal> {
+    if remote.starts_with("http://") {
+        return Some(SysSignal::new("insecure-tap-remote (http)", Severity::High, 40));
+    }
+    match host_domain(remote) {
+        Some(host) if !TRUSTED_DL_HOSTS.contains(&host.as_str()) => {
+            Some(SysSignal::new(format!("exotic-tap-host ({host})"), Severity::Low, 10))
+        }
+        _ => None,
+    }
 }
 
 fn push_signal(map: &mut HashMap<String, Vec<SysSignal>>, name: &str, sig: SysSignal) {
@@ -719,6 +789,33 @@ mod tests {
         }"#;
         let Parsed { signals, .. } = analyze(json, &HashMap::new()).unwrap();
         assert!(!signals.contains_key("ok"), "verified github cask has no offline signals");
+    }
+
+    #[test]
+    fn formula_service_bottle_and_tap_remote_signals() {
+        // svc: installs a service. rogue: from a third-party tap on an http +
+        // exotic remote, with a non-official bottle. core: clean official.
+        let json = br#"{
+          "formulae": [
+            { "name": "svc", "tap": "homebrew/core", "installed": [
+                { "version": "1.0", "installed_on_request": true, "runtime_dependencies": [] } ],
+              "service": { "run": ["/x"] },
+              "bottle": { "stable": { "root_url": "https://ghcr.io/v2/homebrew/core" } } },
+            { "name": "rogue", "tap": "evil/tap", "installed": [
+                { "version": "2.0", "installed_on_request": true, "runtime_dependencies": [] } ],
+              "bottle": { "stable": { "root_url": "https://binaries.evil.test/bottles" } } }
+          ]
+        }"#;
+        let remote = HashMap::from([("evil/tap".to_string(), "http://git.evil.test/evil/tap".to_string())]);
+        let Parsed { signals, .. } = analyze(json, &remote).unwrap();
+
+        let svc: Vec<&str> = signals["svc"].iter().map(|s| s.label.as_str()).collect();
+        assert!(svc.iter().any(|l| l.contains("installs-service")));
+        assert!(!svc.iter().any(|l| l.contains("unofficial-bottle")), "official bottle is clean");
+
+        let rogue: Vec<&str> = signals["rogue"].iter().map(|s| s.label.as_str()).collect();
+        assert!(rogue.iter().any(|l| l.contains("unofficial-bottle (evil.test)")));
+        assert!(rogue.iter().any(|l| l.contains("insecure-tap-remote (http)")));
     }
 
     #[test]
