@@ -35,6 +35,14 @@ pub enum Command {
     /// Export the resolved dependency graph as a CycloneDX 1.5 SBOM (JSON).
     Sbom(SbomArgs),
 
+    /// Explain why a package is installed: the dependency paths from it up to the
+    /// direct dependencies (like `npm why` / `cargo tree -i`).
+    Why(WhyArgs),
+
+    /// One-shot graded health check: static malware scan + dependency inventory,
+    /// plus optional online reputation (`--online`) and known vulns (`--vulns`).
+    Audit(AuditArgs),
+
     /// Manage the on-disk cache (~/.postmortem/cache) used by `tree --online`.
     Cache(CacheArgs),
 
@@ -142,6 +150,47 @@ pub struct SbomArgs {
     /// `postmortem-sbom-[MM.DD.YYYY::HH:MM].json` is written in the cwd.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
+
+    /// Disable the animated progress UI.
+    #[arg(long)]
+    pub no_progress: bool,
+}
+
+/// Arguments for `postmortem why <package> <path>`.
+#[derive(Args, Debug)]
+pub struct WhyArgs {
+    /// The package name to explain.
+    pub package: String,
+
+    /// The project directory to resolve.
+    pub path: PathBuf,
+
+    /// Disable the animated progress UI.
+    #[arg(long)]
+    pub no_progress: bool,
+}
+
+/// Arguments for `postmortem audit <path>`.
+#[derive(Args, Debug)]
+pub struct AuditArgs {
+    /// The project directory to audit.
+    pub path: PathBuf,
+
+    /// Go ONLINE: add source-repo reputation risk scoring. Touches the network.
+    #[arg(long)]
+    pub online: bool,
+
+    /// With --online, also fetch each repo's language breakdown.
+    #[arg(long)]
+    pub languages: bool,
+
+    /// Add known-vulnerability intelligence via the mlab SBOM scan (vuln.mlab.sh).
+    #[arg(long)]
+    pub vulns: bool,
+
+    /// Report IOC findings inside test/fixture directories too (off by default).
+    #[arg(long)]
+    pub allow_test_files: bool,
 
     /// Disable the animated progress UI.
     #[arg(long)]

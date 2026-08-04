@@ -1,7 +1,7 @@
 class Postmortem < Formula
   desc "Static dependency scanner for Node, Python and Rust projects"
   homepage "https://github.com/mlab-sh/postmortem"
-  version "2.0.0"
+  version "2.1.0"
   license "Apache-2.0"
 
   on_macos do

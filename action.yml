@@ -13,7 +13,7 @@ inputs:
     description: >-
       postmortem release tag to run (must include the tree CI gate, i.e. >= the
       release that shipped --max-*/--fail-on-vuln). Pin this.
-    default: v2.0.0
+    default: v2.1.0
   online:
     description: Resolve repositories and score reputation/identity (network).
     default: "true"

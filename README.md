@@ -49,6 +49,8 @@ graph, and flags what real compromises look like. All offline by default.
 postmortem scan .                       # find malicious code, fully offline
 postmortem tree . --online              # score dependencies by repo reputation
 postmortem tree . --online --vulns      # add known CVE / GHSA / OSV advisories
+postmortem audit . --online --vulns     # one graded verdict: malware + risk + CVEs
+postmortem why left-pad .               # why is this package installed?
 postmortem diff ./main ./pr-branch      # what dependencies did this change add?
 postmortem sbom . -o sbom.json          # export a CycloneDX 1.5 SBOM
 postmortem system                       # audit your installed OS packages
@@ -80,6 +82,8 @@ cd postmortem && cargo build --release
 |---|---|
 | [`scan`](https://github.com/mlab-sh/postmortem/wiki/Scan) | Offline static analysis of dependency code for malicious patterns. |
 | [`tree`](https://github.com/mlab-sh/postmortem/wiki/Tree) | Dependency graph, plus online reputation, provenance, and known-vulnerability intelligence. |
+| [`audit`](https://github.com/mlab-sh/postmortem/wiki/Audit) | One-shot graded health check: malware scan + inventory, plus optional reputation and vulns. |
+| [`why`](https://github.com/mlab-sh/postmortem/wiki/Why) | Explain why a package is installed: its dependency paths up to the roots. |
 | [`diff`](https://github.com/mlab-sh/postmortem/wiki/Diff) | Compare two project states: added / removed / version-changed dependencies. |
 | [`sbom`](https://github.com/mlab-sh/postmortem/wiki/Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |
 | [`system`](https://github.com/mlab-sh/postmortem/wiki/System) | Audit your machine's OS package managers, and deep-inspect any package's real source. |

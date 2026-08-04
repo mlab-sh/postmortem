@@ -1,4 +1,5 @@
 mod analyze;
+mod audit;
 mod cache;
 mod cli;
 mod config;
@@ -17,6 +18,7 @@ mod settings;
 mod system;
 mod tree;
 mod typosquat;
+mod why;
 mod ui;
 mod vuln;
 
@@ -31,6 +33,8 @@ fn main() -> Result<()> {
         cli::Command::Tree(args) => run_tree(args),
         cli::Command::Diff(args) => run_diff(args),
         cli::Command::Sbom(args) => run_sbom(args),
+        cli::Command::Why(args) => run_why(args),
+        cli::Command::Audit(args) => run_audit(args),
         cli::Command::Cache(args) => run_cache(args),
         cli::Command::System(args) => run_system(args),
         cli::Command::Help => {
@@ -102,6 +106,102 @@ fn run_sbom(args: cli::SbomArgs) -> Result<()> {
     let bom = sbom::cyclonedx(name, &deps, &timestamp);
     let out = serde_json::to_string_pretty(&bom)?;
     cli::OutputTarget::resolve_named(args.output.as_deref(), "sbom", "json").write(&out)?;
+    Ok(())
+}
+
+/// `postmortem why <package> <path>` — show the dependency paths from a package
+/// up to the direct dependencies.
+fn run_why(args: cli::WhyArgs) -> Result<()> {
+    let ui = ui::Ui::new(!args.no_progress);
+    let root = args
+        .path
+        .canonicalize()
+        .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
+    let Some((_, deps, _)) = detect_and_parse(&root, &ui)? else {
+        anyhow::bail!("no supported ecosystem detected at {}", root.display());
+    };
+    why::render(&deps, &args.package, &args.path.display().to_string());
+    Ok(())
+}
+
+/// `postmortem audit <path>` — unify the static scan, dependency inventory, and
+/// (opt-in) online reputation + known vulns into one graded verdict.
+fn run_audit(args: cli::AuditArgs) -> Result<()> {
+    let ui = ui::Ui::new(!args.no_progress);
+    let root = args
+        .path
+        .canonicalize()
+        .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
+    let Some((detected, deps, diags)) = detect_and_parse(&root, &ui)? else {
+        std::process::exit(2);
+    };
+
+    // Static malware scan (offline), tallied by severity.
+    let findings = {
+        let f = analyze::run_all(&detected, &deps, &ui);
+        analyze::drop_test_iocs(f, args.allow_test_files, &root)
+    };
+    let count = |sev: model::Severity| findings.iter().filter(|f| f.severity == sev).count();
+
+    let mut summary = audit::AuditSummary {
+        ecosystems: detected.iter().map(|e| e.name().to_string()).collect(),
+        total_deps: deps.len(),
+        direct_deps: deps.iter().filter(|d| d.direct).count(),
+        critical: count(model::Severity::Critical),
+        high_findings: count(model::Severity::High),
+        medium: count(model::Severity::Medium),
+        low: count(model::Severity::Low),
+        diagnostics: diags.len(),
+        ..Default::default()
+    };
+
+    // Dependency forest — for the online risk + vuln layers.
+    let ecosystems: Vec<String> = detected.iter().map(|e| e.name().to_string()).collect();
+    let mut forest = tree::build(&root.display().to_string(), &ecosystems, &deps, None);
+    forest.diagnostics = diags;
+
+    let mut settings = settings::Settings::load().unwrap_or_default();
+    if args.online {
+        let tokens = resolve::Tokens {
+            github: settings.resolve_github_token()?,
+            gitlab: settings.gitlab_token(),
+            codeberg: settings.codeberg_token(),
+        };
+        let resolver =
+            resolve::Resolver::new(tokens, settings.tree.clone()).with_languages(args.languages);
+        let resolutions = resolver.resolve_all(&deps, &ui);
+        tree::enrich(&mut forest, &resolutions);
+        tree::score(&mut forest);
+    }
+    if args.vulns {
+        let (agent, cache, token) = (vuln::agent(), cache::Cache::open(), settings.vuln_token());
+        for d in &detected {
+            if let Some((lock, fmt)) = mlab_target(d)
+                && let Ok(mut v) = vuln::scan(&agent, &cache, token.as_deref(), lock, fmt)
+            {
+                forest.vulnerabilities.append(&mut v);
+            }
+        }
+    }
+
+    // Reduce the forest to the summary metrics via an empty (no-threshold) gate.
+    let today = chrono::Local::now().date_naive();
+    let m = gate::evaluate(&gate::Policy::default(), &forest, today, None).metrics;
+    if args.online {
+        summary.risk = Some(m.risk);
+        summary.high_deps = m.high;
+        summary.sus_deps = m.sus;
+    }
+    if args.vulns {
+        summary.vulns = Some(m.vulns);
+        summary.worst_vuln = m.worst_vuln;
+    }
+
+    audit::render(&summary, &args.path.display().to_string());
+    // Non-zero exit on a CRITICAL verdict, so `audit` is CI-usable.
+    if audit::grade(&summary) == audit::Grade::Critical {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
@@ -220,6 +320,8 @@ fn print_overview() {
     println!("{}", "COMMANDS".bold());
     println!("  {}   Scan one or more project directories for malicious dependencies", "scan".cyan());
     println!("  {}   Resolve the dependency tree from the lockfiles ({} for repo stats)", "tree".cyan(), "--online".dimmed());
+    println!("  {}  One-shot graded health check ({}/{} deepen it)", "audit".cyan(), "--online".dimmed(), "--vulns".dimmed());
+    println!("  {}    Explain why a package is installed (its dependency paths)", "why".cyan());
     println!("  {}   Compare two project states: added / removed / changed dependencies", "diff".cyan());
     println!("  {}   Export the dependency graph as a CycloneDX SBOM", "sbom".cyan());
     println!("  {}  Manage the on-disk cache used by {}", "cache".cyan(), "tree --online".dimmed());

@@ -5,6 +5,8 @@
 **Commands**
 - [scan](Scan)
 - [tree](Tree)
+- [audit](Audit)
+- [why](Why)
 - [diff](Diff)
 - [sbom](Sbom)
 - [system](System)
