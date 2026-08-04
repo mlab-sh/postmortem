@@ -5,6 +5,8 @@
 **Commands**
 - [scan](Scan)
 - [tree](Tree)
+- [diff](Diff)
+- [sbom](Sbom)
 - [system](System)
 - [cache](Cache)
 

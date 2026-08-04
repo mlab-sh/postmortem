@@ -18,6 +18,8 @@ network are opt-in (`--online`, `--vulns`), and every response is cached locally
 | --- | --- |
 | [`scan`](Scan) | Static analysis of dependency code for malicious patterns (IOCs, obfuscation, install hooks, sensitive APIs). |
 | [`tree`](Tree) | Reconstruct the dependency forest from lockfiles; `--online` adds source-repo reputation, `--vulns` adds known CVEs. |
+| [`diff`](Diff) | Compare two project states: added / removed / version-changed dependencies. |
+| [`sbom`](Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |
 | [`system`](System) | Audit the machine's OS package managers (Homebrew, pacman/AUR, apt/dpkg, dnf/rpm, Nix, and apk) with the same risk scoring. |
 | [`cache`](Cache) | Manage the on-disk cache used by the online paths. |
 

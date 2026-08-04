@@ -3,6 +3,7 @@ mod cache;
 mod cli;
 mod config;
 mod detect;
+mod diff;
 mod enrich;
 mod gate;
 mod gochi;
@@ -11,6 +12,7 @@ mod model;
 mod parsers;
 mod report;
 mod resolve;
+mod sbom;
 mod settings;
 mod system;
 mod tree;
@@ -20,13 +22,15 @@ mod vuln;
 
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 fn main() -> Result<()> {
     match cli::Cli::parse().command {
         cli::Command::Scan(args) => run_scan(args),
         cli::Command::Tree(args) => run_tree(args),
+        cli::Command::Diff(args) => run_diff(args),
+        cli::Command::Sbom(args) => run_sbom(args),
         cli::Command::Cache(args) => run_cache(args),
         cli::Command::System(args) => run_system(args),
         cli::Command::Help => {
@@ -60,6 +64,44 @@ fn run_cache(args: cli::CacheArgs) -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+/// `postmortem diff <old> <new>` — resolve both projects offline and report the
+/// added / removed / version-changed dependencies.
+fn run_diff(args: cli::DiffArgs) -> Result<()> {
+    let ui = ui::Ui::new(!args.no_progress);
+    let resolve_deps = |path: &Path| -> Result<Vec<model::Dependency>> {
+        let root = path
+            .canonicalize()
+            .with_context(|| format!("cannot resolve path {}", path.display()))?;
+        match detect_and_parse(&root, &ui)? {
+            Some((_, deps, _)) => Ok(deps),
+            None => anyhow::bail!("no supported ecosystem detected at {}", root.display()),
+        }
+    };
+    let old = resolve_deps(&args.old)?;
+    let new = resolve_deps(&args.new)?;
+    let report = diff::diff(&old, &new);
+    diff::render(&report, &args.old.display().to_string(), &args.new.display().to_string());
+    Ok(())
+}
+
+/// `postmortem sbom <path>` — resolve the project and emit a CycloneDX 1.5 SBOM.
+fn run_sbom(args: cli::SbomArgs) -> Result<()> {
+    let ui = ui::Ui::new(!args.no_progress);
+    let root = args
+        .path
+        .canonicalize()
+        .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
+    let Some((_, deps, _)) = detect_and_parse(&root, &ui)? else {
+        anyhow::bail!("no supported ecosystem detected at {}", root.display());
+    };
+    let name = root.file_name().and_then(|s| s.to_str()).unwrap_or("project");
+    let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let bom = sbom::cyclonedx(name, &deps, &timestamp);
+    let out = serde_json::to_string_pretty(&bom)?;
+    cli::OutputTarget::resolve_named(args.output.as_deref(), "sbom", "json").write(&out)?;
     Ok(())
 }
 
@@ -178,6 +220,8 @@ fn print_overview() {
     println!("{}", "COMMANDS".bold());
     println!("  {}   Scan one or more project directories for malicious dependencies", "scan".cyan());
     println!("  {}   Resolve the dependency tree from the lockfiles ({} for repo stats)", "tree".cyan(), "--online".dimmed());
+    println!("  {}   Compare two project states: added / removed / changed dependencies", "diff".cyan());
+    println!("  {}   Export the dependency graph as a CycloneDX SBOM", "sbom".cyan());
     println!("  {}  Manage the on-disk cache used by {}", "cache".cyan(), "tree --online".dimmed());
     println!("  {} Audit OS package managers ({} for repo stats)", "system".cyan(), "--online".dimmed());
     println!("  {}   Show this overview", "help".cyan());

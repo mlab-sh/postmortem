@@ -28,6 +28,13 @@ pub enum Command {
     /// reputation stats to flag suspicious supply-chain updates.
     Tree(TreeArgs),
 
+    /// Compare two project states and report added / removed / version-changed
+    /// dependencies. Offline set-diff (the companion to the gate's `--baseline`).
+    Diff(DiffArgs),
+
+    /// Export the resolved dependency graph as a CycloneDX 1.5 SBOM (JSON).
+    Sbom(SbomArgs),
+
     /// Manage the on-disk cache (~/.postmortem/cache) used by `tree --online`.
     Cache(CacheArgs),
 
@@ -105,6 +112,36 @@ pub struct InspectArgs {
     /// Report IOC findings inside test/fixture directories too (off by default).
     #[arg(long)]
     pub allow_test_files: bool,
+
+    /// Disable the animated progress UI.
+    #[arg(long)]
+    pub no_progress: bool,
+}
+
+/// Arguments for `postmortem diff <old> <new>`.
+#[derive(Args, Debug)]
+pub struct DiffArgs {
+    /// The baseline project directory (the "before" state).
+    pub old: PathBuf,
+
+    /// The project directory to compare against it (the "after" state).
+    pub new: PathBuf,
+
+    /// Disable the animated progress UI.
+    #[arg(long)]
+    pub no_progress: bool,
+}
+
+/// Arguments for `postmortem sbom <path>`.
+#[derive(Args, Debug)]
+pub struct SbomArgs {
+    /// The project directory to resolve and export.
+    pub path: PathBuf,
+
+    /// Write output to file. Pass `-` for stdout. When omitted, a file named
+    /// `postmortem-sbom-[MM.DD.YYYY::HH:MM].json` is written in the cwd.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
 
     /// Disable the animated progress UI.
     #[arg(long)]
