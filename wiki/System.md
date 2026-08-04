@@ -29,7 +29,7 @@ manager.
 | --- | --- | --- |
 | Homebrew | supported | [Homebrew](Homebrew) |
 | pacman (+ AUR) | supported | [Pacman](Pacman) |
-| apt / dpkg | planned | (roadmap) |
+| apt / dpkg | supported | [APT](Apt) |
 | dnf / apk | planned | (roadmap) |
 
 ## Common options

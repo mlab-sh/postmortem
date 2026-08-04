@@ -31,9 +31,10 @@ graph, and flags what real compromises look like. All offline by default.
   of nowhere).
 * **Reputation intelligence.** Score every dependency on its real source repo
   (stars, age, activity, language) across GitHub, GitLab, and Codeberg.
-* **Audit your machine too.** `system` inspects your OS packages (Homebrew and
-  Arch/pacman): unsigned packages, third-party taps and AUR builds, unverified
-  downloads, install-time hooks, and anything that runs at boot.
+* **Audit your machine too.** `system` inspects your OS packages (Homebrew,
+  Arch/pacman, and Debian/Ubuntu apt): unsigned or third-party sources, PPAs and
+  AUR builds, unverified downloads, install-time hooks, setuid binaries and file
+  diversions, weakened signing trust, and tampered files.
 * **Deep source inspection.** `system inspect <pkg> --deep` clones every
   dependency's real source and runs the full detection suite over it.
 * **CI-ready.** JSON and SARIF (GitHub Code Scanning) output, plus a configurable
@@ -47,7 +48,7 @@ graph, and flags what real compromises look like. All offline by default.
 postmortem scan .                       # find malicious code, fully offline
 postmortem tree . --online              # score dependencies by repo reputation
 postmortem tree . --online --vulns      # add known CVE / GHSA / OSV advisories
-postmortem system                       # audit installed Homebrew packages
+postmortem system                       # audit your installed OS packages
 postmortem system inspect wget --deep   # clone + audit one package's full source
 ```
 

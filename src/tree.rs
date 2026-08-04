@@ -622,12 +622,6 @@ fn render_recap(tree: &Tree) {
     }
 }
 
-/// True if the node carries a signal starting with `prefix` (e.g.
-/// `installs-service`). Used to surface a specific signal regardless of severity.
-fn has_signal(node: &Node, prefix: &str) -> bool {
-    node.signals.iter().any(|s| s.starts_with(prefix))
-}
-
 /// A "soft" signal — version drift or persistence. Noted, but not a security
 /// risk that meaningfully touches the score.
 fn is_soft_signal(s: &str) -> bool {
@@ -766,10 +760,10 @@ type Flagged = BTreeMap<(String, String), Flag>;
 fn render_flagged(tree: &Tree) {
     let mut flagged: Flagged = BTreeMap::new();
     fn collect(node: &Node, out: &mut Flagged) {
-        // Real flags (Medium+), plus persistence (`installs-service`) which is
-        // surfaced regardless of its low severity.
-        let surface = node.severity.is_some_and(|s| s >= Severity::Medium)
-            || has_signal(node, "installs-service");
+        // The flagged list is Medium+ only; low-severity/informational signals
+        // (installs-service, setuid, component, held, …) stay inline on the tree
+        // and are summarized in the recap, so they don't drown the real flags.
+        let surface = node.severity.is_some_and(|s| s >= Severity::Medium);
         if surface && !node.signals.is_empty() {
             out.insert(
                 (node.name.clone(), node.version.clone()),

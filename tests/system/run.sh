@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Generate a full set of postmortem outputs (terminal / json / sarif / md) across
 # scan, tree, and the system backends (Homebrew on the host + pacman in the Arch
-# container), so every format can be eyeballed for validity in one place.
+# container + apt in the Ubuntu container), so every format can be eyeballed for
+# validity in one place.
 #
 # Everything lands in tests/system/reports/ (gitignored). Re-run any time.
 #
@@ -68,6 +69,15 @@ if container run --rm -v "$PWD:/src" -w /src docker.io/library/rust:latest \
   capture "arch/pacman-repos.txt"    container exec postmortem-arch /usr/bin/pm system --repos --no-progress
   capture "arch/pacman-system.json"  container exec postmortem-arch /usr/bin/pm system --json --no-progress
   capture "arch/pacman-online.txt"   container exec postmortem-arch /usr/bin/pm system --online --no-progress
+  # Ubuntu container: same Linux binary, apt backend.
+  mkdir -p "$OUT/ubuntu"
+  container start postmortem-ubuntu >/dev/null 2>&1
+  container cp "$PWD/target-linux/release/postmortem" postmortem-ubuntu:/usr/bin/pm 2>/dev/null
+  container exec postmortem-ubuntu chmod +x /usr/bin/pm 2>/dev/null
+  log "system (apt backend, Ubuntu container)"
+  capture "ubuntu/apt-system.txt"  container exec postmortem-ubuntu /usr/bin/pm system --no-progress
+  capture "ubuntu/apt-repos.txt"   container exec postmortem-ubuntu /usr/bin/pm system --repos --no-progress
+  capture "ubuntu/apt-system.json" container exec postmortem-ubuntu /usr/bin/pm system --json --no-progress
 else
   echo "  SKIP Linux build failed (network?) - re-run to retry" | tee "$OUT/arch/BUILD-FAILED.txt"
 fi

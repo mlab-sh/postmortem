@@ -16,6 +16,8 @@ pub enum Ecosystem {
     Brew,
     /// Arch Linux `pacman` — an OS-level package manager (`system` command).
     Pacman,
+    /// Debian/Ubuntu `apt`/`dpkg` — an OS-level package manager (`system` command).
+    Apt,
 }
 
 impl Ecosystem {
@@ -30,6 +32,7 @@ impl Ecosystem {
             Ecosystem::Java => "java",
             Ecosystem::Brew => "brew",
             Ecosystem::Pacman => "pacman",
+            Ecosystem::Apt => "apt",
         }
     }
 }

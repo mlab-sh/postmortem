@@ -17,6 +17,8 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 | [**Go**](Go) | modules (`go.mod`, `go.sum`) | *(none - the module path is the repo)* |
 | [**Java**](Java) | Maven, Gradle (`pom.xml`, `build.gradle`) | deps.dev |
 | [**Homebrew**](Homebrew) | via [`system`](System) | formulae.brew.sh |
+| [**pacman**](Pacman) | via [`system`](System) | AUR RPC *(+ homepage → repo)* |
+| [**apt / dpkg**](Apt) | via [`system`](System) | *(none - homepage → repo)* |
 
 > Go and Java are **flat-graph** ecosystems offline (transitive parent edges
 > can't be reconstructed without the toolchain). postmortem emits a
