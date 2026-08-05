@@ -92,6 +92,95 @@ pub fn scan(
     Ok(out)
 }
 
+/// Scan a pre-resolved coordinate set — `(ecosystem, name, version)` — through
+/// mlab's `/api/v2/scan` in its **pre-parsed** mode (`{"packages":[…]}`). Used by
+/// the [`crate::osv`] system path, whose packages come from the OS package
+/// manager, not a lockfile. The `ecosystem` is forwarded to OSV verbatim (e.g.
+/// `Debian:12`), so distro advisories resolve.
+///
+/// Unlike [`scan`], the pre-parsed response echoes no `packages` array — only
+/// `results`, aligned to input order — so we zip against the coordinates we
+/// sent. Cached by the coordinate-set content hash.
+pub(crate) fn scan_coordinates(
+    agent: &ureq::Agent,
+    cache: &Cache,
+    token: Option<&str>,
+    coords: &[(String, String, String)],
+) -> Result<Vec<VulnPackage>> {
+    if coords.is_empty() {
+        return Ok(Vec::new());
+    }
+    let packages: Vec<_> = coords
+        .iter()
+        .map(|(eco, name, version)| {
+            serde_json::json!({ "ecosystem": eco, "name": name, "version": version })
+        })
+        .collect();
+    let payload = serde_json::to_vec(&serde_json::json!({ "packages": packages }))
+        .context("serializing scan coordinates")?;
+
+    let key = format!("sys-{}", content_key(&payload));
+    if let Some(hit) = cache.get::<Vec<VulnPackage>>("vuln-scan", &key) {
+        return Ok(hit);
+    }
+
+    let mut req = agent
+        .post(SCAN_URL)
+        .timeout(Duration::from_secs(30))
+        .set("Content-Type", "application/json");
+    if let Some(t) = token {
+        req = req.set("Authorization", &format!("Bearer {t}"));
+    }
+    let body = match req.send_bytes(&payload) {
+        Ok(resp) => resp.into_string()?,
+        Err(ureq::Error::Status(429, _)) => anyhow::bail!("mlab rate limit reached (try a token)"),
+        Err(ureq::Error::Status(code, resp)) => {
+            anyhow::bail!("mlab scan failed ({code}): {}", resp.into_string().unwrap_or_default())
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let doc: serde_json::Value = serde_json::from_str(&body).context("parsing mlab response")?;
+    let out = parse_coordinate_results(coords, &doc);
+
+    for vp in &out {
+        cache.put("vuln", &format!("{}@{}", vp.name, vp.version), &vp.vulns);
+    }
+    cache.put("vuln-scan", &key, &out);
+    Ok(out)
+}
+
+/// Zip the coordinates we sent against the pre-parsed scan's `results` (aligned
+/// to input order), keeping only coordinates that carry advisories. A result
+/// with `ok:false` is an outage/unqueryable marker, not "no vulns" — skip it
+/// (its `vulns` is absent, so it naturally drops out).
+fn parse_coordinate_results(
+    coords: &[(String, String, String)],
+    doc: &serde_json::Value,
+) -> Vec<VulnPackage> {
+    let Some(results) = doc.get("results").and_then(|r| r.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for ((eco, name, version), res) in coords.iter().zip(results) {
+        let vulns: Vec<Vuln> = res
+            .get("vulns")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().map(parse_vuln).collect())
+            .unwrap_or_default();
+        if vulns.is_empty() {
+            continue;
+        }
+        out.push(VulnPackage {
+            name: name.clone(),
+            version: version.clone(),
+            ecosystem: eco.clone(),
+            vulns,
+        });
+    }
+    out
+}
+
 /// Zip mlab's parallel `packages` / `results` arrays into per-package vulns,
 /// keeping only packages that actually have advisories.
 fn parse_response(doc: &serde_json::Value) -> Vec<VulnPackage> {
@@ -121,7 +210,9 @@ fn parse_response(doc: &serde_json::Value) -> Vec<VulnPackage> {
     out
 }
 
-fn parse_vuln(v: &serde_json::Value) -> Vuln {
+/// Parse one OSV-schema advisory object into our slim [`Vuln`]. Shared with the
+/// [`crate::osv`] client (OSV.dev returns the same schema mlab does).
+pub(crate) fn parse_vuln(v: &serde_json::Value) -> Vuln {
     let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("UNKNOWN").to_string();
     let summary = v
         .get("summary")
@@ -150,13 +241,19 @@ fn osv_severity(v: &serde_json::Value) -> Severity {
             _ => Severity::Medium,
         };
     }
+    // The OSV `severity` array can carry several scorings (CVSS_V3, CVSS_V4…);
+    // take the worst score we can parse. Distro feeds (Debian/Ubuntu/Alpine)
+    // ship a full CVSS *vector* here, not a bare number, so [`cvss_base`] must
+    // compute the base score or every advisory would collapse to the default.
     if let Some(score) = v
         .get("severity")
         .and_then(|s| s.as_array())
-        .and_then(|a| a.first())
-        .and_then(|s| s.get("score"))
-        .and_then(|s| s.as_str())
-        .and_then(cvss_base)
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| s.get("score").and_then(|s| s.as_str()).and_then(cvss_base))
+                .fold(f64::NEG_INFINITY, f64::max)
+        })
+        .filter(|s| s.is_finite())
     {
         return match score {
             s if s >= 7.0 => Severity::High,
@@ -167,10 +264,94 @@ fn osv_severity(v: &serde_json::Value) -> Severity {
     Severity::Medium
 }
 
-/// Pull the base score out of a CVSS vector string's trailing number, if any —
-/// or parse a bare numeric score. Best-effort.
+/// Extract a CVSS base score: a bare numeric score (e.g. mlab's `"9.8"`), or the
+/// base score computed from a CVSS v3.x vector string (e.g. OSV distro feeds'
+/// `"CVSS:3.1/AV:N/AC:L/…"`). `None` for anything we can't score (e.g. a v4.0
+/// vector), letting the caller fall back to its default.
 fn cvss_base(s: &str) -> Option<f64> {
-    s.trim().parse::<f64>().ok()
+    let s = s.trim();
+    if let Ok(n) = s.parse::<f64>() {
+        return Some(n);
+    }
+    if s.starts_with("CVSS:3") {
+        return cvss_v3_base(s);
+    }
+    None
+}
+
+/// Compute a CVSS v3.0/3.1 base score from its vector string, per the spec.
+/// Returns `None` if the mandatory base metrics aren't all present.
+fn cvss_v3_base(vector: &str) -> Option<f64> {
+    let mut m = std::collections::HashMap::new();
+    for part in vector.split('/').skip(1) {
+        if let Some((k, val)) = part.split_once(':') {
+            m.insert(k, val);
+        }
+    }
+    let scope_changed = *m.get("S")? == "C";
+    let av = match *m.get("AV")? {
+        "N" => 0.85,
+        "A" => 0.62,
+        "L" => 0.55,
+        "P" => 0.2,
+        _ => return None,
+    };
+    let ac = match *m.get("AC")? {
+        "L" => 0.77,
+        "H" => 0.44,
+        _ => return None,
+    };
+    let pr = match (*m.get("PR")?, scope_changed) {
+        ("N", _) => 0.85,
+        ("L", false) => 0.62,
+        ("L", true) => 0.68,
+        ("H", false) => 0.27,
+        ("H", true) => 0.5,
+        _ => return None,
+    };
+    let ui = match *m.get("UI")? {
+        "N" => 0.85,
+        "R" => 0.62,
+        _ => return None,
+    };
+    let cia = |v: &str| match v {
+        "H" => 0.56,
+        "L" => 0.22,
+        "N" => 0.0,
+        _ => f64::NAN,
+    };
+    let (c, i, a) = (cia(m.get("C")?), cia(m.get("I")?), cia(m.get("A")?));
+    if c.is_nan() || i.is_nan() || a.is_nan() {
+        return None;
+    }
+
+    let iss = 1.0 - (1.0 - c) * (1.0 - i) * (1.0 - a);
+    let impact = if scope_changed {
+        7.52 * (iss - 0.029) - 3.25 * (iss - 0.02).powi(15)
+    } else {
+        6.42 * iss
+    };
+    if impact <= 0.0 {
+        return Some(0.0);
+    }
+    let exploitability = 8.22 * av * ac * pr * ui;
+    let raw = if scope_changed {
+        (1.08 * (impact + exploitability)).min(10.0)
+    } else {
+        (impact + exploitability).min(10.0)
+    };
+    Some(cvss_roundup(raw))
+}
+
+/// The CVSS "Roundup": round *up* to one decimal place, integer-math style to
+/// dodge float error (9.760000001 → 9.8).
+fn cvss_roundup(x: f64) -> f64 {
+    let int_input = (x * 100_000.0).round() as i64;
+    if int_input % 10_000 == 0 {
+        int_input as f64 / 100_000.0
+    } else {
+        ((int_input / 10_000) + 1) as f64 / 10.0
+    }
 }
 
 fn content_key(bytes: &[u8]) -> String {
@@ -209,6 +390,34 @@ mod tests {
     }
 
     #[test]
+    fn coordinate_results_zip_by_input_order() {
+        // The pre-parsed `/api/v2/scan` reply carries only `results`, aligned to
+        // the coordinates we sent (no `packages` echo). ok:false is an outage,
+        // not "clean" — and drops out for having no `vulns`.
+        let coords = vec![
+            ("Debian:12".into(), "clean-pkg".into(), "1.0".into()),
+            ("Debian:12".into(), "curl".into(), "7.74.0".into()),
+            ("Debian:12".into(), "outage-pkg".into(), "2.0".into()),
+        ];
+        let doc = serde_json::json!({
+            "results": [
+                { "ok": true, "vulns": [] },
+                { "ok": true, "vulns": [
+                    { "id": "DEBIAN-CVE-2022-32207",
+                      "severity": [ { "type": "CVSS_V3",
+                        "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" } ] }
+                ] },
+                { "ok": false }
+            ]
+        });
+        let out = parse_coordinate_results(&coords, &doc);
+        assert_eq!(out.len(), 1, "only the vulnerable coordinate is kept");
+        assert_eq!(out[0].name, "curl");
+        assert_eq!(out[0].ecosystem, "Debian:12");
+        assert_eq!(out[0].vulns[0].severity, Severity::High);
+    }
+
+    #[test]
     fn osv_severity_from_cvss_score() {
         let v = serde_json::json!({
             "id": "CVE-x",
@@ -220,5 +429,30 @@ mod tests {
     #[test]
     fn osv_severity_defaults_medium() {
         assert_eq!(osv_severity(&serde_json::json!({ "id": "x" })), Severity::Medium);
+    }
+
+    #[test]
+    fn cvss_v3_vector_scores_correctly() {
+        // The canonical 9.8 vector (network, no auth, full impact).
+        assert_eq!(cvss_base("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"), Some(9.8));
+        // A scope-changed medium.
+        assert_eq!(cvss_base("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"), Some(6.1));
+        // Bare numeric still parses (mlab path).
+        assert_eq!(cvss_base("7.5"), Some(7.5));
+        // A v4.0 vector we don't compute → None (caller falls back).
+        assert!(cvss_base("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H").is_none());
+    }
+
+    #[test]
+    fn distro_cvss_vector_maps_to_high() {
+        // A real OSV distro advisory: no `database_specific.severity`, severity
+        // carried only as a CVSS vector. Must resolve to High, not the default.
+        let v = serde_json::json!({
+            "id": "DEBIAN-CVE-2022-32207",
+            "severity": [
+                { "type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }
+            ]
+        });
+        assert_eq!(osv_severity(&v), Severity::High);
     }
 }

@@ -90,6 +90,18 @@ pub struct SystemArgs {
     #[arg(long)]
     pub force_aur: bool,
 
+    /// Scan installed packages for known vulnerabilities via OSV.dev. Covers
+    /// apt (Debian/Ubuntu), apk (Alpine) and dnf (Rocky/AlmaLinux); other
+    /// backends report as un-scanned rather than clean. Touches the network.
+    #[arg(long)]
+    pub vulns: bool,
+
+    /// Override the detected OS release used for the OSV lookup, as `id:version`
+    /// (e.g. `debian:12`, `alpine:3.19`). Defaults to `/etc/os-release`. Useful
+    /// when scanning an image whose os-release isn't this machine's.
+    #[arg(long)]
+    pub release: Option<String>,
+
     /// Disable the animated progress UI.
     #[arg(long)]
     pub no_progress: bool,

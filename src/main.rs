@@ -10,6 +10,7 @@ mod gate;
 mod gochi;
 mod inspect;
 mod model;
+mod osv;
 mod parsers;
 mod report;
 mod resolve;
@@ -283,12 +284,84 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
     system::annotate(&mut forest, &inv.signals);
     tree::score(&mut forest);
 
+    // `--vulns`: known-vulnerability intel via OSV.dev. The whole inventory is
+    // one backend, so one ecosystem string covers it — or `None` when OSV
+    // doesn't index this manager, in which case we record a diagnostic instead
+    // of letting a silent zero read as "clean".
+    if args.vulns {
+        scan_system_vulns(&mut forest, &inv, args.release.as_deref(), &ui);
+    }
+
     if args.json {
         println!("{}", serde_json::to_string_pretty(&forest)?);
     } else {
         tree::render(&forest);
     }
     Ok(())
+}
+
+/// Populate `forest.vulnerabilities` from OSV.dev for the installed inventory,
+/// or push a `vuln_source_unavailable` diagnostic when the release can't be
+/// resolved or OSV doesn't cover this backend.
+fn scan_system_vulns(
+    forest: &mut tree::Tree,
+    inv: &system::Inventory,
+    release_override: Option<&str>,
+    ui: &ui::Ui,
+) {
+    let Some(eco) = inv.deps.first().map(|d| d.ecosystem) else {
+        return; // nothing installed to scan
+    };
+
+    let release = match release_override {
+        Some(s) => osv::Release::parse_override(s),
+        None => match osv::Release::detect() {
+            Some(r) => r,
+            None => {
+                forest.diagnostics.push(model::Diagnostic {
+                    ecosystem: eco.as_str().into(),
+                    kind: "vuln_source_unavailable".into(),
+                    message: "cannot read /etc/os-release; pass --release id:version to scan"
+                        .into(),
+                });
+                return;
+            }
+        },
+    };
+
+    let Some(osv_eco) = osv::osv_ecosystem(eco, &release) else {
+        forest.diagnostics.push(model::Diagnostic {
+            ecosystem: eco.as_str().into(),
+            kind: "vuln_source_unavailable".into(),
+            message: format!(
+                "OSV has no vulnerability feed for {} ({}); packages were not scanned",
+                eco.as_str(),
+                release.id
+            ),
+        });
+        return;
+    };
+
+    let settings = settings::Settings::load().unwrap_or_default();
+    let token = settings.vuln_token();
+    if token.is_none() {
+        eprintln!(
+            "note: no mlab token — vuln scans use the anonymous limit. \
+             Set VULN_MLAB_TOKEN or vuln_token in ~/.postmortem/config.yml."
+        );
+    }
+    ui.note(format!(
+        "scanning {} packages for known vulns via vuln.mlab.sh ({osv_eco})…",
+        inv.deps.len()
+    ));
+    match osv::scan(&vuln::agent(), &cache::Cache::open(), token.as_deref(), &inv.deps, &osv_eco) {
+        Ok(mut v) => forest.vulnerabilities.append(&mut v),
+        Err(e) => forest.diagnostics.push(model::Diagnostic {
+            ecosystem: eco.as_str().into(),
+            kind: "vuln_scan_failed".into(),
+            message: format!("vuln scan failed: {e:#}"),
+        }),
+    }
 }
 
 /// Compact byte count: `0 B`, `4.2 KB`, `1.3 MB`.
