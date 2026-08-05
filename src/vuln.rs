@@ -235,7 +235,8 @@ fn osv_severity(v: &serde_json::Value) -> Severity {
         .and_then(|s| s.as_str())
     {
         return match label.to_ascii_uppercase().as_str() {
-            "CRITICAL" | "HIGH" => Severity::High,
+            "CRITICAL" => Severity::Critical,
+            "HIGH" => Severity::High,
             "MODERATE" | "MEDIUM" => Severity::Medium,
             "LOW" => Severity::Low,
             _ => Severity::Medium,
@@ -255,7 +256,9 @@ fn osv_severity(v: &serde_json::Value) -> Severity {
         })
         .filter(|s| s.is_finite())
     {
+        // Standard CVSS v3 qualitative bands.
         return match score {
+            s if s >= 9.0 => Severity::Critical,
             s if s >= 7.0 => Severity::High,
             s if s >= 4.0 => Severity::Medium,
             _ => Severity::Low,
@@ -414,16 +417,24 @@ mod tests {
         assert_eq!(out.len(), 1, "only the vulnerable coordinate is kept");
         assert_eq!(out[0].name, "curl");
         assert_eq!(out[0].ecosystem, "Debian:12");
-        assert_eq!(out[0].vulns[0].severity, Severity::High);
+        assert_eq!(out[0].vulns[0].severity, Severity::Critical);
     }
 
     #[test]
-    fn osv_severity_from_cvss_score() {
-        let v = serde_json::json!({
-            "id": "CVE-x",
-            "severity": [ { "type": "CVSS_V3", "score": "9.8" } ]
-        });
-        assert_eq!(osv_severity(&v), Severity::High);
+    fn osv_severity_bands() {
+        let sev = |s: &str| {
+            osv_severity(&serde_json::json!({ "severity": [ { "type": "CVSS_V3", "score": s } ] }))
+        };
+        assert_eq!(sev("9.8"), Severity::Critical); // >= 9.0
+        assert_eq!(sev("7.5"), Severity::High); // 7.0..9.0
+        assert_eq!(sev("5.3"), Severity::Medium); // 4.0..7.0
+        assert_eq!(sev("2.1"), Severity::Low); // < 4.0
+    }
+
+    #[test]
+    fn osv_severity_label_critical() {
+        let v = serde_json::json!({ "database_specific": { "severity": "CRITICAL" } });
+        assert_eq!(osv_severity(&v), Severity::Critical);
     }
 
     #[test]
@@ -444,15 +455,16 @@ mod tests {
     }
 
     #[test]
-    fn distro_cvss_vector_maps_to_high() {
+    fn distro_cvss_vector_maps_to_critical() {
         // A real OSV distro advisory: no `database_specific.severity`, severity
-        // carried only as a CVSS vector. Must resolve to High, not the default.
+        // carried only as a CVSS vector (9.8) — must resolve to Critical via the
+        // computed base score, not collapse to the Medium default.
         let v = serde_json::json!({
             "id": "DEBIAN-CVE-2022-32207",
             "severity": [
                 { "type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" }
             ]
         });
-        assert_eq!(osv_severity(&v), Severity::High);
+        assert_eq!(osv_severity(&v), Severity::Critical);
     }
 }

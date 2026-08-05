@@ -90,9 +90,10 @@ pub struct SystemArgs {
     #[arg(long)]
     pub force_aur: bool,
 
-    /// Scan installed packages for known vulnerabilities via OSV.dev. Covers
-    /// apt (Debian/Ubuntu), apk (Alpine) and dnf (Rocky/AlmaLinux); other
-    /// backends report as un-scanned rather than clean. Touches the network.
+    /// Scan installed packages for known vulnerabilities. Covers apt
+    /// (Debian/Ubuntu), apk (Alpine) and dnf (Rocky/AlmaLinux) via OSV, and
+    /// pacman via the Arch Security Tracker; other backends report as un-scanned
+    /// rather than clean. Touches the network.
     #[arg(long)]
     pub vulns: bool,
 
@@ -105,6 +106,43 @@ pub struct SystemArgs {
     /// Disable the animated progress UI.
     #[arg(long)]
     pub no_progress: bool,
+
+    // --- CI gate (see `crate::gate`), mirroring `tree`. Each threshold is a
+    // ceiling: the gate trips (exit 1) when the measured value is strictly
+    // greater. A vuln gate over an un-scannable backend (brew/nix, Fedora/RHEL)
+    // is INCONCLUSIVE and exits 2 — never a silent pass. ---
+    /// GATE: fail if the machine's worst risk score exceeds this (0–100).
+    #[arg(long, value_name = "N")]
+    pub max_risk: Option<u8>,
+
+    /// GATE: fail if any package's subtree (dep) score exceeds this (0–100).
+    #[arg(long, value_name = "N")]
+    pub max_dep: Option<u8>,
+
+    /// GATE: fail if more than N high-risk packages are present.
+    #[arg(long, value_name = "N")]
+    pub max_high: Option<usize>,
+
+    /// GATE: fail if more than N suspicious packages are present.
+    #[arg(long, value_name = "N")]
+    pub max_sus: Option<usize>,
+
+    /// GATE: fail if more than N known vulnerabilities are present. Needs --vulns.
+    #[arg(long, value_name = "N")]
+    pub max_vulns: Option<usize>,
+
+    /// GATE: fail if any known vulnerability is at least this severe. Needs --vulns.
+    #[arg(long, value_enum, value_name = "SEV")]
+    pub fail_on_vuln: Option<Severity>,
+
+    /// GATE: allowlist a package (name or name@version) from every gate count.
+    /// Repeatable. For a reason/expiry, use a [[gate.allow]] block in a config.
+    #[arg(long = "allow", value_name = "PKG")]
+    pub allow: Vec<String>,
+
+    /// Path to a postmortem.conf supplying a [gate] policy.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]

@@ -125,8 +125,10 @@ pub struct Inventory {
     pub signals: HashMap<String, Vec<SysSignal>>,
     /// A one-line human count, e.g. `117 formula(e) + 2 cask(s)`.
     pub summary: String,
-    /// A caveat to surface after loading (e.g. an un-synced pacman DB).
-    pub note: Option<String>,
+    /// Machine-wide caveats to surface after loading (un-synced DB, weakened
+    /// signing trust, tampered files, …) — one per entry, rendered as a list so
+    /// a system with many caveats stays readable.
+    pub notes: Vec<String>,
 }
 
 /// Options for [`inventory`].
@@ -265,7 +267,7 @@ pub fn brew_inventory() -> Result<Inventory> {
         .into_iter()
         .map(|t| Repo { name: t.name, url: t.remote, official: t.official })
         .collect();
-    Ok(Inventory { manager: "homebrew", deps, repos, signals, summary, note: None })
+    Ok(Inventory { manager: "homebrew", deps, repos, signals, summary, notes: Vec::new() })
 }
 
 /// The output of [`analyze`]: the packages (formulae forest + cask roots), the
@@ -589,7 +591,6 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
     if pacman_sig_disabled() {
         warnings.push("pacman signature verification disabled (SigLevel = Never)".to_string());
     }
-    let note = (!warnings.is_empty()).then(|| warnings.join("; "));
 
     let explicit = deps.iter().filter(|d| d.direct).count();
     let extra = if foreign.is_empty() {
@@ -598,7 +599,7 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
         format!(", {} foreign", foreign.len())
     };
     let summary = format!("{} package(s) ({explicit} explicit{extra})", deps.len());
-    Ok(Inventory { manager: "pacman", deps, repos: pacman_repos(), signals, summary, note })
+    Ok(Inventory { manager: "pacman", deps, repos: pacman_repos(), signals, summary, notes: warnings })
 }
 
 /// `name → installed files`, from one `pacman -Ql` (`<pkg> <path>` per line).
@@ -1019,9 +1020,8 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
     if modified > 0 {
         warnings.push(format!("{modified} installed file(s) modified since install (md5 mismatch)"));
     }
-    let note = (!warnings.is_empty()).then(|| warnings.join("; "));
 
-    Ok(Inventory { manager: "apt", deps, repos, signals, summary, note })
+    Ok(Inventory { manager: "apt", deps, repos, signals, summary, notes: warnings })
 }
 
 /// Count apt sources that disable signature verification (`[trusted=yes]` in a
@@ -1680,11 +1680,10 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
     if modified > 0 {
         warnings.push(format!("{modified} installed file(s) modified since install (rpm -Va)"));
     }
-    let note = (!warnings.is_empty()).then(|| warnings.join("; "));
 
     let direct = deps.iter().filter(|d| d.direct).count();
     let summary = format!("{} package(s) ({direct} user-installed)", deps.len());
-    Ok(Inventory { manager: "dnf", deps, repos: dnf_repos(), signals, summary, note })
+    Ok(Inventory { manager: "dnf", deps, repos: dnf_repos(), signals, summary, notes: warnings })
 }
 
 /// Installed packages' origin repo, `name → repo id`, via `dnf repoquery
@@ -2193,8 +2192,8 @@ pub fn nix_inventory(opts: Opts) -> Result<Inventory> {
 
     let direct = deps.iter().filter(|d| d.direct).count();
     let summary = format!("{} store path(s) ({direct} in profiles)", deps.len());
-    let note = nix_trust_note();
-    Ok(Inventory { manager: "nix", deps, repos: nix_substituters(), signals, summary, note })
+    let notes = nix_notes();
+    Ok(Inventory { manager: "nix", deps, repos: nix_substituters(), signals, summary, notes })
 }
 
 /// The store paths installed into the profile generations: for every current
@@ -2297,7 +2296,7 @@ fn nix_trusted_keys() -> std::collections::HashSet<String> {
 
 /// Machine-wide trust caveats from `nix.conf`: signature checking disabled, or
 /// binary caches beyond the official one.
-fn nix_trust_note() -> Option<String> {
+fn nix_notes() -> Vec<String> {
     let mut warnings = Vec::new();
     let mut extra_caches = 0usize;
     for line in nix_conf_lines() {
@@ -2318,7 +2317,7 @@ fn nix_trust_note() -> Option<String> {
     if extra_caches > 0 {
         warnings.push(format!("{extra_caches} extra binary cache(s) configured beyond cache.nixos.org"));
     }
-    (!warnings.is_empty()).then(|| warnings.join("; "))
+    warnings
 }
 
 /// Configured substituters (binary caches) as source repos. `cache.nixos.org` is
@@ -2428,12 +2427,14 @@ pub fn apk_inventory(opts: Opts) -> Result<Inventory> {
 
     let repos = apk_repos();
     let third = repos.iter().filter(|r| !r.official).count();
-    let note = (third > 0).then(|| {
-        format!("{third} third-party apk repo(s) configured (outside the official Alpine archives)")
-    });
+    let notes = if third > 0 {
+        vec![format!("{third} third-party apk repo(s) configured (outside the official Alpine archives)")]
+    } else {
+        Vec::new()
+    };
     let direct = deps.iter().filter(|d| d.direct).count();
     let summary = format!("{} package(s) ({direct} in world)", deps.len());
-    Ok(Inventory { manager: "apk", deps, repos, signals, summary, note })
+    Ok(Inventory { manager: "apk", deps, repos, signals, summary, notes })
 }
 
 /// The explicitly-requested (direct) set from `/etc/apk/world` (version

@@ -1,18 +1,20 @@
 # postmortem
 
-**A static supply-chain scanner for your dependencies - no network by default.**
+**A supply-chain security scanner for your dependencies and your machine.**
 
 postmortem reads your project's lockfiles (and, with `system`, your machine's OS
 packages), reconstructs the full dependency graph, and surfaces supply-chain
 risk: malicious install code, typosquats, suspicious provenance, low-reputation
 or freshly-transferred source repos, and known vulnerabilities.
 
-Everything is **offline and static by default**. The only commands that touch the
-network are opt-in (`--online`, `--vulns`), and every response is cached locally.
+postmortem sends **no telemetry**. `scan` and the default `tree` / `system` views
+run entirely on your machine; the network is touched only on the paths that need
+it (`--online` reputation, `--vulns` advisories), and every response is cached
+locally.
 
 ---
 
-## The four commands
+## The commands
 
 | Command | What it does |
 | --- | --- |

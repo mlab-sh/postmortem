@@ -1,4 +1,5 @@
 mod analyze;
+mod archsec;
 mod audit;
 mod cache;
 mod cli;
@@ -244,10 +245,16 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
             return Err(e);
         }
     };
-    // Surface any backend caveat (e.g. an un-synced pacman DB) as a gochi alert.
-    if let Some(note) = &inv.note {
+    // Surface backend caveats (weakened signing trust, tampered files, un-synced
+    // DB, …) as a gochi alert followed by one bullet per caveat, so a system with
+    // many caveats stays readable instead of collapsing into one run-on line.
+    if !inv.notes.is_empty() {
         use owo_colors::OwoColorize;
-        eprintln!("  {}  {}", gochi::Mood::Alert.paint(), note.yellow());
+        let header = format!("{} trust caveat(s) — review before trusting this inventory", inv.notes.len());
+        eprintln!("  {}  {}", gochi::Mood::Alert.paint(), header.yellow());
+        for note in &inv.notes {
+            eprintln!("         {} {}", "-".dimmed(), note.yellow());
+        }
     }
 
     // `--repos`: just the source-repo view.
@@ -300,7 +307,67 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
     } else {
         tree::render(&forest);
     }
+
+    // CI gate: turn the machine's risk scores / vuln scan into an exit code.
+    // Summary goes to stderr so it never corrupts `--json` on stdout.
+    run_system_gate(&args, &forest);
     Ok(())
+}
+
+/// Apply the CI gate to a scanned system inventory and exit accordingly: 0 clean,
+/// 1 tripped, 2 inconclusive/misconfigured. A vuln gate is **fail-closed** — if
+/// OSV couldn't scan this backend (or the scan errored), the gate can't be
+/// answered, so it exits 2 rather than silently passing ("not scanned" ≠ "clean").
+fn run_system_gate(args: &cli::SystemArgs, forest: &tree::Tree) {
+    let gc = match &args.config {
+        Some(p) => match config::Config::load(p) {
+            Ok(c) => c.gate,
+            Err(e) => {
+                eprintln!("warn: failed to load gate config {}: {e:#}", p.display());
+                config::GateConfig::default()
+            }
+        },
+        None => config::GateConfig::default(),
+    };
+    let policy = build_gate_policy(
+        gc,
+        args.max_risk,
+        args.max_dep,
+        args.max_high,
+        args.max_sus,
+        args.max_vulns,
+        args.fail_on_vuln,
+        &args.allow,
+    );
+    if !policy.is_active() {
+        return; // no gate requested → normal exit 0
+    }
+
+    if policy.needs_vulns() && !args.vulns {
+        eprintln!("error: --max-vulns/--fail-on-vuln require --vulns");
+        std::process::exit(2);
+    }
+    // Fail-closed: an active vuln gate over an un-scannable backend (brew/nix,
+    // Fedora/RHEL) or a scan that errored is INCONCLUSIVE, not clean.
+    if policy.needs_vulns() {
+        if let Some(d) = forest
+            .diagnostics
+            .iter()
+            .find(|d| d.kind == "vuln_source_unavailable" || d.kind == "vuln_scan_failed")
+        {
+            eprintln!(
+                "error: vuln gate cannot be evaluated — {} ({}); \
+                 an un-scanned backend is not the same as clean",
+                d.message, d.kind
+            );
+            std::process::exit(2);
+        }
+    }
+
+    let today = chrono::Local::now().date_naive();
+    let outcome = gate::evaluate(&policy, forest, today, None);
+    gate::report(&outcome, &policy);
+    std::process::exit(if outcome.tripped() { 1 } else { 0 });
 }
 
 /// Populate `forest.vulnerabilities` from OSV.dev for the installed inventory,
@@ -315,6 +382,30 @@ fn scan_system_vulns(
     let Some(eco) = inv.deps.first().map(|d| d.ecosystem) else {
         return; // nothing installed to scan
     };
+
+    // Arch isn't in OSV — pacman uses its own source (the Arch Security Tracker),
+    // no release needed (Arch is rolling).
+    if eco == model::Ecosystem::Pacman {
+        let loader = gochi::Loader::spinner(
+            format!("gochi querying the Arch Security Tracker for {} packages", inv.deps.len()),
+            ui.animating(),
+        );
+        match archsec::scan(&vuln::agent(), &inv.deps) {
+            Ok(mut v) => {
+                forest.vulnerabilities.append(&mut v);
+                loader.finish(gochi::Mood::from_risk(0, 0, vuln_count(forest)), vuln_summary(forest));
+            }
+            Err(e) => {
+                loader.finish(gochi::Mood::Alert, "vuln scan failed");
+                forest.diagnostics.push(model::Diagnostic {
+                    ecosystem: eco.as_str().into(),
+                    kind: "vuln_scan_failed".into(),
+                    message: format!("Arch Security Tracker scan failed: {e:#}"),
+                });
+            }
+        }
+        return;
+    }
 
     let release = match release_override {
         Some(s) => osv::Release::parse_override(s),
@@ -333,11 +424,23 @@ fn scan_system_vulns(
     };
 
     let Some(osv_eco) = osv::osv_ecosystem(eco, &release) else {
+        // Actionable guidance for the dnf backends OSV doesn't index directly.
+        let hint = match (eco, release.id.as_str()) {
+            (model::Ecosystem::Dnf, "rhel" | "redhat" | "centos") => {
+                " — RHEL isn't in OSV; retry with `--release almalinux:<N>` or `rocky:<N>` \
+                 (binary-compatible) for approximate coverage"
+            }
+            (model::Ecosystem::Dnf, "fedora") => {
+                " — Fedora isn't in OSV; `dnf updateinfo --security` lists advisories for \
+                 available updates"
+            }
+            _ => "",
+        };
         forest.diagnostics.push(model::Diagnostic {
             ecosystem: eco.as_str().into(),
             kind: "vuln_source_unavailable".into(),
             message: format!(
-                "OSV has no vulnerability feed for {} ({}); packages were not scanned",
+                "OSV has no vulnerability feed for {} ({}); packages were not scanned{hint}",
                 eco.as_str(),
                 release.id
             ),
@@ -689,13 +792,39 @@ fn resolve_gate_policy(root: &Path, args: &cli::TreeArgs) -> gate::Policy {
         },
         None => config::GateConfig::default(),
     };
+    build_gate_policy(
+        gc,
+        args.max_risk,
+        args.max_dep,
+        args.max_high,
+        args.max_sus,
+        args.max_vulns,
+        args.fail_on_vuln,
+        &args.allow,
+    )
+}
+
+/// Layer CLI gate thresholds over a `[gate]` config table into an effective
+/// [`gate::Policy`] (CLI wins per-threshold; the config allowlist is unioned
+/// with `--allow`). Shared by `tree` and `system`.
+#[allow(clippy::too_many_arguments)]
+fn build_gate_policy(
+    gc: config::GateConfig,
+    max_risk: Option<u8>,
+    max_dep: Option<u8>,
+    max_high: Option<usize>,
+    max_sus: Option<usize>,
+    max_vulns: Option<usize>,
+    fail_on_vuln: Option<model::Severity>,
+    cli_allow: &[String],
+) -> gate::Policy {
     gate::Policy {
-        max_risk: args.max_risk.or(gc.max_risk),
-        max_dep: args.max_dep.or(gc.max_dep),
-        max_high: args.max_high.or(gc.max_high),
-        max_sus: args.max_sus.or(gc.max_sus),
-        max_vulns: args.max_vulns.or(gc.max_vulns),
-        fail_on_vuln: args.fail_on_vuln.or(gc.fail_on_vuln),
+        max_risk: max_risk.or(gc.max_risk),
+        max_dep: max_dep.or(gc.max_dep),
+        max_high: max_high.or(gc.max_high),
+        max_sus: max_sus.or(gc.max_sus),
+        max_vulns: max_vulns.or(gc.max_vulns),
+        fail_on_vuln: fail_on_vuln.or(gc.fail_on_vuln),
         allow: gc
             .allow
             .iter()
@@ -704,7 +833,7 @@ fn resolve_gate_policy(root: &Path, args: &cli::TreeArgs) -> gate::Policy {
                 reason: e.reason.clone(),
                 expires: e.expires.clone(),
             })
-            .chain(args.allow.iter().map(|p| gate::Allow {
+            .chain(cli_allow.iter().map(|p| gate::Allow {
                 package: p.clone(),
                 reason: None,
                 expires: None,

@@ -466,11 +466,18 @@ fn render_vulns(packages: &[crate::vuln::VulnPackage]) {
         return;
     }
     let total: usize = packages.iter().map(|p| p.vulns.len()).sum();
+    // Attribute the source: pacman advisories come from the Arch Security
+    // Tracker, everything else routes through mlab/OSV.
+    let source = if packages.iter().any(|p| p.ecosystem == "Arch") {
+        "via security.archlinux.org"
+    } else {
+        "via vuln.mlab.sh"
+    };
     println!(
         "\n{}  {}",
         format!("🛡 {total} known vulnerabilit{}", if total == 1 { "y" } else { "ies" })
             .bold(),
-        "via vuln.mlab.sh".dimmed()
+        source.dimmed()
     );
 
     let mut pkgs: Vec<&crate::vuln::VulnPackage> = packages.iter().collect();
