@@ -34,11 +34,11 @@ pub fn run(args: &crate::cli::InspectArgs) -> Result<()> {
     let loader = gochi::Loader::spinner("gochi reading installed packages", ui.animating());
     let inv = match system::inventory(backend, system::Opts::default()) {
         Ok(inv) => {
-            loader.finish(gochi::HAPPY, &format!("read {}", inv.summary));
+            loader.finish(gochi::Mood::Happy, format!("read {}", inv.summary));
             inv
         }
         Err(e) => {
-            loader.finish(gochi::ALERT, "couldn't read packages");
+            loader.finish(gochi::Mood::Bad, "couldn't read packages");
             return Err(e);
         }
     };
@@ -123,8 +123,8 @@ fn deep(args: &crate::cli::InspectArgs, sub: &[Dependency], ui: &ui::Ui) -> Resu
     }
     let findings_total: usize = analyzed.iter().map(|a| a.findings.len()).sum();
     bar.finish(
-        if findings_total > 0 { gochi::ALERT } else { gochi::HAPPY },
-        &format!("analyzed {} repo(s), {findings_total} finding(s)", analyzed.len()),
+        if findings_total > 0 { gochi::Mood::Bad } else { gochi::Mood::Happy },
+        format!("analyzed {} repo(s), {findings_total} finding(s)", analyzed.len()),
     );
 
     // 4. Write the Markdown report, then delete the cloned source.
@@ -333,7 +333,7 @@ fn confirm(pkg: &str, deps: usize, yes: bool) -> Result<bool> {
     }
     eprintln!(
         "\n  {}  {}",
-        gochi::IDLE.cyan(),
+        gochi::Mood::Idle.paint(),
         format!("deep inspection of '{pkg}' ({deps} deps)").bold()
     );
     eprintln!(

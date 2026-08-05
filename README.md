@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Catch a supply-chain attack before it ships.</b><br>
-  A fast, offline-first security scanner for the code you depend on.
+  A fast supply-chain security scanner for the code you depend on.
 </p>
 
 <p align="center">
@@ -19,12 +19,14 @@ Modern software is mostly other people's code. postmortem inspects that code the
 way an attacker's payload actually reaches you: through install hooks, typosquats,
 hijacked maintainer accounts, and freshly-transferred repos. It reads your
 lockfiles across seven language ecosystems, reconstructs the full dependency
-graph, and flags what real compromises look like. All offline by default.
+graph, and flags what real compromises look like.
 
 ## Why postmortem
 
-* **Offline by default.** `scan` never touches the network. Nothing leaves your
-  machine unless you explicitly pass `--online` or `--vulns`.
+* **No telemetry.** postmortem never phones home. It reaches the network only on
+  the paths that need it — `--online` reputation and `--vulns` / `system --vulns`
+  advisory lookups — and even then only sends the package coordinates being
+  queried.
 * **Finds attacks, not just CVEs.** Malicious install scripts, obfuscated
   payloads, embedded IOCs (IPs, domains, wallets), typosquats, and provenance
   anomalies (new publisher, dormant release, an install script that appeared out
@@ -46,7 +48,7 @@ graph, and flags what real compromises look like. All offline by default.
 ## Quick start
 
 ```bash
-postmortem scan .                       # find malicious code, fully offline
+postmortem scan .                       # find malicious code in your dependencies
 postmortem tree . --online              # score dependencies by repo reputation
 postmortem tree . --online --vulns      # add known CVE / GHSA / OSV advisories
 postmortem audit . --online --vulns     # one graded verdict: malware + risk + CVEs
@@ -80,7 +82,7 @@ cd postmortem && cargo build --release
 
 | Command | What it does |
 |---|---|
-| [`scan`](https://github.com/mlab-sh/postmortem/wiki/Scan) | Offline static analysis of dependency code for malicious patterns. |
+| [`scan`](https://github.com/mlab-sh/postmortem/wiki/Scan) | Static analysis of dependency code for malicious patterns, fully local. |
 | [`tree`](https://github.com/mlab-sh/postmortem/wiki/Tree) | Dependency graph, plus online reputation, provenance, and known-vulnerability intelligence. |
 | [`audit`](https://github.com/mlab-sh/postmortem/wiki/Audit) | One-shot graded health check: malware scan + inventory, plus optional reputation and vulns. |
 | [`why`](https://github.com/mlab-sh/postmortem/wiki/Why) | Explain why a package is installed: its dependency paths up to the roots. |

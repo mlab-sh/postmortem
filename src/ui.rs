@@ -72,15 +72,9 @@ impl Ui {
         }
     }
 
-    /// Start a determinate bar with `len` discrete steps and the default
-    /// braille spinner.
-    pub fn bar(&self, len: u64, msg: impl Into<Cow<'static, str>>) -> Bar {
-        self.bar_ticks(len, msg, TICK)
-    }
-
-    /// Like [`bar`](Self::bar) but with a custom spinner animation — e.g. the
-    /// [`gochi`](crate::gochi) companion frames. All frames must share one width
-    /// or the line will jitter on redraw.
+    /// Start a determinate bar with `len` discrete steps and a custom spinner
+    /// animation — e.g. the [`gochi`](crate::gochi) companion frames. All frames
+    /// must share one width or the line will jitter on redraw.
     pub fn bar_ticks(
         &self,
         len: u64,

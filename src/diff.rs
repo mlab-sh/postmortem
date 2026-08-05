@@ -67,7 +67,8 @@ pub fn render(report: &DiffReport, old_label: &str, new_label: &str) {
     println!("{}  {}  →  {}", "dependency diff".bold(), old_label.dimmed(), new_label.dimmed());
 
     if report.is_empty() {
-        println!("\n  {}  no dependency changes", "(^_^)".cyan());
+        println!();
+        crate::gochi::say(crate::gochi::Mood::Happy, "no dependency changes");
         return;
     }
 
@@ -97,13 +98,19 @@ pub fn render(report: &DiffReport, old_label: &str, new_label: &str) {
         }
     }
 
-    println!(
-        "\n{}  +{} -{} ~{}  ({} unchanged)",
-        "summary".bold(),
-        report.added.len(),
-        report.removed.len(),
-        report.changed.len(),
-        report.unchanged,
+    // New dependencies are new attack surface, so additions make gochi look up.
+    let mood =
+        if report.added.is_empty() { crate::gochi::Mood::Idle } else { crate::gochi::Mood::Alert };
+    println!();
+    crate::gochi::say(
+        mood,
+        format!(
+            "+{} -{} ~{}  ({} unchanged)",
+            report.added.len(),
+            report.removed.len(),
+            report.changed.len(),
+            report.unchanged,
+        ),
     );
 }
 

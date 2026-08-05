@@ -557,19 +557,13 @@ fn render_recap(tree: &Tree) {
     }
 
     // Soft-only packages don't alarm gochi — only real risk tiers do.
-    let face = if c.high > 0 {
-        crate::gochi::ALERT
-    } else if c.suspicious > 0 {
-        crate::gochi::IDLE
-    } else {
-        crate::gochi::HAPPY
-    };
+    let mood = crate::gochi::Mood::from_tiers(c.high, c.suspicious);
     let (risk, dep) = project_scores(tree);
     let pad = |n: usize| format!("{n:>3}");
     let orange = |s: String| s.truecolor(ORANGE.0, ORANGE.1, ORANGE.2).to_string();
     let yellow = |s: String| s.truecolor(YELLOW.0, YELLOW.1, YELLOW.2).to_string();
 
-    println!("\n  {}  {}", face.cyan(), "gochi's recap".bold());
+    println!("\n  {}  {}", mood.paint(), "gochi's recap".bold());
     println!(
         "    {}  risk {}/100 · dep {}/100",
         "overall".dimmed(),

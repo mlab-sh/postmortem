@@ -330,12 +330,12 @@ impl Resolver {
         });
 
         let out = out.into_inner().unwrap();
-        let face = if flagged.load(Ordering::Relaxed) > 0 {
-            crate::gochi::ALERT
+        let mood = if flagged.load(Ordering::Relaxed) > 0 {
+            crate::gochi::Mood::Alert
         } else {
-            crate::gochi::HAPPY
+            crate::gochi::Mood::Happy
         };
-        bar.finish(face, &format!("resolved {} package(s)", out.len()));
+        bar.finish(mood, format!("resolved {} package(s)", out.len()));
         out
     }
 

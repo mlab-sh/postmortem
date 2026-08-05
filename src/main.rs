@@ -60,12 +60,15 @@ fn run_cache(args: cli::CacheArgs) -> Result<()> {
                 Some(d) => format!("older than {d}d"),
                 None => "all".into(),
             };
-            println!(
-                "{verb} {} entr{} ({scope}, {}), kept {} — {where_}",
-                report.removed,
-                if report.removed == 1 { "y" } else { "ies" },
-                human_bytes(report.freed),
-                report.kept,
+            gochi::say(
+                gochi::Mood::Happy,
+                format!(
+                    "{verb} {} entr{} ({scope}, {}), kept {} — {where_}",
+                    report.removed,
+                    if report.removed == 1 { "y" } else { "ies" },
+                    human_bytes(report.freed),
+                    report.kept,
+                ),
             );
         }
     }
@@ -233,18 +236,18 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
     let loader = gochi::Loader::spinner("gochi reading installed packages", ui.animating());
     let inv = match system::inventory(backend, opts) {
         Ok(inv) => {
-            loader.finish(gochi::HAPPY, &format!("read {}", inv.summary));
+            loader.finish(gochi::Mood::Happy, format!("read {}", inv.summary));
             inv
         }
         Err(e) => {
-            loader.finish(gochi::ALERT, "couldn't read packages");
+            loader.finish(gochi::Mood::Bad, "couldn't read packages");
             return Err(e);
         }
     };
     // Surface any backend caveat (e.g. an un-synced pacman DB) as a gochi alert.
     if let Some(note) = &inv.note {
         use owo_colors::OwoColorize;
-        eprintln!("  {}  {}", gochi::ALERT.cyan(), note.yellow());
+        eprintln!("  {}  {}", gochi::Mood::Alert.paint(), note.yellow());
     }
 
     // `--repos`: just the source-repo view.
@@ -350,18 +353,65 @@ fn scan_system_vulns(
              Set VULN_MLAB_TOKEN or vuln_token in ~/.postmortem/config.yml."
         );
     }
-    ui.note(format!(
-        "scanning {} packages for known vulns via vuln.mlab.sh ({osv_eco})…",
-        inv.deps.len()
-    ));
+    let loader = gochi::Loader::spinner(
+        format!("gochi querying vuln.mlab.sh for {} {osv_eco} packages", inv.deps.len()),
+        ui.animating(),
+    );
     match osv::scan(&vuln::agent(), &cache::Cache::open(), token.as_deref(), &inv.deps, &osv_eco) {
-        Ok(mut v) => forest.vulnerabilities.append(&mut v),
-        Err(e) => forest.diagnostics.push(model::Diagnostic {
-            ecosystem: eco.as_str().into(),
-            kind: "vuln_scan_failed".into(),
-            message: format!("vuln scan failed: {e:#}"),
-        }),
+        Ok(mut v) => {
+            forest.vulnerabilities.append(&mut v);
+            loader.finish(
+                gochi::Mood::from_risk(0, 0, vuln_count(forest)),
+                vuln_summary(forest),
+            );
+        }
+        Err(e) => {
+            loader.finish(gochi::Mood::Alert, "vuln scan failed");
+            forest.diagnostics.push(model::Diagnostic {
+                ecosystem: eco.as_str().into(),
+                kind: "vuln_scan_failed".into(),
+                message: format!("vuln scan failed: {e:#}"),
+            });
+        }
     }
+}
+
+/// Total known-vulnerability count across a forest's vulnerable packages.
+fn vuln_count(forest: &tree::Tree) -> usize {
+    forest.vulnerabilities.iter().map(|p| p.vulns.len()).sum()
+}
+
+/// A one-line gochi summary of a forest's vuln scan: `N known vulnerabilities in
+/// M package(s)`, or an all-clear.
+fn vuln_summary(forest: &tree::Tree) -> String {
+    let n = vuln_count(forest);
+    if n == 0 {
+        return "no known vulnerabilities".into();
+    }
+    let pkgs = forest.vulnerabilities.len();
+    format!("{n} known vulnerabilit{} in {pkgs} package(s)", if n == 1 { "y" } else { "ies" })
+}
+
+/// gochi's closing verdict for a static scan: a mood + a severity breakdown, or
+/// an all-clear. Bad on any critical/high, alert on softer findings.
+fn scan_verdict(findings: &[model::Finding]) -> (gochi::Mood, String) {
+    use model::Severity::*;
+    let (mut crit, mut high, mut med, mut low) = (0, 0, 0, 0);
+    for f in findings {
+        match f.severity {
+            Critical => crit += 1,
+            High => high += 1,
+            Medium => med += 1,
+            Low => low += 1,
+            Info => {}
+        }
+    }
+    let total = crit + high + med + low;
+    if total == 0 {
+        return (gochi::Mood::Happy, "clean — no malicious patterns found".into());
+    }
+    let mood = if crit + high > 0 { gochi::Mood::Bad } else { gochi::Mood::Alert };
+    (mood, format!("{total} finding(s): {crit} critical · {high} high · {med} medium · {low} low"))
 }
 
 /// Compact byte count: `0 B`, `4.2 KB`, `1.3 MB`.
@@ -385,7 +435,7 @@ fn human_bytes(n: u64) -> String {
 fn print_overview() {
     use owo_colors::OwoColorize;
     println!("{} {}", "postmortem".bold(), env!("CARGO_PKG_VERSION").dimmed());
-    println!("{}", "Static supply-chain scanner — no network by default.".dimmed());
+    println!("{}", "Supply-chain security scanner for the code you depend on.".dimmed());
     println!();
     println!("{}", "USAGE".bold());
     println!("  postmortem <command> [options]");
@@ -535,8 +585,10 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
         }
 
         if let Some((agent, cache, token)) = &vuln_ctx {
-            ui.note("scanning known vulnerabilities via vuln.mlab.sh…");
+            let loader =
+                gochi::Loader::spinner("gochi querying vuln.mlab.sh for advisories", ui.animating());
             for d in &detected {
+                loader.step(format!("gochi checking {} advisories", d.name()));
                 match mlab_target(d) {
                     Some((lock, fmt)) => match vuln::scan(agent, cache, token.as_deref(), lock, fmt)
                     {
@@ -554,6 +606,7 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
                     }),
                 }
             }
+            loader.finish(gochi::Mood::from_risk(0, 0, vuln_count(&forest)), vuln_summary(&forest));
         }
 
         if args.json {
@@ -857,7 +910,11 @@ fn scan_path(root: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<bo
     };
 
     match args.format() {
-        cli::Format::Terminal => report::terminal::render(&report, !args.no_deps),
+        cli::Format::Terminal => {
+            report::terminal::render(&report, !args.no_deps);
+            let (mood, msg) = scan_verdict(&report.findings);
+            gochi::say(mood, msg);
+        }
         cli::Format::Json => {
             let out = report::json::render(&report)?;
             cli::OutputTarget::resolve(args.output.as_deref(), "json").write(&out)?;

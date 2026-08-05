@@ -59,7 +59,11 @@ pub fn render(deps: &[Dependency], target: &str, root_label: &str) {
 
     let installed: Vec<&Dependency> = deps.iter().filter(|d| d.name == target).collect();
     if installed.is_empty() {
-        println!("\n  {}  {target} is not in the dependency graph", "(·_·)".dimmed());
+        println!();
+        crate::gochi::say(
+            crate::gochi::Mood::Curious,
+            format!("{target} is not in the dependency graph"),
+        );
         return;
     }
 

@@ -123,13 +123,18 @@ pub fn render(s: &AuditSummary, root_label: &str) {
     }
 
     println!();
-    let (label, colored) = match g {
-        Grade::Critical => ("CRITICAL", "CRITICAL".red().bold().to_string()),
-        Grade::Warn => ("WARN", "WARN".yellow().bold().to_string()),
-        Grade::Clean => ("CLEAN", "CLEAN".green().bold().to_string()),
+    let (mood, colored) = match g {
+        Grade::Critical => (crate::gochi::Mood::Bad, "CRITICAL".red().bold().to_string()),
+        Grade::Warn => (crate::gochi::Mood::Alert, "WARN".yellow().bold().to_string()),
+        Grade::Clean => (crate::gochi::Mood::Happy, "CLEAN".green().bold().to_string()),
     };
-    let _ = label;
-    println!("  {}  {}  {}", "verdict".bold(), colored, reason(s, g).dimmed());
+    println!(
+        "  {}  {}  {}  {}",
+        mood.paint(),
+        "verdict".bold(),
+        colored,
+        reason(s, g).dimmed()
+    );
 }
 
 fn row(key: &str, val: &str) {

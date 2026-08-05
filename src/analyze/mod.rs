@@ -81,7 +81,7 @@ pub fn run_all(detected: &[Detected], deps: &[Dependency], ui: &Ui) -> Vec<Findi
     let total = steps.len();
 
     let mut findings = Vec::new();
-    let bar = ui.bar(total as u64, "analyzing");
+    let bar = ui.bar_ticks(total as u64, "gochi analyzing", crate::gochi::SCANNING);
     for Step { label, run } in steps {
         bar.step(label);
         run(&mut findings);
