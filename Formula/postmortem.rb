@@ -1,26 +1,26 @@
 class Postmortem < Formula
   desc "Static dependency scanner for Node, Python and Rust projects"
   homepage "https://github.com/mlab-sh/postmortem"
-  version "2.1.0"
+  version "2.1.1"
   license "Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "7d033299ffb6cffbab79831631754f7523e4558a1d6d31c8839ec836bfed5a1e"
+      sha256 "38baccdc4da74dab820210715620b636208902e650f16cf3d20c13354cae5a44"
     else
       url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "724aafd8f128494e99962c1c40358bf24ffd86284a32b6096ce1336a3023e2ad"
+      sha256 "a5f66655543ae438deca5907a23eb2575f25ff9ae2b0f75604412c4e6f101965"
     end
   end
 
   on_linux do
     if Hardware::CPU.intel?
       url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "bd35233a75ac732f4a8fdfc4a20a8681dce748e3184326bc01287232c1177abd"
+      sha256 "28191592839ab3b0b694ccbac68d3169d49d7e1e92b206d8ccfa9043e73b0297"
     elsif Hardware::CPU.arm?
       url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "441de99d6f7fc3eecb6fa79779071f4dfbaf1244504dd0faa5538ac4d0b8ea54"
+      sha256 "7f2e202e9290bb9936dc2a9e57be1f26b0da78421a5ba155ca9a1103d3a8100e"
     end
   end
 
