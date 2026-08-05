@@ -37,7 +37,8 @@ graph, and flags what real compromises look like.
   Arch/pacman, Debian/Ubuntu apt, Fedora/RHEL dnf, Nix, and Alpine apk): unsigned
   or third-party sources, PPAs and AUR builds, unverified store paths,
   install-time hooks, setuid binaries and file diversions, weakened signing
-  trust, and tampered files.
+  trust, and tampered files — plus `system --vulns` for known CVEs (OSV for
+  apt/apk/dnf, the Arch Security Tracker for pacman).
 * **Deep source inspection.** `system inspect <pkg> --deep` clones every
   dependency's real source and runs the full detection suite over it.
 * **CI-ready.** JSON and SARIF (GitHub Code Scanning) output, plus a configurable
@@ -56,6 +57,7 @@ postmortem why left-pad .               # why is this package installed?
 postmortem diff ./main ./pr-branch      # what dependencies did this change add?
 postmortem sbom . -o sbom.json          # export a CycloneDX 1.5 SBOM
 postmortem system                       # audit your installed OS packages
+postmortem system --vulns               # + known CVEs for what's installed
 postmortem system inspect wget --deep   # clone + audit one package's full source
 ```
 

@@ -64,6 +64,19 @@ impl Detected {
             Detected::Java { .. } => "java",
         }
     }
+
+    /// The detected project root (shared by all variants).
+    pub fn root(&self) -> &std::path::Path {
+        match self {
+            Detected::Node { root, .. }
+            | Detected::Python { root, .. }
+            | Detected::Rust { root, .. }
+            | Detected::Ruby { root, .. }
+            | Detected::Php { root, .. }
+            | Detected::Go { root, .. }
+            | Detected::Java { root, .. } => root,
+        }
+    }
 }
 
 const NODE_LOCKS: &[&str] = &[

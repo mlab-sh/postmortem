@@ -31,6 +31,7 @@
 
 **Concepts**
 - [Source-code scanning](Source-Code-Scanning)
+- [GitHub Actions](GitHub-Actions)
 - [Online resolution](Online-Resolution)
 - [CI gate](CI-Gate)
 - [Configuration](Configuration)

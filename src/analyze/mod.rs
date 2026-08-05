@@ -1,5 +1,8 @@
 //! Analysis passes. Each analyzer takes the scan context and emits findings.
 
+pub mod behavior;
+pub mod gha;
+pub mod ide_hooks;
 pub mod install_hooks;
 pub mod ioc;
 pub mod obfuscation;
@@ -70,6 +73,9 @@ pub fn scan_source_tree(root: &Path) -> Vec<Finding> {
     for &lang in sensitive_api::Lang::ALL {
         sensitive_api::scan_dir(root, &mut out, lang);
     }
+    ide_hooks::scan_dir(root, &mut out);
+    behavior::scan_dir(root, &mut out);
+    gha::scan_dir(root, &mut out);
     out
 }
 
@@ -101,6 +107,19 @@ pub fn run_all(detected: &[Detected], deps: &[Dependency], ui: &Ui) -> Vec<Findi
 /// source of truth for both *what* runs and *how many* steps the bar shows.
 fn plan(detected: &[Detected]) -> Vec<Step<'_>> {
     let mut steps = Vec::new();
+
+    // IDE/agent autostart-hook scan runs once per unique project root (covers the
+    // root's own `.vscode`/`.claude` and every dependency's under `node_modules`).
+    let mut seen_roots: Vec<&Path> = Vec::new();
+    for d in detected {
+        let root = d.root();
+        if !seen_roots.contains(&root) {
+            seen_roots.push(root);
+            steps.push(Step::new("ide/agent · autostart-hooks", move |f| ide_hooks::scan_dir(root, f)));
+            steps.push(Step::new("behaviour · secrets/persistence/worm", move |f| behavior::scan_dir(root, f)));
+            steps.push(Step::new("ci · github-actions workflows", move |f| gha::scan_dir(root, f)));
+        }
+    }
 
     for d in detected {
         match d {

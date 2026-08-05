@@ -139,6 +139,23 @@ pub enum RiskSignal {
     DormantRelease(i64),
     /// A different publisher than the package's earlier versions.
     NewPublisher,
+    /// Installed version was published very recently (< the cooldown window) — no
+    /// time for the ecosystem to catch a malicious release. The release-age /
+    /// cooldown tell (Socket caught keyv ~6 min after publish; a 48h cooldown
+    /// would have aged it out before adoption).
+    FreshRelease(i64),
+    /// The package's *first-ever* release is very recent — a zero-track-record
+    /// package being depended upon (typosquat delivery, slopsquatting).
+    NewbornPackage(i64),
+    /// The linked source repo doesn't declare this package — its stars are being
+    /// borrowed to manufacture reputation (starjacking).
+    Starjacking { repo: String },
+    /// This version dropped the provenance attestation an earlier version carried
+    /// — published outside the trusted OIDC/CI flow (the axios pattern).
+    ProvenanceRemoved,
+    /// The declared source repo returns 404 (deleted/renamed) — its handle is
+    /// re-registerable, i.e. repojacking-exposed.
+    DanglingRepo { repo: String },
 }
 
 impl RiskSignal {
@@ -157,6 +174,11 @@ impl RiskSignal {
             RiskSignal::InstallScriptAdded => "install-script-added".into(),
             RiskSignal::DormantRelease(d) => format!("dormant-release ({d}d gap)"),
             RiskSignal::NewPublisher => "new-publisher".into(),
+            RiskSignal::FreshRelease(h) => format!("fresh-release ({h}h old)"),
+            RiskSignal::NewbornPackage(d) => format!("newborn-package ({d}d old)"),
+            RiskSignal::Starjacking { repo } => format!("starjacking ({repo} doesn't own it)"),
+            RiskSignal::ProvenanceRemoved => "provenance-removed".into(),
+            RiskSignal::DanglingRepo { repo } => format!("dangling-repo ({repo} not found)"),
         }
     }
 
@@ -169,10 +191,18 @@ impl RiskSignal {
             | RiskSignal::Typosquat { .. }
             | RiskSignal::InstallScriptAdded => Severity::High,
             // Inactivity / provenance drift — amber.
+            // Borrowed reputation / dropped attestation are active deceptions → high.
+            RiskSignal::Starjacking { .. } | RiskSignal::ProvenanceRemoved => Severity::High,
             RiskSignal::Stale(_)
             | RiskSignal::Archived
             | RiskSignal::DormantRelease(_)
-            | RiskSignal::NewPublisher => Severity::Medium,
+            | RiskSignal::NewPublisher
+            | RiskSignal::NewbornPackage(_)
+            | RiskSignal::DanglingRepo { .. } => Severity::Medium,
+            // A fresh release is a caution, not an accusation — every new version
+            // is fresh for a while. Amber-low, and it earns its weight in
+            // combination (fresh + install-script-added is the real tell).
+            RiskSignal::FreshRelease(_) => Severity::Low,
             // "Couldn't verify" — no source repo to assess, or a fetch we
             // couldn't complete. Neutral: a missing GitHub repo is normal for a
             // curated OS core (project-site homepages) and common for legit
@@ -190,13 +220,18 @@ impl RiskSignal {
     pub fn risk_points(&self) -> u32 {
         match self {
             RiskSignal::Typosquat { .. } => 45,
+            RiskSignal::Starjacking { .. } => 45,
             RiskSignal::InstallScriptAdded => 40,
+            RiskSignal::ProvenanceRemoved => 30,
+            RiskSignal::DanglingRepo { .. } => 25,
             RiskSignal::RecentlyCreated(_) => 40,
             RiskSignal::LowStars(_) => 30,
             RiskSignal::Archived => 30,
             RiskSignal::NewPublisher => 25,
             RiskSignal::Stale(_) => 20,
             RiskSignal::DormantRelease(_) => 20,
+            RiskSignal::NewbornPackage(_) => 20,
+            RiskSignal::FreshRelease(_) => 15,
             // "Couldn't verify" signals carry no risk weight on their own.
             RiskSignal::NoRepository
             | RiskSignal::ResolveFailed
@@ -240,10 +275,33 @@ struct VersionMeta {
     dormant_gap_days: Option<i64>,
     /// The publisher differs from every earlier version's publisher.
     new_publisher: bool,
+    /// Unix seconds the installed version was published (immutable, so safe to
+    /// cache). The age-relative "fresh-release" decision is made at use-time
+    /// against the current clock, never cached.
+    #[serde(default)]
+    published_ts: Option<i64>,
+    /// Unix seconds of the package's first-ever release (`time.created`,
+    /// immutable). The "newborn" decision is made at use-time against the clock.
+    #[serde(default)]
+    first_release_ts: Option<i64>,
+    /// This version has no provenance attestation but the prior one did — a
+    /// publish that skipped the trusted OIDC/CI flow (the axios pattern).
+    #[serde(default)]
+    provenance_removed: bool,
 }
 
 /// Flag a gap this large (days) between releases as a dormancy anomaly.
 const DORMANT_DAYS: i64 = 365;
+/// Cooldown window: a version published within this many hours hasn't had time
+/// for the ecosystem to catch a malicious release. 48h is the middle of the
+/// 24–72h the supply-chain guidance converges on.
+const FRESH_HOURS: i64 = 48;
+/// A package whose first-ever release is younger than this has no track record —
+/// the delivery vehicle for typosquats and slopsquatted (AI-hallucinated) names.
+const NEWBORN_DAYS: i64 = 30;
+/// A linked repo needs at least this many stars for a name mismatch to read as
+/// *borrowed* reputation (starjacking) rather than an ordinary rename/monorepo.
+const STARJACK_MIN_STARS: u64 = 500;
 
 pub struct Resolver {
     agent: ureq::Agent,
@@ -349,6 +407,12 @@ impl Resolver {
                         res.stats = Some(stats);
                         assessed
                     }
+                    // A declared repo that 404s: on GitHub that means deleted or
+                    // renamed, so the handle is re-registerable (repojacking).
+                    // Elsewhere keep it neutral — a 404 could be a private repo.
+                    Ok(None) if repo.kind() == Some(Host::GitHub) => {
+                        vec![RiskSignal::DanglingRepo { repo: repo.slug() }]
+                    }
                     Ok(None) => vec![RiskSignal::StatsUnavailable],
                     Err(_) => vec![RiskSignal::StatsFailed],
                 };
@@ -376,7 +440,31 @@ impl Resolver {
                 if meta.new_publisher {
                     signals.push(RiskSignal::NewPublisher);
                 }
+                if meta.provenance_removed {
+                    signals.push(RiskSignal::ProvenanceRemoved);
+                }
+                // Release-age cooldown + newborn: both time-relative, so computed
+                // here against the current clock (never cached — see VersionMeta).
+                let now = chrono::Utc::now().timestamp();
+                if let Some(h) = fresh_age_hours(meta.published_ts, now) {
+                    signals.push(RiskSignal::FreshRelease(h));
+                }
+                if let Some(d) = newborn_age_days(meta.first_release_ts, now) {
+                    signals.push(RiskSignal::NewbornPackage(d));
+                }
             }
+
+            // Starjacking: does the linked repo actually declare this package?
+            if let Some(sj) = self.starjack_signal(dep, &res) {
+                signals.push(sj);
+            }
+        }
+
+        // Go module paths get path-level typosquat detection (own corpus).
+        if dep.ecosystem == Ecosystem::Go
+            && let Some(m) = crate::typosquat::check_module_path(&dep.name)
+        {
+            signals.push(RiskSignal::Typosquat { target: m.target, kind: m.kind });
         }
 
         res.worst = signals.iter().map(RiskSignal::severity).max();
@@ -453,6 +541,42 @@ impl Resolver {
         };
         self.cache.put("npm-meta", &key, &meta);
         Ok(Some(meta))
+    }
+
+    /// Starjacking check (npm): a package linking to a **popular** GitHub repo
+    /// (≥ [`STARJACK_MIN_STARS`]) that doesn't actually declare it is borrowing
+    /// that repo's stars. Conservative — fires only when the repo's own
+    /// `package.json` name shares no token with the package (or the repo slug),
+    /// and never when the manifest can't be read (skip, don't guess).
+    fn starjack_signal(&self, dep: &Dependency, res: &Resolution) -> Option<RiskSignal> {
+        let repo = res.repo.as_ref()?;
+        let stats = res.stats.as_ref()?;
+        if stats.stars < STARJACK_MIN_STARS || repo.kind() != Some(Host::GitHub) {
+            return None;
+        }
+        let declared = self.repo_pkg_name(repo)?;
+        let owns = shares_token(&dep.name, &declared) || shares_token(&dep.name, &repo.slug());
+        (!owns).then(|| RiskSignal::Starjacking { repo: repo.slug() })
+    }
+
+    /// The `name` in a GitHub repo's root `package.json`, cached per slug (the
+    /// `None` result is cached too, so a repo without one isn't re-fetched).
+    fn repo_pkg_name(&self, repo: &RepoRef) -> Option<String> {
+        let key = repo.slug();
+        if let Some(hit) = self.cache.get::<Option<String>>("repo-pkgname", &key) {
+            return hit;
+        }
+        let url = format!(
+            "https://raw.githubusercontent.com/{}/{}/HEAD/package.json",
+            repo.owner, repo.name
+        );
+        let name = self
+            .get_json(&url, &[])
+            .ok()
+            .flatten()
+            .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(str::to_string));
+        self.cache.put("repo-pkgname", &key, &name);
+        name
     }
 
     /// Repo reputation stats. Cached per `host/owner/repo` (host-qualified so an
@@ -890,6 +1014,38 @@ fn strip_gopkg_version(seg: &str) -> Option<&str> {
     }
 }
 
+/// Age in hours of a version published at `published_ts`, but only if it falls
+/// inside the [`FRESH_HOURS`] cooldown window — otherwise `None`. Kept pure (now
+/// is passed in) so the cooldown threshold is unit-testable. A future publish
+/// time (clock skew) yields age 0, still "fresh".
+fn fresh_age_hours(published_ts: Option<i64>, now: i64) -> Option<i64> {
+    let ts = published_ts?;
+    let hours = (now - ts).max(0) / 3_600;
+    (hours < FRESH_HOURS).then_some(hours)
+}
+
+/// Days since the package's first-ever release, only within the [`NEWBORN_DAYS`]
+/// window — else `None`. Pure (now passed in) for unit-testing.
+fn newborn_age_days(first_release_ts: Option<i64>, now: i64) -> Option<i64> {
+    let ts = first_release_ts?;
+    let days = (now - ts).max(0) / 86_400;
+    (days < NEWBORN_DAYS).then_some(days)
+}
+
+/// Do two names share a meaningful (≥3-char) alphanumeric token? Used to decide
+/// whether a repo plausibly "owns" a package before crying starjacking.
+fn shares_token(a: &str, b: &str) -> bool {
+    let tokens = |s: &str| -> Vec<String> {
+        s.to_lowercase()
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|t| t.len() >= 3)
+            .map(str::to_string)
+            .collect()
+    };
+    let (ta, tb) = (tokens(a), tokens(b));
+    ta.iter().any(|t| tb.contains(t))
+}
+
 /// RFC3339 (GitHub timestamps) → unix seconds.
 fn parse_ts(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp())
@@ -911,6 +1067,11 @@ fn compute_version_meta(doc: &serde_json::Value, version: &str) -> VersionMeta {
     let Some(inst_ts) = times.get(version).and_then(|t| t.as_str()).and_then(parse_ts) else {
         return meta;
     };
+    // Record the (immutable) publish time up front — even a brand-new *first*
+    // release is "fresh", and that decision happens at use-time, not here.
+    meta.published_ts = Some(inst_ts);
+    // `time.created` is the package's first-ever publish — the newborn clock.
+    meta.first_release_ts = times.get("created").and_then(|t| t.as_str()).and_then(parse_ts);
 
     // Prior version = the one published closest before the installed one.
     let is_version = |k: &str| k != "created" && k != "modified" && k != version;
@@ -943,6 +1104,12 @@ fn compute_version_meta(doc: &serde_json::Value, version: &str) -> VersionMeta {
     if inst_hook && !prior_hook {
         meta.install_script_added = true;
     }
+    // Provenance regression: the prior version was published with an OIDC/CI
+    // attestation and this one wasn't (the axios pattern — a direct token push
+    // that skipped Trusted Publishing).
+    if versions.get(prior_v).is_some_and(has_provenance) && !inst.is_some_and(has_provenance) {
+        meta.provenance_removed = true;
+    }
     let gap = (inst_ts - prior_ts) / 86_400;
     if gap >= DORMANT_DAYS {
         meta.dormant_gap_days = Some(gap);
@@ -954,6 +1121,12 @@ fn compute_version_meta(doc: &serde_json::Value, version: &str) -> VersionMeta {
         meta.new_publisher = true;
     }
     meta
+}
+
+/// Does a version manifest carry an npm provenance attestation (published via
+/// Trusted Publishing / `--provenance`, i.e. `dist.attestations`)?
+fn has_provenance(manifest: &serde_json::Value) -> bool {
+    manifest.get("dist").and_then(|d| d.get("attestations")).is_some()
 }
 
 /// Does a version manifest declare an install lifecycle script?
@@ -1013,6 +1186,64 @@ mod tests {
         assert!(!m.install_script_added);
         assert!(!m.new_publisher);
         assert!(m.dormant_gap_days.is_none());
+        assert_eq!(m.published_ts, parse_ts("2023-02-01T00:00:00.000Z"), "publish time recorded");
+    }
+
+    #[test]
+    fn fresh_release_cooldown_window() {
+        let now = 1_700_000_000;
+        assert_eq!(fresh_age_hours(Some(now - 10 * 3600), now), Some(10), "10h old → fresh");
+        assert_eq!(fresh_age_hours(Some(now - 47 * 3600), now), Some(47), "just inside 48h");
+        assert_eq!(fresh_age_hours(Some(now - 49 * 3600), now), None, "aged out of window");
+        assert_eq!(fresh_age_hours(None, now), None, "no publish time → not fresh");
+        assert_eq!(fresh_age_hours(Some(now + 3600), now), Some(0), "clock skew → age 0, still fresh");
+    }
+
+    #[test]
+    fn newborn_window() {
+        let now = 1_700_000_000;
+        assert_eq!(newborn_age_days(Some(now - 5 * 86_400), now), Some(5), "5d old → newborn");
+        assert_eq!(newborn_age_days(Some(now - 29 * 86_400), now), Some(29), "just inside 30d");
+        assert_eq!(newborn_age_days(Some(now - 45 * 86_400), now), None, "established package");
+        assert_eq!(newborn_age_days(None, now), None);
+    }
+
+    #[test]
+    fn shares_token_guards_starjacking() {
+        // A monorepo/scoped package legitimately shares a token with its repo.
+        assert!(shares_token("@babel/core", "babel/babel"));
+        assert!(shares_token("react-dom", "facebook/react"));
+        // A borrowed-reputation squat shares nothing with the popular repo.
+        assert!(!shares_token("cutie-stealer", "facebook/react"));
+    }
+
+    #[test]
+    fn version_meta_provenance_regression() {
+        // Prior version was attested; this one isn't → regression (axios pattern).
+        let doc = serde_json::json!({
+            "time": {
+                "1.0.0": "2024-01-01T00:00:00.000Z",
+                "1.0.1": "2024-02-01T00:00:00.000Z",
+            },
+            "versions": {
+                "1.0.0": { "dist": { "attestations": { "url": "x" } } },
+                "1.0.1": { "dist": {} },
+            }
+        });
+        assert!(compute_version_meta(&doc, "1.0.1").provenance_removed);
+
+        // Both attested (or neither) → not a regression.
+        let steady = serde_json::json!({
+            "time": {
+                "1.0.0": "2024-01-01T00:00:00.000Z",
+                "1.0.1": "2024-02-01T00:00:00.000Z",
+            },
+            "versions": {
+                "1.0.0": { "dist": { "attestations": {} } },
+                "1.0.1": { "dist": { "attestations": {} } },
+            }
+        });
+        assert!(!compute_version_meta(&steady, "1.0.1").provenance_removed);
     }
 
     #[test]

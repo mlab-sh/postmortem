@@ -17,20 +17,33 @@ Everything is cached under `~/.postmortem/cache/` - see [Cache](Cache).
 | Signal | Tier | Points |
 | --- | --- | --- |
 | `typosquat of <pkg>` | High (red) | 45 |
+| `starjacking (<repo> doesn't own it)` *(npm)* | High | 45 |
 | `install-script-added` *(npm)* | High | 40 |
 | `recently-created (Nd ago)` | High | 40 |
+| `provenance-removed` *(npm)* | High | 30 |
 | `low-stars (N★)` | High | 30 |
 | `archived` | Medium (amber) | 30 |
 | `new-publisher` *(npm)* | Medium | 25 |
+| `dangling-repo (<repo> not found)` *(GitHub)* | Medium | 25 |
 | `stale (Nd idle)` | Medium | 20 |
 | `dormant-release (Nd gap)` *(npm)* | Medium | 20 |
+| `newborn-package (Nd old)` *(npm)* | Medium | 20 |
+| `fresh-release (Nh old)` *(npm)* | Low | 15 |
 | `no-repository` / `resolve-failed` / `stats-*` | Info (unchecked) | 0 |
 
 - **Reputation** signals come from the source repo's stats vs. your
   [thresholds](Configuration) (`min_stars`, `recent_days`, `stale_days`).
-- **Provenance** signals (`typosquat`, `install-script-added`,
-  `dormant-release`, `new-publisher`) are npm-specific today - the typosquat
-  corpus and version anomalies come from the npm packument.
+- **Identity** signals: `typosquat` (edit-distance + **Unicode-confusable /
+  mixed-script** look-alikes, and **Go module-path** squats like
+  `boltdb-go/bolt`) and `starjacking` (the linked repo doesn't declare the
+  package — its stars are borrowed).
+- **Provenance** signals read the npm packument: `install-script-added`,
+  `dormant-release`, `new-publisher`, `newborn-package` (first-ever release
+  &lt;30d), `fresh-release` (this version &lt;48h — the release-age cooldown),
+  and `provenance-removed` (a version that dropped the OIDC/Trusted-Publishing
+  attestation an earlier one had — the axios pattern).
+- **`dangling-repo`** — a declared GitHub repo that 404s (deleted/renamed), so
+  the handle is re-registerable (repojacking exposure).
 - **`no-repository`** means "we couldn't find a source repo to assess" - an
   *absence of information*, so it's counted as **unchecked**, not suspicious.
 

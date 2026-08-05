@@ -72,6 +72,11 @@ impl Lang {
                 "require('tls')",
                 ".exec(",
                 ".spawn(",
+                // "EtherHiding": pulling C2/config from a smart contract so no
+                // exfil domain is ever hard-coded (keyv/cacheable, Aug 2026). Rare
+                // outside web3 libs; a strong hint when it rides obfuscation/hooks.
+                "eth_call",
+                "eth_sendRawTransaction",
             ],
             Lang::Python => &[
                 "import subprocess",

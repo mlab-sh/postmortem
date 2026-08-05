@@ -10,8 +10,11 @@ or suspicious code. They power [`scan`](Scan) and the deep audit of
 | --- | --- |
 | **IOC** | Indicators of compromise in source - hard-coded IPs, suspicious/bare domains, exfil URLs. Language-agnostic (text + allowlists). |
 | **Obfuscation** | High-entropy blobs, long `\xNN`/`\uNNNN` runs, base64 blobs, and per-language markers (`eval()`, base64 decode, `include_bytes!`, inline asm, `pack/unpack`, …). |
-| **Sensitive-API** | Dangerous primitives per language - process spawning, raw sockets, dynamic loading, HTTP clients. |
+| **Sensitive-API** | Dangerous primitives per language - process spawning, raw sockets, dynamic loading, HTTP clients. Also EtherHiding markers (`eth_call` — C2 fetched from a smart contract). |
 | **Install-hooks** | Install-time code execution (see below) - ecosystem-specific, not language-generic. |
+| **IDE / agent hooks** | Autostart that runs code without an install: `.vscode/tasks.json` (`runOn: folderOpen`), `.claude`/`.cursor` `settings.json` (`SessionStart`), dropped loaders, and Python `.pth` files that execute at interpreter startup. |
+| **Behaviour** | High-signal malicious objectives with tight, rarely-legit markers: credential/secret harvesting (cloud-metadata, `~/.aws`/`.ssh`/`.npmrc`, TruffleHog), self-propagation/worm (writing `.github/workflows`, minting npm tokens), persistence (LaunchAgent/systemd/cron/Run-key), paste/webhook exfil. |
+| **GitHub Actions** | Workflow risk in `.github/workflows/*.yml` — see [GitHub Actions](GitHub-Actions). |
 
 ## Language coverage
 
@@ -45,12 +48,13 @@ relative to the scanned project root. Pass `--allow-test-files` to keep them.
 Only IOC is filtered; obfuscation, sensitive-API, and install-hook findings in
 tests are always kept.
 
-## Install-hooks (ecosystem-specific)
+## Install-hooks & autostart (ecosystem-specific)
 
 | Ecosystem | Detects |
 | --- | --- |
 | **Node** | Lifecycle scripts in `package.json` (`preinstall` / `install` / `postinstall`). |
-| **Python** | Payload in `setup.py`. |
+| **Python** | Payload in `setup.py`; `.pth` files that run code at every interpreter startup (`litellm_init.pth`-style). |
+| **Any** | IDE/agent autostart config a dependency ships (`.vscode`/`.claude`), which runs on repo-open with no install. |
 
 ## Where each scan runs
 
