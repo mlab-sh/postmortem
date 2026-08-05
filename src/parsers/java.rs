@@ -147,7 +147,15 @@ mod tests {
     use std::io::Write;
 
     fn tmp(name: &str, body: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("postmortem-java-test");
+        use std::sync::atomic::{AtomicU64, Ordering};
+        // Unique dir per call — a shared path lets parallel tests truncate each
+        // other's file mid-read (empty read → parse EOF).
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "postmortem-java-test-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
         std::fs::File::create(&p).unwrap().write_all(body.as_bytes()).unwrap();

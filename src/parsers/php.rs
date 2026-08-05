@@ -146,7 +146,16 @@ mod tests {
     }"#;
 
     fn tmp(name: &str, body: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("postmortem-php-test");
+        use std::sync::atomic::{AtomicU64, Ordering};
+        // A unique dir per call: the two PHP tests both write `composer.lock`, and
+        // a shared path let them truncate each other's file mid-read under the
+        // parallel test runner (an empty read → "EOF at line 1 column 0").
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "postmortem-php-test-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
         let mut f = std::fs::File::create(&p).unwrap();
