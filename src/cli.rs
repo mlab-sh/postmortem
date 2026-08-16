@@ -275,10 +275,19 @@ pub struct PruneArgs {
 /// Arguments for `postmortem tree <paths>...`.
 #[derive(Args, Debug)]
 pub struct TreeArgs {
-    /// One or more project directories to resolve. Machine format (--json)
-    /// requires a single path.
+    /// One or more targets to resolve: a project directory, or an explicit
+    /// manifest/lockfile (e.g. `packages/api/yarn.lock`) to pin one ecosystem
+    /// and one lockfile flavor. Machine formats (--json/--sarif) require a
+    /// single target unless --allow-multiple is given.
     #[arg(required = true, num_args = 1..)]
     pub paths: Vec<PathBuf>,
+
+    /// Allow --json/--sarif with several targets. THE OUTPUT SHAPE CHANGES:
+    /// --json emits an ARRAY of trees instead of one object, and --sarif emits
+    /// one `runs[]` entry per target. Consumers that assume a single tree will
+    /// break — that's why it is opt-in.
+    #[arg(long)]
+    pub allow_multiple: bool,
 
     /// Limit the tree to this many levels below each root.
     #[arg(long)]

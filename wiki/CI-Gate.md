@@ -67,3 +67,37 @@ postmortem tree . --online --vulns \
 
 Exit `1` if there is any high-risk dependency, any subtree `dep` score above 60,
 or any vulnerability of `high` severity or worse.
+
+## Monorepos - several targets, one job
+
+The gate takes any number of targets and trips if **any** of them trips, so a
+monorepo does not need a build matrix:
+
+```bash
+postmortem tree packages/api packages/web services/worker/go.mod \
+  --online --max-high 0 --fail-on-vuln high
+```
+
+A target is a project directory, or an explicit manifest/lockfile that pins one
+ecosystem and one lockfile flavor - see [Targets](Tree#targets-directories-and-pinned-lockfiles).
+An unreadable target exits `2`; it is never skipped silently.
+
+In the GitHub Action, use the newline-separated `paths` input (it replaces
+`path`); `--allow-multiple` is added for you when a machine format needs it:
+
+```yaml
+- uses: mlab-sh/postmortem@v2
+  with:
+    paths: |
+      packages/api/yarn.lock     # pin yarn, ignore a stale package-lock.json
+      packages/web
+      services/worker/go.mod
+    online: true
+    vulns: true
+    fail-on-vuln: high
+    sarif: true
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+The uploaded SARIF carries one `runs[]` entry per target, each with its own
+`SRCROOT`, so Code Scanning attributes every alert to the right package.

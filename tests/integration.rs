@@ -820,3 +820,106 @@ fn tree_online_is_wired_without_touching_the_network() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("rustdecimal"), "expected the tree to still render");
 }
+
+// ---------- multi-target trees (--allow-multiple) & pinned lockfiles ----------
+
+/// Run `postmortem tree` over several raw targets. Returns (exit, stdout, stderr).
+fn tree_multi(targets: &[PathBuf], extra_args: &[&str]) -> (i32, String, String) {
+    let out = Command::new(bin())
+        .arg("tree")
+        .args(targets)
+        .args(extra_args)
+        .arg("--no-progress")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("postmortem binary did not run");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+#[test]
+fn machine_format_rejects_several_targets_without_the_flag() {
+    let targets = [fixture("malicious-node"), fixture("clean-node")];
+    let (exit, _, stderr) = tree_multi(&targets, &["--json", "-o", "-"]);
+    assert_ne!(exit, 0, "several targets in --json must not silently succeed");
+    assert!(
+        stderr.contains("--allow-multiple"),
+        "the error should point at the opt-in flag, got: {stderr}"
+    );
+}
+
+#[test]
+fn allow_multiple_emits_one_json_tree_per_target() {
+    let targets = [fixture("malicious-node"), fixture("clean-node")];
+    let (exit, stdout, stderr) =
+        tree_multi(&targets, &["--json", "--allow-multiple", "-o", "-"]);
+    assert_eq!(exit, 0, "stderr: {stderr}");
+    let v: Value = serde_json::from_str(&stdout).expect("stdout should be valid json");
+    let arr = v.as_array().expect("--allow-multiple emits an ARRAY of trees");
+    assert_eq!(arr.len(), 2);
+    assert!(arr[0]["root"].as_str().unwrap().ends_with("malicious-node"));
+    assert!(arr[1]["root"].as_str().unwrap().ends_with("clean-node"));
+}
+
+#[test]
+fn a_single_target_keeps_the_bare_object_shape() {
+    // The historical shape must survive the multi-target work, flag or not.
+    let (_, t) = tree_json("malicious-node", &[]);
+    assert!(t.is_object(), "one target still emits a bare tree object");
+    let targets = [fixture("malicious-node")];
+    let (exit, stdout, _) = tree_multi(&targets, &["--json", "--allow-multiple", "-o", "-"]);
+    assert_eq!(exit, 0);
+    let v: Value = serde_json::from_str(&stdout).unwrap();
+    assert!(v.is_array(), "with the flag the shape is an array even for one target");
+}
+
+#[test]
+fn allow_multiple_emits_one_sarif_run_per_target() {
+    let targets = [fixture("malicious-node"), fixture("clean-node")];
+    let (exit, stdout, stderr) =
+        tree_multi(&targets, &["--sarif", "--allow-multiple", "-o", "-"]);
+    assert_eq!(exit, 0, "stderr: {stderr}");
+    let v: Value = serde_json::from_str(&stdout).expect("stdout should be valid sarif");
+    let runs = v["runs"].as_array().expect("sarif runs[]");
+    assert_eq!(runs.len(), 2, "one run per target");
+    for run in runs {
+        // Each run keeps its own SRCROOT so alerts stay attributed.
+        let uri = run["originalUriBaseIds"]["SRCROOT"]["uri"].as_str().unwrap();
+        assert!(uri.starts_with("file://") && uri.ends_with('/'), "got {uri}");
+    }
+}
+
+#[test]
+fn a_pinned_lockfile_resolves_its_parent_project() {
+    let targets = [fixture("malicious-node").join("package-lock.json")];
+    let (exit, stdout, stderr) = tree_multi(&targets, &["--json", "-o", "-"]);
+    assert_eq!(exit, 0, "stderr: {stderr}");
+    let t: Value = serde_json::from_str(&stdout).unwrap();
+    // The tree root is the project directory, not the lockfile itself.
+    assert!(t["root"].as_str().unwrap().ends_with("malicious-node"), "root: {}", t["root"]);
+    assert_eq!(t["roots"][0]["name"], "event-stream", "the graph still resolves");
+}
+
+#[test]
+fn an_unusable_target_is_a_configuration_error_not_a_clean_run() {
+    // A file postmortem can't read as a manifest, alongside a project that
+    // resolves fine: the run must NOT come back green.
+    let targets = [
+        fixture("malicious-node").join("package.json.nope"),
+        fixture("clean-node"),
+    ];
+    let (exit, _, stderr) = tree_multi(&targets, &[]);
+    assert_eq!(exit, 2, "unusable target must exit 2 (misconfig), stderr: {stderr}");
+
+    let targets = [fixture("README.md")];
+    let (exit, _, stderr) = tree_multi(&targets, &[]);
+    assert_eq!(exit, 2, "an unrecognised file must exit 2");
+    assert!(
+        stderr.contains("not a recognised manifest or lockfile"),
+        "stderr should say why, got: {stderr}"
+    );
+}

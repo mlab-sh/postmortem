@@ -613,11 +613,17 @@ fn run_scan(args: cli::ScanArgs) -> Result<()> {
 /// the lockfiles. Offline today; `--online` is reserved for repository-reputation
 /// resolution (see [`resolve`]). Exit 2 if no supported ecosystem was found.
 fn run_tree(args: cli::TreeArgs) -> Result<()> {
-    if args.paths.len() > 1 && (args.json || args.sarif) {
+    let machine = args.json || args.sarif;
+    if args.paths.len() > 1 && machine && !args.allow_multiple {
         anyhow::bail!(
-            "machine formats (--json/--sarif) support a single path; got {}",
+            "machine formats (--json/--sarif) support a single target; got {}. \
+             Pass --allow-multiple to emit them all — note the shape changes: \
+             --json becomes an array of trees, --sarif one runs[] entry per target.",
             args.paths.len()
         );
+    }
+    if args.allow_multiple && !machine {
+        eprintln!("note: --allow-multiple only affects --json/--sarif; the terminal view already renders every target");
     }
 
     let ui = ui::Ui::new(!args.no_progress);
@@ -663,18 +669,39 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
     let mut any_detected = false;
     let mut gate_tripped = false;
     let mut gate_misconfig = false;
+    let mut machine_trees: Vec<tree::Tree> = Vec::new();
     for path in &args.paths {
-        let root = match path.canonicalize() {
+        let target = match path.canonicalize() {
             Ok(r) => r,
+            // A target that isn't there at all is a configuration error: with
+            // several targets, skipping it silently would green-light the run.
             Err(e) => {
                 ui.note(format!("cannot resolve path {}: {e}", path.display()));
+                gate_misconfig = true;
                 continue;
             }
         };
-        let Some((detected, deps, diags)) = detect_and_parse(&root, &ui)? else {
-            ui.note(format!("no supported ecosystem detected at {}", root.display()));
-            continue;
+        // A pinned manifest/lockfile still belongs to its parent project: that
+        // directory is the tree root and where `postmortem.conf` is looked up.
+        let root = match target.is_file() {
+            true => target.parent().unwrap_or(&target).to_path_buf(),
+            false => target.clone(),
         };
+        let parsed = match detect_and_parse(&target, &ui) {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                ui.note(format!("no supported ecosystem detected at {}", target.display()));
+                continue;
+            }
+            // An explicit file target that can't be resolved is a configuration
+            // error, not an empty result — never let it pass as a clean run.
+            Err(e) => {
+                ui.note(format!("{e:#}"));
+                gate_misconfig = true;
+                continue;
+            }
+        };
+        let (detected, deps, diags) = parsed;
         any_detected = true;
 
         let ecosystems: Vec<String> = detected.iter().map(|e| e.name().to_string()).collect();
@@ -712,13 +739,9 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
             loader.finish(gochi::Mood::from_risk(0, 0, vuln_count(&forest)), vuln_summary(&forest));
         }
 
-        if args.json {
-            let out = serde_json::to_string_pretty(&forest)?;
-            cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "json").write(&out)?;
-        } else if args.sarif {
-            let out = report::sarif::render_tree(&forest)?;
-            cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "sarif").write(&out)?;
-        } else {
+        // Machine formats are written once, after every target is resolved, so
+        // several targets land in a single document. The terminal view streams.
+        if !machine {
             tree::render(&forest);
         }
 
@@ -762,6 +785,28 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
                 gate::report(&outcome, &policy);
                 gate_tripped |= outcome.tripped();
             }
+        }
+
+        if machine {
+            machine_trees.push(forest);
+        }
+    }
+
+    // One document for every target: a bare object for a single tree (the
+    // long-standing shape), an array / multi-run SARIF under --allow-multiple.
+    if machine && !machine_trees.is_empty() {
+        if args.json {
+            let out = match args.allow_multiple {
+                true => serde_json::to_string_pretty(&machine_trees)?,
+                false => serde_json::to_string_pretty(&machine_trees[0])?,
+            };
+            cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "json").write(&out)?;
+        } else {
+            let out = match args.allow_multiple {
+                true => report::sarif::render_trees(&machine_trees)?,
+                false => report::sarif::render_tree(&machine_trees[0])?,
+            };
+            cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "sarif").write(&out)?;
         }
     }
 
@@ -872,13 +917,21 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
     }
 }
 
-/// Detect ecosystems and parse every lockfile at `root`. Shared by `scan` and
-/// `tree`. Returns `None` when no supported ecosystem is present, else the
-/// detected ecosystems, the parsed dependencies, and any diagnostics (parse
-/// failures / incomplete graphs) so a `0` result is never mistaken for "clean".
-fn detect_and_parse(root: &Path, ui: &ui::Ui) -> Result<Option<ParsedProject>> {
+/// Detect ecosystems and parse every lockfile at `target` — a project directory,
+/// or a manifest/lockfile pinning one ecosystem (see [`detect::detect_target`]).
+/// Shared by `scan` and `tree`. Returns `None` when no supported ecosystem is
+/// present, else the detected ecosystems, the parsed dependencies, and any
+/// diagnostics (parse failures / incomplete graphs) so a `0` result is never
+/// mistaken for "clean". Errors when an explicitly pinned file can't be used.
+fn detect_and_parse(target: &Path, ui: &ui::Ui) -> Result<Option<ParsedProject>> {
     let detect_phase = ui.phase("detecting ecosystems");
-    let detected = detect::detect(root)?;
+    let detected = match detect::detect_target(target) {
+        Ok(d) => d,
+        Err(e) => {
+            detect_phase.abandon();
+            return Err(e);
+        }
+    };
     if detected.is_empty() {
         detect_phase.abandon();
         return Ok(None);
@@ -981,9 +1034,18 @@ fn detect_and_parse(root: &Path, ui: &ui::Ui) -> Result<Option<ParsedProject>> {
 /// Scan a single already-canonicalized project root. Returns `None` when no
 /// supported ecosystem is present, otherwise `Some(gate_tripped)` where
 /// `gate_tripped` is true if any finding meets or exceeds `--severity`.
-fn scan_path(root: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<bool>> {
-    let Some((detected, deps, diagnostics)) = detect_and_parse(root, ui)? else {
+fn scan_path(target: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<bool>> {
+    let Some((detected, deps, diagnostics)) = detect_and_parse(target, ui)? else {
         return Ok(None);
+    };
+    // A pinned manifest/lockfile target belongs to its parent project: that
+    // directory is what `postmortem.conf` autoload and test-path filtering use.
+    let owned_root;
+    let root = if target.is_file() {
+        owned_root = target.parent().unwrap_or(target).to_path_buf();
+        owned_root.as_path()
+    } else {
+        target
     };
 
     // Resolve the config: explicit --config wins; otherwise auto-load <root>/postmortem.conf

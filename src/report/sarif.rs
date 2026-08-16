@@ -55,6 +55,24 @@ pub fn render(report: &Report) -> Result<String, serde_json::Error> {
 /// deduped by `name@version`. Results are attributed to the project root (SARIF
 /// requires a physical location; a dependency has no single source line).
 pub fn render_tree(tree: &Tree) -> Result<String, serde_json::Error> {
+    render_trees(std::slice::from_ref(tree))
+}
+
+/// Render several resolved trees into one SARIF document — one `runs[]` entry
+/// per target (`tree --allow-multiple`). Each run keeps its own `SRCROOT`, so
+/// Code Scanning attributes every alert to the right project.
+pub fn render_trees(trees: &[Tree]) -> Result<String, serde_json::Error> {
+    let runs: Vec<Value> = trees.iter().map(tree_run).collect();
+    let doc = json!({
+        "$schema": SCHEMA_URI,
+        "version": SARIF_VERSION,
+        "runs": runs,
+    });
+    serde_json::to_string_pretty(&doc)
+}
+
+/// One SARIF `run` for a single tree.
+fn tree_run(tree: &Tree) -> Value {
     // Flagged deps, deduped by name@version (sorted for stable output).
     let mut flagged: BTreeMap<(String, String), &Node> = BTreeMap::new();
     fn walk<'a>(n: &'a Node, out: &mut BTreeMap<(String, String), &'a Node>) {
@@ -86,28 +104,21 @@ pub fn render_tree(tree: &Tree) -> Result<String, serde_json::Error> {
         }
     }
 
-    let doc = json!({
-        "$schema": SCHEMA_URI,
-        "version": SARIF_VERSION,
-        "runs": [
-            {
-                "tool": {
-                    "driver": {
-                        "name": "postmortem",
-                        "version": TOOL_VERSION,
-                        "semanticVersion": TOOL_VERSION,
-                        "informationUri": INFO_URI,
-                        "rules": rules,
-                    }
-                },
-                "originalUriBaseIds": {
-                    "SRCROOT": { "uri": format!("file://{}/", tree.root) }
-                },
-                "results": results,
+    json!({
+        "tool": {
+            "driver": {
+                "name": "postmortem",
+                "version": TOOL_VERSION,
+                "semanticVersion": TOOL_VERSION,
+                "informationUri": INFO_URI,
+                "rules": rules,
             }
-        ]
-    });
-    serde_json::to_string_pretty(&doc)
+        },
+        "originalUriBaseIds": {
+            "SRCROOT": { "uri": format!("file://{}/", tree.root) }
+        },
+        "results": results,
+    })
 }
 
 /// SARIF `level` for a severity. Info maps to `none` so it's recorded but silent.

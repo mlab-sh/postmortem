@@ -7,13 +7,24 @@ branding:
 
 inputs:
   path:
-    description: Project directory to scan.
+    description: Project directory to scan. Ignored when `paths` is set.
     default: "."
+  paths:
+    description: >-
+      Newline-separated targets, for monorepos — no build matrix needed. Each is
+      a project directory OR an explicit manifest/lockfile
+      (e.g. packages/api/yarn.lock), which pins one ecosystem and one lockfile
+      flavor when several coexist in the same directory. The gate trips if ANY
+      target trips; an unreadable target fails the job rather than passing
+      silently. With more than one target the SARIF carries one runs[] entry per
+      target.
+    default: ""
   version:
     description: >-
       postmortem release tag to run (must include the tree CI gate, i.e. >= the
-      release that shipped --max-*/--fail-on-vuln). Pin this.
-    default: v2.1.0
+      release that shipped --max-*/--fail-on-vuln; the `paths` input needs
+      >= v2.1.2, which added --allow-multiple). Pin this.
+    default: v2.1.2
   online:
     description: Resolve repositories and score reputation/identity (network).
     default: "true"
@@ -111,6 +122,7 @@ runs:
       shell: bash
       env:
         IN_PATH: ${{ inputs.path }}
+        IN_PATHS: ${{ inputs.paths }}
         IN_ONLINE: ${{ inputs.online }}
         IN_VULNS: ${{ inputs.vulns }}
         IN_DEPTH: ${{ inputs.depth }}
@@ -129,6 +141,17 @@ runs:
         VULN_MLAB_TOKEN: ${{ inputs.vuln-token }}
       run: |
         set -uo pipefail
+
+        # Targets: `paths` (newline-separated) wins over the single `path`.
+        targets=()
+        while IFS= read -r line; do
+          line="${line#"${line%%[![:space:]]*}"}"   # trim leading blanks
+          line="${line%"${line##*[![:space:]]}"}"   # trim trailing blanks
+          case "$line" in ""|"#"*) continue ;; esac # skip blanks and comments
+          targets+=("$line")
+        done <<< "$IN_PATHS"
+        [ ${#targets[@]} -eq 0 ] && targets=("$IN_PATH")
+
         args=()
         [ "$IN_ONLINE" = "true" ] && args+=(--online)
         [ "$IN_VULNS" = "true" ] && args+=(--vulns)
@@ -149,10 +172,13 @@ runs:
         if [ "$IN_SARIF" = "true" ]; then
           sarif_out="postmortem.sarif"
           args+=(--sarif -o "$sarif_out")
+          # Several targets in a machine format is opt-in: the SARIF then holds
+          # one runs[] entry per target (Code Scanning ingests them as one).
+          [ ${#targets[@]} -gt 1 ] && args+=(--allow-multiple)
         fi
 
-        echo "+ postmortem tree $IN_PATH ${args[*]}"
-        postmortem tree "$IN_PATH" "${args[@]}" >tree.out 2>gate.txt
+        echo "+ postmortem tree ${targets[*]} ${args[*]}"
+        postmortem tree "${targets[@]}" "${args[@]}" >tree.out 2>gate.txt
         code=$?
         cat gate.txt >&2
         [ -s tree.out ] && cat tree.out
