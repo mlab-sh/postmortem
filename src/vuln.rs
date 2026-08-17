@@ -31,7 +31,7 @@ pub fn scan_url(net: &crate::settings::NetworkSettings) -> String {
 }
 
 /// A single advisory affecting a package (a slim projection of the OSV object).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Vuln {
     /// GHSA / CVE / OSV id.
     pub id: String,
@@ -41,7 +41,7 @@ pub struct Vuln {
 }
 
 /// A package that has at least one known vulnerability.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VulnPackage {
     pub name: String,
     pub version: String,

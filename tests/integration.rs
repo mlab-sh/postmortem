@@ -1617,22 +1617,6 @@ fn why_json_on_an_absent_package_is_an_empty_list_not_an_error() {
 }
 
 #[test]
-fn diff_json_reports_the_three_change_sets() {
-    let v = json_of(&[
-        "diff",
-        fixture("clean-node").to_str().unwrap(),
-        fixture("scoped-node").to_str().unwrap(),
-    ]);
-    assert_eq!(v["summary"]["added"], 5);
-    assert_eq!(v["summary"]["removed"], 1);
-    let removed = v["removed"].as_array().unwrap();
-    assert_eq!(removed[0]["name"], "leftpad-clean");
-    // The ecosystem travels with the name: one project can hold two ecosystems
-    // with a colliding package name.
-    assert_eq!(removed[0]["ecosystem"], "node");
-}
-
-#[test]
 fn diff_json_honours_omit_on_both_sides() {
     let v = json_of(&[
         "diff",
@@ -1707,4 +1691,55 @@ fn tree_html_rejects_several_targets_without_the_flag() {
     assert_ne!(exit, 0, "several targets in --html must not silently succeed");
     assert!(stderr.contains("--html"), "the error should name the format: {stderr}");
     assert!(stderr.contains("--allow-multiple"), "and point at the opt-in: {stderr}");
+}
+
+// --- `diff` assessment ---------------------------------------------------------
+//
+// Offline `diff` is a set-diff. `--online` / `--vulns` assess what the change
+// *introduces*, which is the question a reviewer is actually asking. These pin
+// the offline shape and the opt-in boundary; the networked path is covered by
+// unit tests in `src/diff.rs`, which can construct resolutions directly.
+
+#[test]
+fn diff_without_assessment_reports_no_risk_at_all() {
+    // A zeroed assessment would read as "checked, and it is fine".
+    let v = json_of(&[
+        "diff",
+        fixture("clean-node").to_str().unwrap(),
+        fixture("scoped-node").to_str().unwrap(),
+    ]);
+    assert_eq!(v["schema_version"], 2);
+    for a in v["added"].as_array().unwrap() {
+        assert!(a["assessment"].is_null(), "offline diff must not claim an assessment: {a}");
+    }
+}
+
+#[test]
+fn diff_json_keeps_the_three_change_sets() {
+    let v = json_of(&[
+        "diff",
+        fixture("clean-node").to_str().unwrap(),
+        fixture("scoped-node").to_str().unwrap(),
+    ]);
+    assert_eq!(v["summary"]["added"], 5);
+    assert_eq!(v["summary"]["removed"], 1);
+    let removed = v["removed"].as_array().unwrap();
+    assert_eq!(removed[0]["name"], "leftpad-clean");
+    assert_eq!(removed[0]["ecosystem"], "node");
+}
+
+#[test]
+fn diff_accepts_the_assessment_flags() {
+    // `--online`/`--vulns` must parse and not change the offline classification.
+    let out = Command::new(bin())
+        .arg("diff")
+        .arg(fixture("clean-node"))
+        .arg(fixture("scoped-node"))
+        .args(["--vulns", "--json", "-o", "-", "--no-progress"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("postmortem binary did not run");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    assert_eq!(v["summary"]["added"], 5);
 }

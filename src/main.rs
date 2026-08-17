@@ -197,7 +197,58 @@ fn run_diff(args: cli::DiffArgs) -> Result<()> {
     };
     let old = resolve_deps(&args.old)?;
     let new = resolve_deps(&args.new)?;
-    let report = diff::diff(&old, &new);
+    let mut report = diff::diff(&old, &new);
+
+    // Assess only what the change introduces. The added/changed packages are
+    // looked up in the *new* set to get their real `Dependency` (with the
+    // resolved URL and integrity the resolver needs) rather than reconstructed.
+    if args.online || args.vulns {
+        let introduced = report.introduced();
+        let subject: Vec<model::Dependency> = new
+            .iter()
+            .filter(|d| {
+                introduced.iter().any(|(e, n, v)| *e == d.ecosystem && *n == d.name && *v == d.version)
+            })
+            .cloned()
+            .collect();
+
+        let mut settings = settings::Settings::load_or_warn();
+        let resolutions = if args.online && !subject.is_empty() {
+            let tokens = resolve::Tokens {
+                github: settings.resolve_github_token()?,
+                gitlab: settings.gitlab_token(),
+                codeberg: settings.codeberg_token(),
+            };
+            resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network)
+                .resolve_all(&subject, &ui)
+        } else {
+            Default::default()
+        };
+
+        // Advisories are looked up per lockfile, so the new project is scanned
+        // whole and the results filtered — `assess` keeps only the introduced
+        // packages, which is what a reviewer is being asked to approve.
+        let mut vulns = Vec::new();
+        if args.vulns {
+            let net = settings.network.clone();
+            let (agent, cache, token) =
+                (vuln::agent(&net), cache::Cache::open(), settings.vuln_token());
+            let scan_url = vuln::scan_url(&net);
+            let new_root = args.new.canonicalize().unwrap_or_else(|_| args.new.clone());
+            if let Ok(detected) = detect::detect_target(&new_root) {
+                for d in &detected {
+                    if let Some((lock, fmt)) = mlab_target(d)
+                        && let Ok(mut v) =
+                            vuln::scan(&agent, &cache, token.as_deref(), lock, fmt, &scan_url)
+                    {
+                        vulns.append(&mut v);
+                    }
+                }
+            }
+        }
+        diff::assess(&mut report, &resolutions, &vulns);
+    }
+
     let (ol, nl) = (args.old.display().to_string(), args.new.display().to_string());
     if args.json {
         let doc = diff::to_json(&report, &ol, &nl);

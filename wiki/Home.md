@@ -23,7 +23,7 @@ locally.
 | [`audit`](Audit) | One-shot graded health check: malware scan + inventory, plus optional reputation and vulns — and the same [CI gate](CI-Gate) as `tree`. |
 | [`licenses`](Licenses) | Inventory the licenses of the dependency graph and enforce a policy (deny / allow / fail-on-unknown). |
 | [`why`](Why) | Explain why a package is installed: its dependency paths up to the roots. |
-| [`diff`](Diff) | Compare two project states: added / removed / version-changed dependencies. |
+| [`diff`](Diff) | Compare two project states, and assess what the change introduces (`--online` / `--vulns`). |
 | [`sbom`](Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |
 | [`system`](System) | Audit the machine's OS package managers (Homebrew, pacman/AUR, apt/dpkg, dnf/rpm, Nix, and apk) with the same risk scoring. |
 | [`cache`](Cache) | Inspect (`info`, `path`) and clear (`prune`) the on-disk cache used by the online paths. |

@@ -219,6 +219,17 @@ pub struct DiffArgs {
     /// The project directory to compare against it (the "after" state).
     pub new: PathBuf,
 
+    /// Go ONLINE and assess what the change *introduces*: source-repo
+    /// reputation and provenance signals for the added and version-changed
+    /// packages. Only those are resolved, so the cost scales with the diff, not
+    /// with the tree.
+    #[arg(long)]
+    pub online: bool,
+
+    /// Report known vulnerabilities against the packages the change introduces.
+    #[arg(long)]
+    pub vulns: bool,
+
     /// Emit the result as JSON instead of the terminal view.
     #[arg(long)]
     pub json: bool,

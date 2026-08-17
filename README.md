@@ -75,7 +75,7 @@ postmortem tree . --omit dev            # only what actually ships
 postmortem audit . --online --vulns     # one graded verdict: malware + risk + CVEs
 postmortem licenses . --online          # license inventory + policy gate
 postmortem why left-pad .               # why is this package installed?
-postmortem diff ./main ./pr-branch      # what dependencies did this change add?
+postmortem diff ./main ./pr-branch --online   # what did this PR pull in, and is it safe?
 postmortem sbom . -o sbom.json          # export a CycloneDX 1.5 SBOM
 postmortem tree . --online --html -o r.html   # a shareable HTML report
 postmortem system                       # audit your installed OS packages
