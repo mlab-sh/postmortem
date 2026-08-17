@@ -184,12 +184,16 @@ struct AurPkg {
 /// Query the AUR RPC v5 `info` endpoint (batched) for a set of package names.
 /// Best-effort: network failures yield an empty map.
 fn aur_info(names: &[String]) -> HashMap<String, AurPkg> {
-    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)).build();
+    let net = crate::settings::Settings::load_or_warn().network;
+    let agent = net
+        .apply(ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)))
+        .build();
+    let aur = net.endpoints.aur();
     let mut out = HashMap::new();
     for chunk in names.chunks(120) {
         let query: String = chunk.iter().map(|n| format!("&arg[]={n}")).collect();
         let url =
-            format!("https://aur.archlinux.org/rpc/v5/info?{}", query.trim_start_matches('&'));
+            format!("{aur}/rpc/v5/info?{}", query.trim_start_matches('&'));
         let Ok(resp) = agent.get(&url).set("User-Agent", UA).call() else {
             continue;
         };
@@ -213,8 +217,11 @@ fn analyze_pacman_install(name: &str, version: &str) -> Vec<SysSignal> {
 
 /// Fetch a package's AUR PKGBUILD (its untrusted build recipe). Best-effort.
 fn fetch_pkgbuild(name: &str) -> Option<String> {
-    let agent = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)).build();
-    let url = format!("https://aur.archlinux.org/cgit/aur.git/plain/PKGBUILD?h={name}");
+    let net = crate::settings::Settings::load_or_warn().network;
+    let agent = net
+        .apply(ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)))
+        .build();
+    let url = format!("{}/cgit/aur.git/plain/PKGBUILD?h={name}", net.endpoints.aur());
     agent.get(&url).set("User-Agent", UA).call().ok()?.into_string().ok()
 }
 

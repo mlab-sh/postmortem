@@ -15,11 +15,19 @@ use serde::{Deserialize, Serialize};
 use crate::cache::Cache;
 use crate::model::Severity;
 
-const SCAN_URL: &str = "https://vuln.mlab.sh/api/v2/scan";
+/// The scan endpoint's path, appended to the configured base
+/// ([`crate::settings::Endpoints::vuln`]).
+const SCAN_PATH: &str = "/api/v2/scan";
 
 /// A blocking HTTP agent for the vuln API.
-pub fn agent() -> ureq::Agent {
-    ureq::AgentBuilder::new().timeout(Duration::from_secs(30)).build()
+/// Blocking agents honouring the machine's proxy and `no_proxy` settings.
+pub fn agent(net: &crate::settings::NetworkSettings) -> crate::settings::Agents {
+    net.agents(Duration::from_secs(30))
+}
+
+/// The scan endpoint for the machine's configured base URL.
+pub fn scan_url(net: &crate::settings::NetworkSettings) -> String {
+    format!("{}{SCAN_PATH}", net.endpoints.vuln())
 }
 
 /// A single advisory affecting a package (a slim projection of the OSV object).
@@ -45,11 +53,12 @@ pub struct VulnPackage {
 /// (`npm`/`cargo`/`pip`/`composer`/`gem`/`go`) or empty for auto-detect.
 /// Returns only the packages that carry vulnerabilities.
 pub fn scan(
-    agent: &ureq::Agent,
+    agent: &crate::settings::Agents,
     cache: &Cache,
     token: Option<&str>,
     lockfile: &Path,
     format: &str,
+    scan_url: &str,
 ) -> Result<Vec<VulnPackage>> {
     let bytes =
         std::fs::read(lockfile).with_context(|| format!("reading {}", lockfile.display()))?;
@@ -60,11 +69,12 @@ pub fn scan(
     }
 
     let url = if format.is_empty() {
-        SCAN_URL.to_string()
+        scan_url.to_string()
     } else {
-        format!("{SCAN_URL}?format={format}")
+        format!("{scan_url}?format={format}")
     };
     let mut req = agent
+        .for_url(&url)
         .post(&url)
         .timeout(Duration::from_secs(30))
         .set("Content-Type", "application/octet-stream");
@@ -102,10 +112,11 @@ pub fn scan(
 /// `results`, aligned to input order — so we zip against the coordinates we
 /// sent. Cached by the coordinate-set content hash.
 pub(crate) fn scan_coordinates(
-    agent: &ureq::Agent,
+    agent: &crate::settings::Agents,
     cache: &Cache,
     token: Option<&str>,
     coords: &[(String, String, String)],
+    scan_url: &str,
 ) -> Result<Vec<VulnPackage>> {
     if coords.is_empty() {
         return Ok(Vec::new());
@@ -125,7 +136,8 @@ pub(crate) fn scan_coordinates(
     }
 
     let mut req = agent
-        .post(SCAN_URL)
+        .for_url(scan_url)
+        .post(scan_url)
         .timeout(Duration::from_secs(30))
         .set("Content-Type", "application/json");
     if let Some(t) = token {

@@ -112,17 +112,18 @@ pub fn osv_ecosystem(eco: Ecosystem, release: &Release) -> Option<String> {
 /// lookup is delegated to the shared mlab transport, which proxies OSV. Returns
 /// only packages carrying advisories.
 pub fn scan(
-    agent: &ureq::Agent,
+    agent: &crate::settings::Agents,
     cache: &Cache,
     token: Option<&str>,
     deps: &[Dependency],
     ecosystem: &str,
+    scan_url: &str,
 ) -> Result<Vec<VulnPackage>> {
     let coords: Vec<(String, String, String)> = deps
         .iter()
         .map(|d| (ecosystem.to_string(), d.name.clone(), d.version.clone()))
         .collect();
-    crate::vuln::scan_coordinates(agent, cache, token, &coords)
+    crate::vuln::scan_coordinates(agent, cache, token, &coords, scan_url)
 }
 
 #[cfg(test)]

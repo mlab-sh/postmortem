@@ -41,7 +41,8 @@ locally.
 - **[System package managers](System)** - the Homebrew, [pacman](Pacman), [apt](Apt), [dnf](Dnf), [Nix](Nix), and [apk](Apk) backends in depth.
 - **[CI gate](CI-Gate)** - turn scores and vulns into a pass/fail build, from
   `tree`, `audit` or `system`.
-- **[Configuration](Configuration)** - tokens, thresholds, and per-project policy.
+- **[Configuration](Configuration)** - tokens, thresholds, per-project policy, and
+  the `network` block for proxies and internal mirrors.
 
 ---
 

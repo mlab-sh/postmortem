@@ -23,6 +23,10 @@ graph, and flags what real compromises look like.
 
 ## Why postmortem
 
+* **Fits behind a corporate proxy.** A `network` block in `~/.postmortem/config.yml`
+  sets the proxy, its `no_proxy` exemptions, and a base-URL override for every
+  service — internal mirrors, GitHub Enterprise, a self-hosted GitLab. A typo in
+  a key is an error, never a silent fallback to the public registry.
 * **No telemetry.** postmortem never phones home. It reaches the network only on
   the paths that need it — `--online` reputation and `--vulns` / `system --vulns`
   advisory lookups — and even then only sends the package coordinates being

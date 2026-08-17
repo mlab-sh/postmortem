@@ -77,13 +77,13 @@ fn deep(args: &crate::cli::InspectArgs, sub: &[Dependency], ui: &ui::Ui) -> Resu
     }
 
     // 1. Resolve every dependency to its source repo + reputation (online).
-    let mut settings = settings::Settings::load().unwrap_or_default();
+    let mut settings = settings::Settings::load_or_warn();
     let tokens = resolve::Tokens {
         github: settings.resolve_github_token()?,
         gitlab: settings.gitlab_token(),
         codeberg: settings.codeberg_token(),
     };
-    let resolver = resolve::Resolver::new(tokens, settings.tree.clone());
+    let resolver = resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network);
     let resolutions = resolver.resolve_all(sub, ui);
 
     // 2. Stage a temp workspace under ~/.postmortem/inspect/.
@@ -110,7 +110,12 @@ fn deep(args: &crate::cli::InspectArgs, sub: &[Dependency], ui: &ui::Ui) -> Resu
     let bar = gochi::Loader::start(targets.len() as u64, ui.animating());
     bar.step("cloning + analyzing sources");
     let mut analyzed: Vec<RepoAudit> = Vec::new();
-    let vuln_ctx = (crate::vuln::agent(), crate::cache::Cache::open(), settings.vuln_token());
+    let vuln_ctx = (
+        crate::vuln::agent(&settings.network),
+        crate::cache::Cache::open(),
+        settings.vuln_token(),
+        crate::vuln::scan_url(&settings.network),
+    );
     for (name, repo) in &targets {
         bar.step(format!("git clone {}", repo.slug()));
         let dest = work.join(sanitize(&repo.slug()));
@@ -163,7 +168,7 @@ fn audit_clone(
     dep: &str,
     repo: &RepoRef,
     dir: &Path,
-    vuln_ctx: &(ureq::Agent, crate::cache::Cache, Option<String>),
+    vuln_ctx: &(crate::settings::Agents, crate::cache::Cache, Option<String>, String),
     allow_test_files: bool,
 ) -> RepoAudit {
     // Rewrite finding locations relative to the clone (the absolute temp path is
@@ -183,11 +188,11 @@ fn audit_clone(
     let findings = analyze::drop_test_iocs(findings, allow_test_files, Path::new(""));
 
     // --vulns: scan any lockfile the upstream repo commits (best-effort).
-    let (agent, cache, token) = vuln_ctx;
+    let (agent, cache, token, scan_url) = vuln_ctx;
     let mut vulns = 0;
     for d in &detect::detect(dir).unwrap_or_default() {
         if let Some((lock, fmt)) = crate::mlab_target(d)
-            && let Ok(v) = crate::vuln::scan(agent, cache, token.as_deref(), lock, fmt)
+            && let Ok(v) = crate::vuln::scan(agent, cache, token.as_deref(), lock, fmt, scan_url)
         {
             vulns += v.iter().map(|p| p.vulns.len()).sum::<usize>();
         }

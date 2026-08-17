@@ -34,10 +34,6 @@ use crate::model::{DepRef, Dependency, Ecosystem, Severity};
 use crate::settings::TreeSettings;
 use crate::ui::Ui;
 
-const NPM_REGISTRY: &str = "https://registry.npmjs.org";
-const GITHUB_API: &str = "https://api.github.com";
-const GITLAB_API: &str = "https://gitlab.com/api/v4";
-const CODEBERG_API: &str = "https://codeberg.org/api/v1";
 const USER_AGENT: &str = concat!("postmortem/", env!("CARGO_PKG_VERSION"));
 
 /// A code-hosting provider we know how to pull reputation stats from. Each has
@@ -320,9 +316,11 @@ const NEWBORN_DAYS: i64 = 30;
 const STARJACK_MIN_STARS: u64 = 500;
 
 pub struct Resolver {
-    agent: ureq::Agent,
+    agents: crate::settings::Agents,
     cache: Cache,
     tokens: Tokens,
+    /// Base URLs, overridable for internal mirrors / GitHub Enterprise.
+    endpoints: crate::settings::Endpoints,
     /// Resolve licenses (adds a deps.dev call for Go only — see `with_licenses`).
     want_licenses: bool,
     thresholds: TreeSettings,
@@ -333,14 +331,19 @@ pub struct Resolver {
 }
 
 impl Resolver {
-    pub fn new(tokens: Tokens, thresholds: TreeSettings) -> Self {
-        let agent = ureq::AgentBuilder::new()
-            .timeout(Duration::from_secs(15))
-            .build();
+    /// Build a resolver honouring the machine's `network` settings: the proxy
+    /// and `no_proxy` on the agents, and the endpoint overrides for every service
+    /// it talks to. Pass `&NetworkSettings::default()` for the public defaults.
+    pub fn with_network(
+        tokens: Tokens,
+        thresholds: TreeSettings,
+        net: &crate::settings::NetworkSettings,
+    ) -> Self {
         Resolver {
-            agent,
+            agents: net.agents(Duration::from_secs(15)),
             cache: Cache::open(),
             tokens,
+            endpoints: net.endpoints.clone(),
             thresholds,
             now: chrono::Utc::now().timestamp(),
             languages: false,
@@ -546,7 +549,8 @@ impl Resolver {
                 return Ok(hit);
             }
             let url = format!(
-                "https://api.deps.dev/v3/systems/go/packages/{}/versions/{}",
+                "{}/v3/systems/go/packages/{}/versions/{}",
+                self.endpoints.deps_dev(),
                 urlencode(&dep.name),
                 urlencode(&dep.version),
             );
@@ -565,7 +569,7 @@ impl Resolver {
         if let Some(hit) = self.cache.get::<CachedRepo>("registry", &key) {
             return Ok(hit);
         }
-        let Some(url) = registry_url(dep) else {
+        let Some(url) = registry_url(dep, &self.endpoints) else {
             return Ok(CachedRepo::default());
         };
         let doc = match self.get_json(&url, &[])? {
@@ -575,7 +579,7 @@ impl Resolver {
             // releases, platform-suffixed gems). Fall back to the name-only
             // document rather than lose the repo entirely — the license it
             // carries is then the latest version's, which `licenses_from` knows.
-            None => match registry_url_fallback(dep) {
+            None => match registry_url_fallback(dep, &self.endpoints) {
                 Some(fb) => self.get_json(&fb, &[])?,
                 None => None,
             },
@@ -611,7 +615,7 @@ impl Resolver {
         if let Some(hit) = self.cache.get::<VersionMeta>("npm-meta", &key) {
             return Ok(Some(hit));
         }
-        let url = format!("{NPM_REGISTRY}/{}", dep.name);
+        let url = format!("{}/{}", self.endpoints.npm(), dep.name);
         let meta = match self.get_json(&url, &[])? {
             Some(doc) => compute_version_meta(&doc, &dep.version),
             None => VersionMeta::default(),
@@ -644,8 +648,10 @@ impl Resolver {
             return hit;
         }
         let url = format!(
-            "https://raw.githubusercontent.com/{}/{}/HEAD/package.json",
-            repo.owner, repo.name
+            "{}/{}/{}/HEAD/package.json",
+            self.endpoints.github_raw(),
+            repo.owner,
+            repo.name
         );
         let name = self
             .get_json(&url, &[])
@@ -666,19 +672,19 @@ impl Resolver {
         }
         let stats = match repo.kind() {
             Some(Host::GitHub) => self.host_stats(
-                &format!("{GITHUB_API}/repos/{}/{}", repo.owner, repo.name),
+                &format!("{}/repos/{}/{}", self.endpoints.github(), repo.owner, repo.name),
                 self.tokens.github.as_deref().map(|t| ("Authorization", format!("Bearer {t}"))),
                 "stargazers_count",
                 "pushed_at",
             )?,
             Some(Host::GitLab) => self.host_stats(
-                &format!("{GITLAB_API}/projects/{}", urlencode(&repo.slug())),
+                &format!("{}/projects/{}", self.endpoints.gitlab(), urlencode(&repo.slug())),
                 self.tokens.gitlab.as_deref().map(|t| ("PRIVATE-TOKEN", t.to_string())),
                 "star_count",
                 "last_activity_at",
             )?,
             Some(Host::Codeberg) => self.host_stats(
-                &format!("{CODEBERG_API}/repos/{}/{}", repo.owner, repo.name),
+                &format!("{}/repos/{}/{}", self.endpoints.codeberg(), repo.owner, repo.name),
                 self.tokens.codeberg.as_deref().map(|t| ("Authorization", format!("token {t}"))),
                 "stars_count",
                 "updated_at",
@@ -730,15 +736,15 @@ impl Resolver {
         }
         let (url, auth) = match repo.kind() {
             Some(Host::GitHub) => (
-                format!("{GITHUB_API}/repos/{}/{}/languages", repo.owner, repo.name),
+                format!("{}/repos/{}/{}/languages", self.endpoints.github(), repo.owner, repo.name),
                 self.tokens.github.as_deref().map(|t| ("Authorization", format!("Bearer {t}"))),
             ),
             Some(Host::GitLab) => (
-                format!("{GITLAB_API}/projects/{}/languages", urlencode(&repo.slug())),
+                format!("{}/projects/{}/languages", self.endpoints.gitlab(), urlencode(&repo.slug())),
                 self.tokens.gitlab.as_deref().map(|t| ("PRIVATE-TOKEN", t.to_string())),
             ),
             Some(Host::Codeberg) => (
-                format!("{CODEBERG_API}/repos/{}/{}/languages", repo.owner, repo.name),
+                format!("{}/repos/{}/{}/languages", self.endpoints.codeberg(), repo.owner, repo.name),
                 self.tokens.codeberg.as_deref().map(|t| ("Authorization", format!("token {t}"))),
             ),
             None => return Ok(None),
@@ -782,7 +788,7 @@ impl Resolver {
     /// failure is an `Err`. A `User-Agent` is always set — crates.io and the
     /// GitHub API reject requests without one.
     fn get_json(&self, url: &str, headers: &[(&str, String)]) -> Result<Option<serde_json::Value>> {
-        let mut req = self.agent.get(url).set("User-Agent", USER_AGENT);
+        let mut req = self.agents.for_url(url).get(url).set("User-Agent", USER_AGENT);
         for (k, v) in headers {
             req = req.set(k, v);
         }
@@ -803,27 +809,30 @@ impl Resolver {
 /// - **RubyGems** (Ruby): the gem JSON (`source_code_uri` / `homepage_uri`).
 /// - **Packagist** (PHP): the package JSON (`repository`).
 /// - **deps.dev** (Java/Maven): the version's `links` (avoids POM XML parsing).
-fn registry_url(dep: &Dependency) -> Option<String> {
+fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) -> Option<String> {
     Some(match dep.ecosystem {
-        Ecosystem::Node => format!("{NPM_REGISTRY}/{}/{}", dep.name, dep.version),
+        Ecosystem::Node => format!("{}/{}/{}", ep.npm(), dep.name, dep.version),
         // Version-pinned: the name-only document describes the *latest* release,
         // whose license may differ from the pinned one. `registry_url_fallback`
         // covers versions these endpoints never served.
-        Ecosystem::Python => format!("https://pypi.org/pypi/{}/{}/json", dep.name, dep.version),
-        Ecosystem::Rust => format!("https://crates.io/api/v1/crates/{}", dep.name),
+        Ecosystem::Python => format!("{}/pypi/{}/{}/json", ep.pypi(), dep.name, dep.version),
+        Ecosystem::Rust => format!("{}/api/v1/crates/{}", ep.crates(), dep.name),
         Ecosystem::Ruby => format!(
-            "https://rubygems.org/api/v2/rubygems/{}/versions/{}.json",
-            dep.name, dep.version
+            "{}/api/v2/rubygems/{}/versions/{}.json",
+            ep.rubygems(),
+            dep.name,
+            dep.version
         ),
-        Ecosystem::Php => format!("https://packagist.org/packages/{}.json", dep.name),
+        Ecosystem::Php => format!("{}/packages/{}.json", ep.packagist(), dep.name),
         Ecosystem::Java => format!(
-            "https://api.deps.dev/v3/systems/maven/packages/{}/versions/{}",
+            "{}/v3/systems/maven/packages/{}/versions/{}",
+            ep.deps_dev(),
             urlencode(&dep.name),
             urlencode(&dep.version),
         ),
         // Homebrew: the formula JSON carries `homepage` (often a GitHub repo).
         // The name can contain `@` (`openssl@3`); the API path takes it verbatim.
-        Ecosystem::Brew => format!("https://formulae.brew.sh/api/formula/{}.json", dep.name),
+        Ecosystem::Brew => format!("{}/api/formula/{}.json", ep.brew(), dep.name),
         // Go's module path and Pacman's package URL resolve without a registry
         // call (repo parsed from the name / `resolved_url`).
         Ecosystem::Go | Ecosystem::Pacman | Ecosystem::Apt | Ecosystem::Dnf | Ecosystem::Nix | Ecosystem::Apk => return None,
@@ -860,10 +869,10 @@ pub fn apply_licenses(
 /// for the exact version, and this is the name-only form to fall back on when
 /// that version was never served under that spelling (a yanked release, or a
 /// platform-suffixed gem like `nokogiri-1.13.9-x86_64-linux`).
-fn registry_url_fallback(dep: &Dependency) -> Option<String> {
+fn registry_url_fallback(dep: &Dependency, ep: &crate::settings::Endpoints) -> Option<String> {
     Some(match dep.ecosystem {
-        Ecosystem::Python => format!("https://pypi.org/pypi/{}/json", dep.name),
-        Ecosystem::Ruby => format!("https://rubygems.org/api/v1/gems/{}.json", dep.name),
+        Ecosystem::Python => format!("{}/pypi/{}/json", ep.pypi(), dep.name),
+        Ecosystem::Ruby => format!("{}/api/v1/gems/{}.json", ep.rubygems(), dep.name),
         _ => return None,
     })
 }
@@ -1642,9 +1651,10 @@ mod tests {
     #[test]
     fn assess_flags_thresholds() {
         let r = Resolver {
-            agent: ureq::agent(),
+            agents: crate::settings::NetworkSettings::default().agents(Duration::from_secs(15)),
             cache: Cache::open(),
             tokens: Tokens::default(),
+            endpoints: crate::settings::Endpoints::default(),
             thresholds: TreeSettings { min_stars: 20, recent_days: 30, stale_days: 365 },
             now: 1_000_000_000,
             languages: false,

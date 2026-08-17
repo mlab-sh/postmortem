@@ -364,13 +364,13 @@ fn render_licenses(
 /// the license is the same one the repo lookup fetches — so this shares the
 /// resolver, and the cache, without asking for language breakdowns.
 fn license_resolver(_ui: &ui::Ui) -> Result<resolve::Resolver> {
-    let mut settings = settings::Settings::load().unwrap_or_default();
+    let mut settings = settings::Settings::load_or_warn();
     let tokens = resolve::Tokens {
         github: settings.resolve_github_token()?,
         gitlab: settings.gitlab_token(),
         codeberg: settings.codeberg_token(),
     };
-    Ok(resolve::Resolver::new(tokens, settings.tree.clone()).with_licenses(true))
+    Ok(resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network).with_licenses(true))
 }
 
 /// `postmortem sbom <path>` — resolve the project and emit a CycloneDX 1.5 SBOM.
@@ -456,7 +456,7 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
     let mut forest = tree::build(&root.display().to_string(), &ecosystems, &deps, None);
     forest.diagnostics = diags;
 
-    let mut settings = settings::Settings::load().unwrap_or_default();
+    let mut settings = settings::Settings::load_or_warn();
     if args.online {
         let tokens = resolve::Tokens {
             github: settings.resolve_github_token()?,
@@ -464,7 +464,7 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
             codeberg: settings.codeberg_token(),
         };
         let resolver =
-            resolve::Resolver::new(tokens, settings.tree.clone())
+            resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network)
             .with_languages(args.languages)
             .with_licenses(true);
         let resolutions = resolver.resolve_all(&deps, &ui);
@@ -473,10 +473,13 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
         tree::score(&mut forest);
     }
     if args.vulns {
-        let (agent, cache, token) = (vuln::agent(), cache::Cache::open(), settings.vuln_token());
+        let net = settings.network.clone();
+        let (agent, cache, token) =
+            (vuln::agent(&net), cache::Cache::open(), settings.vuln_token());
+        let scan_url = vuln::scan_url(&net);
         for d in &detected {
             if let Some((lock, fmt)) = mlab_target(d)
-                && let Ok(mut v) = vuln::scan(&agent, &cache, token.as_deref(), lock, fmt)
+                && let Ok(mut v) = vuln::scan(&agent, &cache, token.as_deref(), lock, fmt, &scan_url)
             {
                 forest.vulnerabilities.append(&mut v);
             }
@@ -624,7 +627,7 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
     // resolver (same token/cache/scoring path as `tree --online`).
     if args.online {
         gochi::greet(ui.animating());
-        let mut settings = settings::Settings::load().unwrap_or_default();
+        let mut settings = settings::Settings::load_or_warn();
         let github = settings.resolve_github_token()?;
         if github.is_none() {
             eprintln!(
@@ -638,7 +641,7 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
             codeberg: settings.codeberg_token(),
         };
         let resolver =
-            resolve::Resolver::new(tokens, settings.tree.clone())
+            resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network)
             .with_languages(args.languages)
             .with_licenses(true);
         let resolutions = resolver.resolve_all(&inv.deps, &ui);
@@ -737,6 +740,10 @@ fn scan_system_vulns(
     let Some(eco) = inv.deps.first().map(|d| d.ecosystem) else {
         return; // nothing installed to scan
     };
+    // One load for both branches: the proxy and endpoint overrides apply to the
+    // Arch tracker and the OSV route alike.
+    let settings = settings::Settings::load_or_warn();
+    let net = &settings.network;
 
     // Arch isn't in OSV — pacman uses its own source (the Arch Security Tracker),
     // no release needed (Arch is rolling).
@@ -745,7 +752,7 @@ fn scan_system_vulns(
             format!("gochi querying the Arch Security Tracker for {} packages", inv.deps.len()),
             ui.animating(),
         );
-        match archsec::scan(&vuln::agent(), &inv.deps) {
+        match archsec::scan(&vuln::agent(net), &inv.deps, &net.endpoints.arch_security()) {
             Ok(mut v) => {
                 forest.vulnerabilities.append(&mut v);
                 loader.finish(gochi::Mood::from_risk(0, 0, vuln_count(forest)), vuln_summary(forest));
@@ -803,7 +810,6 @@ fn scan_system_vulns(
         return;
     };
 
-    let settings = settings::Settings::load().unwrap_or_default();
     let token = settings.vuln_token();
     if token.is_none() {
         eprintln!(
@@ -815,7 +821,14 @@ fn scan_system_vulns(
         format!("gochi querying vuln.mlab.sh for {} {osv_eco} packages", inv.deps.len()),
         ui.animating(),
     );
-    match osv::scan(&vuln::agent(), &cache::Cache::open(), token.as_deref(), &inv.deps, &osv_eco) {
+    match osv::scan(
+        &vuln::agent(net),
+        &cache::Cache::open(),
+        token.as_deref(),
+        &inv.deps,
+        &osv_eco,
+        &vuln::scan_url(net),
+    ) {
         Ok(mut v) => {
             forest.vulnerabilities.append(&mut v);
             loader.finish(
@@ -985,7 +998,7 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
     let ui = ui::Ui::new(!args.no_progress);
 
     // Online resolution shares one resolver (and its cache/token) across paths.
-    let mut settings = settings::Settings::load().unwrap_or_default();
+    let mut settings = settings::Settings::load_or_warn();
 
     let resolver = if args.online {
         gochi::greet(ui.animating()); // gochi says hi before the token prompt
@@ -1003,14 +1016,14 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
             gitlab: settings.gitlab_token(),
             codeberg: settings.codeberg_token(),
         };
-        Some(resolve::Resolver::new(tokens, settings.tree.clone())
+        Some(resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network)
             .with_languages(args.languages)
             .with_licenses(true))
     } else {
         None
     };
 
-    // mlab vuln-scan context (agent + cache + token), independent of --online.
+    // mlab vuln-scan context (agent + cache + token + endpoint), independent of --online.
     let vuln_ctx = if args.vulns {
         if settings.vuln_token().is_none() {
             eprintln!(
@@ -1018,7 +1031,7 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
                  Set VULN_MLAB_TOKEN or vuln_token in ~/.postmortem/config.yml."
             );
         }
-        Some((vuln::agent(), cache::Cache::open(), settings.vuln_token()))
+        Some((vuln::agent(&settings.network), cache::Cache::open(), settings.vuln_token(), vuln::scan_url(&settings.network)))
     } else {
         None
     };
@@ -1073,13 +1086,13 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
             tree::score(&mut forest);
         }
 
-        if let Some((agent, cache, token)) = &vuln_ctx {
+        if let Some((agent, cache, token, scan_url)) = &vuln_ctx {
             let loader =
                 gochi::Loader::spinner("gochi querying vuln.mlab.sh for advisories", ui.animating());
             for d in &detected {
                 loader.step(format!("gochi checking {} advisories", d.name()));
                 match mlab_target(d) {
-                    Some((lock, fmt)) => match vuln::scan(agent, cache, token.as_deref(), lock, fmt)
+                    Some((lock, fmt)) => match vuln::scan(agent, cache, token.as_deref(), lock, fmt, scan_url)
                     {
                         Ok(mut v) => forest.vulnerabilities.append(&mut v),
                         Err(e) => forest.diagnostics.push(model::Diagnostic {

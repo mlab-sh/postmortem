@@ -26,7 +26,9 @@ use serde::Deserialize;
 use crate::model::{Dependency, Severity};
 use crate::vuln::{Vuln, VulnPackage};
 
-const ALL_URL: &str = "https://security.archlinux.org/issues/all.json";
+/// Path of the Arch Vulnerability Group feed, appended to the configured base
+/// ([`crate::settings::Endpoints::arch_security`]).
+const ALL_PATH: &str = "/issues/all.json";
 
 /// One Arch Vulnerability Group from `all.json`.
 #[derive(Debug, Clone, Deserialize)]
@@ -48,9 +50,15 @@ struct Group {
 
 /// Scan installed pacman packages against the Arch Security Tracker. Returns only
 /// packages whose installed version is actually affected.
-pub fn scan(agent: &ureq::Agent, deps: &[Dependency]) -> Result<Vec<VulnPackage>> {
+pub fn scan(
+    agent: &crate::settings::Agents,
+    deps: &[Dependency],
+    base: &str,
+) -> Result<Vec<VulnPackage>> {
+    let url = format!("{base}{ALL_PATH}");
     let body = agent
-        .get(ALL_URL)
+        .for_url(&url)
+        .get(&url)
         .timeout(Duration::from_secs(30))
         .call()
         .context("fetching Arch Security Tracker")?
