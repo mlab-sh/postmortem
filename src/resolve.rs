@@ -462,13 +462,15 @@ impl Resolver {
             Err(_) => vec![RiskSignal::ResolveFailed],
         };
 
-        // Identity / provenance signals (P2). These are npm-specific: the
-        // typosquat corpus is npm's popular set, and the version anomalies read
-        // the npm packument. Other ecosystems skip them (for now).
+        // Typosquat proximity, against the corpus for this dependency's own
+        // ecosystem. Offline, and a no-op where no corpus exists.
+        if let Some(m) = crate::typosquat::check(&dep.name, dep.ecosystem) {
+            signals.push(RiskSignal::Typosquat { target: m.target, kind: m.kind });
+        }
+
+        // Version/provenance anomalies stay npm-specific: they read the npm
+        // packument, which has no equivalent elsewhere.
         if dep.ecosystem == Ecosystem::Node {
-            if let Some(m) = crate::typosquat::check(&dep.name) {
-                signals.push(RiskSignal::Typosquat { target: m.target, kind: m.kind });
-            }
             if let Ok(Some(meta)) = self.version_meta(dep) {
                 if meta.install_script_added {
                     signals.push(RiskSignal::InstallScriptAdded);
@@ -497,13 +499,6 @@ impl Resolver {
             if let Some(sj) = self.starjack_signal(dep, &res) {
                 signals.push(sj);
             }
-        }
-
-        // Go module paths get path-level typosquat detection (own corpus).
-        if dep.ecosystem == Ecosystem::Go
-            && let Some(m) = crate::typosquat::check_module_path(&dep.name)
-        {
-            signals.push(RiskSignal::Typosquat { target: m.target, kind: m.kind });
         }
 
         res.worst = signals.iter().map(RiskSignal::severity).max();

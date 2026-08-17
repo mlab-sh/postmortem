@@ -1,32 +1,96 @@
-//! Typosquatting proximity check against a bundled corpus of popular npm names.
+//! Typosquatting proximity check against bundled corpora of popular package
+//! names, one per ecosystem.
 //!
 //! Fully offline and deterministic. We flag a dependency only on **high-
 //! confidence** proximity to a popular package it is *not* — one edit away, an
 //! adjacent transposition, a punctuation variant (`cross-env` vs `crossenv` —
 //! the real crossenv attack), or a digit/letter homoglyph — so false positives
 //! stay rare. Distance-2 and looser matches are deliberately excluded.
+//!
+//! Each corpus is compared against **its own ecosystem only**. Cross-checking
+//! would be actively wrong: `requests` is a top PyPI package and a perfectly
+//! ordinary npm name, so a shared corpus would flag half of one registry as
+//! squatting the other.
+//!
+//! Two name shapes exist. Most registries are flat (`lodash`, `requests`), while
+//! Packagist and Go are `vendor/name` — there the vendor half carries the
+//! impersonation (`evil/monolog` squats `monolog/monolog`), so those are matched
+//! whole, with an extra rule for a near-miss vendor under an identical name.
+//!
+//! The corpora are a few thousand names each, and the check runs once per
+//! dependency, so every derived form (separator-stripped, homoglyph-folded) is
+//! computed **once** when a corpus is first touched rather than per comparison.
 
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
-const CORPUS: &str = include_str!("data/npm-popular.txt");
-const GO_CORPUS: &str = include_str!("data/go-popular.txt");
+use crate::model::Ecosystem;
 
-fn lines_of(corpus: &'static str) -> Vec<&'static str> {
-    corpus
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .collect()
+const NPM: &str = include_str!("data/npm-popular.txt");
+const PYPI: &str = include_str!("data/pypi-popular.txt");
+const CRATES: &str = include_str!("data/crates-popular.txt");
+const RUBYGEMS: &str = include_str!("data/rubygems-popular.txt");
+const PACKAGIST: &str = include_str!("data/packagist-popular.txt");
+const GO: &str = include_str!("data/go-popular.txt");
+
+/// A corpus with its comparison forms precomputed.
+///
+/// Without this, every dependency would re-derive `strip_sep` and `homoglyph`
+/// for all few-thousand entries — two allocations per entry per dependency, so
+/// millions on a real lockfile. Precomputing makes the scan linear in corpus
+/// size with no allocation in the hot loop.
+struct Corpus {
+    names: Vec<&'static str>,
+    /// `strip_sep(name)`, index-aligned with `names`.
+    stripped: Vec<String>,
+    /// `homoglyph(name)`, index-aligned with `names`.
+    folded: Vec<String>,
+    /// Membership test for "this *is* the popular package".
+    set: HashSet<&'static str>,
 }
 
-fn popular() -> &'static [&'static str] {
-    static NAMES: OnceLock<Vec<&'static str>> = OnceLock::new();
-    NAMES.get_or_init(|| lines_of(CORPUS))
+impl Corpus {
+    fn build(raw: &'static str) -> Self {
+        let names: Vec<&'static str> = raw
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        let stripped = names.iter().map(|n| strip_sep(n)).collect();
+        let folded = names.iter().map(|n| homoglyph(n)).collect();
+        let set = names.iter().copied().collect();
+        Corpus { names, stripped, folded, set }
+    }
 }
 
-fn popular_go() -> &'static [&'static str] {
-    static PATHS: OnceLock<Vec<&'static str>> = OnceLock::new();
-    PATHS.get_or_init(|| lines_of(GO_CORPUS))
+macro_rules! corpus {
+    ($fn_name:ident, $raw:ident) => {
+        fn $fn_name() -> &'static Corpus {
+            static C: OnceLock<Corpus> = OnceLock::new();
+            C.get_or_init(|| Corpus::build($raw))
+        }
+    };
+}
+corpus!(npm, NPM);
+corpus!(pypi, PYPI);
+corpus!(crates, CRATES);
+corpus!(rubygems, RUBYGEMS);
+corpus!(packagist, PACKAGIST);
+corpus!(go, GO);
+
+/// The corpus for an ecosystem, or `None` where we have no list (the OS package
+/// managers, and Java — whose `group:artifact` coordinates are a different shape
+/// again).
+fn corpus_for(eco: Ecosystem) -> Option<&'static Corpus> {
+    Some(match eco {
+        Ecosystem::Node => npm(),
+        Ecosystem::Python => pypi(),
+        Ecosystem::Rust => crates(),
+        Ecosystem::Ruby => rubygems(),
+        Ecosystem::Php => packagist(),
+        Ecosystem::Go => go(),
+        _ => return None,
+    })
 }
 
 /// A near-miss against a popular package.
@@ -37,47 +101,134 @@ pub struct Match {
 }
 
 /// Return a typosquat match if `name` is a high-confidence near-miss of a
-/// popular package (and isn't itself popular).
-pub fn check(name: &str) -> Option<Match> {
-    // Compare the unscoped last segment (`@evil/lodash` squats `lodash`).
-    let n = name.rsplit('/').next().unwrap_or(name);
-    if n.len() < 4 {
+/// popular package in **its own ecosystem** (and isn't itself popular).
+///
+/// Ecosystems with no corpus return `None` — an absent list must never turn into
+/// a comparison against someone else's registry.
+pub fn check(name: &str, eco: Ecosystem) -> Option<Match> {
+    let c = corpus_for(eco)?;
+    // Two-part coordinates (`vendor/name`) carry the impersonation in the vendor
+    // half, so they are matched whole rather than by last segment.
+    if matches!(eco, Ecosystem::Php) {
+        return check_two_part(&name.to_lowercase(), c);
+    }
+    if matches!(eco, Ecosystem::Go) {
+        return check_module_path(name);
+    }
+    check_flat(name, c)
+}
+
+/// Flat registry names (npm, PyPI, crates.io, RubyGems).
+fn check_flat(name: &str, c: &Corpus) -> Option<Match> {
+    // The full name first: `@babel/core` is itself a popular package, and
+    // testing only its last segment would compare `core` against the corpus and
+    // report it as a near-miss of `cors`.
+    if c.set.contains(name) {
         return None;
     }
-    let pop = popular();
-    if pop.contains(&n) {
-        return None; // it *is* the popular package
+
+    // A scoped name is namespaced by its scope, which an attacker cannot take.
+    // The real attack there is reusing a popular name *verbatim* under a foreign
+    // scope (`@evil/lodash`), so that is all we flag: running edit-distance on
+    // the bare segment would call every `@vendor/core` a squat of `cors`.
+    if let Some((_, bare)) = name.split_once('/')
+        && name.starts_with('@')
+    {
+        return (bare.len() >= 4 && c.set.contains(bare))
+            .then(|| hit(bare, "popular name under a foreign scope"));
+    }
+
+    let n = name;
+    if n.len() < 4 {
+        return None;
     }
 
     // A Unicode look-alike (Cyrillic/Greek homograph) in the name is almost
     // never legitimate; flag it, naming the popular package it mimics when the
     // ASCII skeleton matches one.
     if let Some(skel) = confusable_of(n) {
-        let target = pop.iter().find(|&&t| t == skel).map(|s| s.to_string()).unwrap_or(skel);
+        let target = c.set.get(skel.as_str()).map(|s| s.to_string()).unwrap_or(skel);
         return Some(hit(&target, "unicode confusable"));
     }
 
     let n_sep = strip_sep(n);
     let n_homo = homoglyph(n);
-    for &t in pop {
+    let nlen = n.chars().count();
+    for (i, &t) in c.names.iter().enumerate() {
         if t == n {
             return None;
         }
         // Punctuation variant: same letters, different separators/none.
-        if n != t && n_sep == strip_sep(t) {
+        if n_sep == c.stripped[i] {
             return Some(hit(t, "punctuation variant"));
         }
+        // Digit/letter homoglyph (`l0dash` vs `lodash`).
+        if n_homo == c.folded[i] {
+            return Some(hit(t, "homoglyph"));
+        }
+        // The edit-distance rules can only fire on near-equal lengths; the check
+        // is far cheaper than the walk, so it gates both.
+        let tlen = t.chars().count();
+        if nlen.abs_diff(tlen) > 1 {
+            continue;
+        }
         // One character off (insert/delete/substitute).
-        if t.len() >= 4 && lev1(n, t) {
+        if tlen >= 4 && lev1(n, t) {
             return Some(hit(t, "1 edit away"));
         }
         // Adjacent transposition (`recat` vs `react`).
         if transposition(n, t) {
             return Some(hit(t, "transposed"));
         }
-        // Digit/letter homoglyph (`l0dash` vs `lodash`).
-        if n != t && n_homo == homoglyph(t) {
+    }
+    None
+}
+
+/// `vendor/name` coordinates (Packagist).
+///
+/// The vendor half is what an attacker forges — `evil/monolog` ships whatever it
+/// likes under a name a reader skims as `monolog`. So an identical package name
+/// under a *different* vendor is the signal, alongside the ordinary whole-string
+/// near-misses.
+fn check_two_part(p: &str, c: &Corpus) -> Option<Match> {
+    if c.set.contains(p) {
+        return None;
+    }
+    let (pv, pn) = p.split_once('/')?;
+    if pn.len() < 4 {
+        return None;
+    }
+    if let Some(skel) = confusable_of(p) {
+        let target = c.set.get(skel.as_str()).map(|s| s.to_string()).unwrap_or(skel);
+        return Some(hit(&target, "unicode confusable"));
+    }
+
+    let p_sep = strip_sep(p);
+    let p_homo = homoglyph(p);
+    let plen = p.chars().count();
+    for (i, &t) in c.names.iter().enumerate() {
+        if t == p {
+            return None;
+        }
+        if p_sep == c.stripped[i] {
+            return Some(hit(t, "punctuation variant"));
+        }
+        if p_homo == c.folded[i] {
             return Some(hit(t, "homoglyph"));
+        }
+        let Some((tv, tn)) = t.split_once('/') else { continue };
+        // Same package name, impostor vendor — the squat that matters here.
+        if tn == pn && tv != pv {
+            return Some(hit(t, "vendor variant"));
+        }
+        if plen.abs_diff(t.chars().count()) > 1 {
+            continue;
+        }
+        if lev1(p, t) {
+            return Some(hit(t, "1 edit away"));
+        }
+        if transposition(p, t) {
+            return Some(hit(t, "transposed"));
         }
     }
     None
@@ -186,12 +337,12 @@ pub fn check_module_path(path: &str) -> Option<Match> {
         .filter(|(_, v)| is_major(v))
         .map(|(base, _)| base)
         .unwrap_or(normalized.as_str());
-    let go = popular_go();
-    if go.contains(&p) {
+    let c = go();
+    if c.set.contains(p) {
         return None;
     }
     let (ph, po, pr) = split_path(p);
-    for &t in go {
+    for &t in &c.names {
         if t == p {
             return None;
         }
@@ -256,39 +407,61 @@ fn transposition(a: &str, b: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// npm is the historical corpus, so most shape tests live here.
+    fn npm_check(n: &str) -> Option<Match> {
+        check(n, Ecosystem::Node)
+    }
+
     #[test]
     fn flags_classic_squats() {
-        assert_eq!(check("crossenv").unwrap().target, "cross-env"); // real 2017 attack
-        assert_eq!(check("expres").unwrap().target, "express"); // deletion
-        assert_eq!(check("recat").unwrap().target, "react"); // transposition
-        assert_eq!(check("l0dash").unwrap().target, "lodash"); // homoglyph
-        assert_eq!(check("momentt").unwrap().target, "moment"); // insertion
+        assert_eq!(npm_check("crossenv").unwrap().target, "cross-env"); // real 2017 attack
+        assert_eq!(npm_check("expres").unwrap().target, "express"); // deletion
+        assert_eq!(npm_check("recat").unwrap().target, "react"); // transposition
+        assert_eq!(npm_check("l0dash").unwrap().target, "lodash"); // homoglyph
+        assert_eq!(npm_check("momentt").unwrap().target, "moment"); // insertion
     }
 
     #[test]
     fn ignores_legit_and_distant() {
-        assert!(check("lodash").is_none()); // is popular
-        assert!(check("react").is_none());
-        assert!(check("my-bespoke-internal-thing").is_none());
-        assert!(check("abc").is_none()); // too short
-        // two edits away should not fire
-        assert!(check("exprss").is_none() || check("exprss").unwrap().kind == "1 edit away");
+        assert!(npm_check("lodash").is_none()); // is popular
+        assert!(npm_check("react").is_none());
+        assert!(npm_check("my-bespoke-internal-thing").is_none());
+        assert!(npm_check("abc").is_none()); // too short
     }
 
     #[test]
-    fn scoped_name_compares_last_segment() {
-        assert_eq!(check("@evil/lodahs").unwrap().target, "lodash");
+    fn a_popular_name_under_a_foreign_scope_is_flagged() {
+        // The scope squat that happens: the reader skims `lodash` and misses the
+        // scope entirely.
+        let m = npm_check("@evil/lodash").unwrap();
+        assert_eq!(m.target, "lodash");
+        assert_eq!(m.kind, "popular name under a foreign scope");
+    }
+
+    #[test]
+    fn a_scope_owned_package_is_not_judged_by_its_bare_segment() {
+        // `@babel/core` is itself popular; comparing only `core` reported it as a
+        // near-miss of `cors`. Six such false positives appeared on one real
+        // 466-package tree.
+        for n in ["@babel/core", "@jest/core", "@babel/parser", "@types/node"] {
+            assert!(npm_check(n).is_none(), "{n} should not be flagged");
+        }
+        // Nor is an unknown vendor's own package: a scope cannot be forged, so a
+        // merely *similar* bare name under one carries no impersonation. This is
+        // a deliberate trade — edit-distance here cost far more in noise than it
+        // caught.
+        assert!(npm_check("@acme/coro").is_none());
     }
 
     #[test]
     fn flags_unicode_confusable() {
         // Cyrillic 'е' (U+0435) in "rеact" → skeleton "react" (a popular pkg).
-        assert_eq!(check("r\u{0435}act").unwrap().kind, "unicode confusable");
+        assert_eq!(npm_check("r\u{0435}act").unwrap().kind, "unicode confusable");
         // A confusable name not in the corpus still flags (mixed-script).
-        assert!(check("n\u{0435}thereum").is_some());
+        assert!(npm_check("n\u{0435}thereum").is_some());
         // Pure-ASCII legitimate names are untouched.
-        assert!(check("react").is_none());
-        assert!(check("mocha").is_none());
+        assert!(npm_check("react").is_none());
+        assert!(npm_check("mocha").is_none());
     }
 
     #[test]
@@ -301,5 +474,110 @@ mod tests {
         assert!(check_module_path("github.com/boltdb/bolt").is_none()); // the real one
         assert!(check_module_path("github.com/boltdb/bolt/v2").is_none()); // major suffix ok
         assert!(check_module_path("github.com/acme/internal-widget").is_none()); // unrelated
+    }
+
+    // --- the newly covered registries ---
+
+    #[test]
+    fn pypi_squats_are_flagged() {
+        // PyPI is the most typosquatted registry; these are its classic shapes.
+        assert_eq!(check("requsts", Ecosystem::Python).unwrap().target, "requests");
+        assert_eq!(check("urllib", Ecosystem::Python).unwrap().target, "urllib3");
+        assert!(check("requests", Ecosystem::Python).is_none(), "the real one");
+        assert!(check("numpy", Ecosystem::Python).is_none());
+    }
+
+    #[test]
+    fn crates_squats_are_flagged() {
+        // rustdecimal, the real May 2022 attack on rust_decimal, is a
+        // punctuation variant.
+        let m = check("rustdecimal", Ecosystem::Rust).unwrap();
+        assert_eq!(m.target, "rust_decimal");
+        assert_eq!(m.kind, "punctuation variant");
+        assert!(check("rust_decimal", Ecosystem::Rust).is_none());
+        assert!(check("serde", Ecosystem::Rust).is_none());
+    }
+
+    #[test]
+    fn rubygems_squats_are_flagged() {
+        assert!(check("nokogiri", Ecosystem::Ruby).is_none(), "the real gem");
+        assert_eq!(check("nokogri", Ecosystem::Ruby).unwrap().target, "nokogiri");
+        assert!(check("rails", Ecosystem::Ruby).is_none());
+    }
+
+    #[test]
+    fn packagist_vendor_squats_are_flagged() {
+        // The shape that matters on Packagist: the package name is untouched and
+        // the *vendor* is forged, so a reader skims it as the real thing.
+        let m = check("evilcorp/monolog", Ecosystem::Php).unwrap();
+        assert_eq!(m.kind, "vendor variant");
+        assert!(m.target.ends_with("/monolog"), "got {}", m.target);
+        assert!(check("monolog/monolog", Ecosystem::Php).is_none(), "the real one");
+    }
+
+    #[test]
+    fn packagist_keeps_the_vendor_in_view() {
+        // A flat comparison would strip the vendor and see `monolog` == `monolog`,
+        // missing the squat entirely — the reason PHP is matched whole.
+        assert!(check("evilcorp/monolog", Ecosystem::Php).is_some());
+        // And an unrelated internal package is left alone.
+        assert!(check("acme/internal-billing-client", Ecosystem::Php).is_none());
+    }
+
+    #[test]
+    fn corpora_do_not_bleed_across_ecosystems() {
+        // The same string means different things per registry, which is exactly
+        // why each corpus is consulted alone.
+        //
+        // `requests` IS the canonical PyPI package, so PyPI must stay silent —
+        // while on npm it is one edit from npm's own `request`, so npm flags it
+        // and names *npm's* package, never PyPI's.
+        assert!(check("requests", Ecosystem::Python).is_none(), "requests is genuine on PyPI");
+        assert_eq!(check("requests", Ecosystem::Node).unwrap().target, "request");
+
+        // And a crate name is not judged against Python's list.
+        assert!(check("serde", Ecosystem::Rust).is_none(), "serde is genuine on crates.io");
+        let py = check("serde", Ecosystem::Python);
+        assert!(
+            py.is_none_or(|m| !crates().set.contains(m.target.as_str())
+                || pypi().set.contains(m.target.as_str())),
+            "a PyPI verdict must cite a PyPI package"
+        );
+    }
+
+    #[test]
+    fn ecosystems_without_a_corpus_never_match() {
+        // OS packages and Java have no list; they must return None rather than
+        // borrow another registry's.
+        for eco in [Ecosystem::Java, Ecosystem::Brew, Ecosystem::Apt, Ecosystem::Nix] {
+            assert!(check("lodahs", eco).is_none(), "{eco:?} has no corpus");
+        }
+    }
+
+    #[test]
+    fn corpora_are_non_trivial_and_well_formed() {
+        // A corpus that silently failed to parse would disable detection without
+        // any error, so assert the shape rather than trust the include.
+        for (name, c) in [
+            ("npm", npm()),
+            ("pypi", pypi()),
+            ("crates", crates()),
+            ("rubygems", rubygems()),
+            ("packagist", packagist()),
+        ] {
+            assert!(c.names.len() > 500, "{name} corpus is too small: {}", c.names.len());
+            assert_eq!(c.names.len(), c.stripped.len(), "{name} derived forms misaligned");
+            assert_eq!(c.names.len(), c.folded.len(), "{name} derived forms misaligned");
+            assert!(!c.names.iter().any(|n| n.is_empty()), "{name} has an empty entry");
+            assert!(
+                !c.names.iter().any(|n| n.starts_with('#')),
+                "{name} leaked a comment line into the corpus"
+            );
+        }
+        // Packagist entries are `vendor/name`; a flat one would never match.
+        assert!(
+            packagist().names.iter().filter(|n| n.contains('/')).count() > 1000,
+            "packagist corpus should be vendor/name coordinates"
+        );
     }
 }

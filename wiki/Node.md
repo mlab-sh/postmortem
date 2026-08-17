@@ -40,12 +40,11 @@ scope. See [Dependency scopes](Dependency-Scopes).
 
 ### npm-only provenance signals
 
-These come from the npm **packument** (version history) and a corpus of popular
-names, so they are **Node-only**:
+These come from the npm **packument** (version history), so they are
+**Node-only** (the `typosquat` signal is not — see [Typosquatting](Typosquatting)):
 
 | Signal | Meaning |
 | --- | --- |
-| `typosquat of <pkg>` | Name is a near-miss of a popular package. |
 | `install-script-added` | A lifecycle script (`preinstall`/`install`/`postinstall`) appears in this version but not the previous one. |
 | `dormant-release (Nd gap)` | Published after a long dormancy (the event-stream pattern). |
 | `new-publisher` | A different npm publisher than every earlier version. |

@@ -33,10 +33,9 @@ Everything is cached under `~/.postmortem/cache/` - see [Cache](Cache).
 
 - **Reputation** signals come from the source repo's stats vs. your
   [thresholds](Configuration) (`min_stars`, `recent_days`, `stale_days`).
-- **Identity** signals: `typosquat` (edit-distance + **Unicode-confusable /
-  mixed-script** look-alikes, and **Go module-path** squats like
-  `boltdb-go/bolt`) and `starjacking` (the linked repo doesn't declare the
-  package — its stars are borrowed).
+- **Identity** signals: `typosquat` (see [Typosquatting](Typosquatting) — it
+  covers six ecosystems, offline) and `starjacking` (the linked repo doesn't
+  declare the package — its stars are borrowed).
 - **Provenance** signals read the npm packument: `install-script-added`,
   `dormant-release`, `new-publisher`, `newborn-package` (first-ever release
   &lt;30d), `fresh-release` (this version &lt;48h — the release-age cooldown),

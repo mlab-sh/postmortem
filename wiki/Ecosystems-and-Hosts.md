@@ -28,6 +28,15 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 > **diagnostic** when the graph is incomplete, so a small result is never
 > silently read as "clean".
 
+### Typosquat corpora
+
+The offline near-miss check covers six ecosystems, each against its **own**
+corpus of popular names — see [Typosquatting](Typosquatting):
+
+| Ecosystem | npm | PyPI | crates.io | RubyGems | Packagist | Go | Java | OS |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Entries | 5 000 | 2 000 | 1 200 | 1 200 | 1 200 | curated | — | — |
+
 ### Dev / production split
 
 How well each ecosystem supports [`--omit dev`](Dependency-Scopes) depends on

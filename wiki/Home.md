@@ -36,6 +36,8 @@ locally.
   into a `risk:dep` score, plus `--languages`.
 - **[Licenses](Licenses)** - where license data comes from per ecosystem, SPDX
   normalization, and the policy gate.
+- **[Typosquatting](Typosquatting)** - the offline corpora, per ecosystem, and
+  the rules that keep the check quiet.
 - **[Dependency scopes](Dependency-Scopes)** - what `--omit dev` removes, and why
   a package your app also uses is never dropped.
 - **[System package managers](System)** - the Homebrew, [pacman](Pacman), [apt](Apt), [dnf](Dnf), [Nix](Nix), and [apk](Apk) backends in depth.

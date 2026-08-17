@@ -32,7 +32,9 @@ graph, and flags what real compromises look like.
   advisory lookups — and even then only sends the package coordinates being
   queried.
 * **Finds attacks, not just CVEs.** Malicious install scripts, obfuscated
-  payloads, embedded IOCs (IPs, domains, wallets), typosquats, and provenance
+  payloads, embedded IOCs (IPs, domains, wallets), typosquats across six
+  ecosystems (npm, PyPI, crates.io, RubyGems, Packagist, Go — offline, each
+  against its own corpus), and provenance
   anomalies (new publisher, dormant release, an install script that appeared out
   of nowhere).
 * **Reputation intelligence.** Score every dependency on its real source repo

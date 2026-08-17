@@ -31,6 +31,7 @@
 - [apk](Apk)
 
 **Concepts**
+- [Typosquatting](Typosquatting)
 - [Dependency scopes](Dependency-Scopes)
 - [Source-code scanning](Source-Code-Scanning)
 - [GitHub Actions](GitHub-Actions)
