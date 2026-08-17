@@ -111,7 +111,7 @@ fn affects(installed: &str, group: &Group) -> bool {
         None => true,
         // Patched: affected only if we're strictly older than the fix. If we
         // can't run vercmp (missing/unknown), fail safe and treat as affected.
-        Some(fixed) => vercmp(installed, fixed).map_or(true, |o| o == Ordering::Less),
+        Some(fixed) => vercmp(installed, fixed).is_none_or(|o| o == Ordering::Less),
     }
 }
 

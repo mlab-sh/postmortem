@@ -320,6 +320,8 @@ fn apt_graph(text: &str, manual: &std::collections::HashSet<String>) -> Vec<Depe
         .map(|p| Dependency {
             direct: manual.contains(&p.name),
             scope: Scope::Prod,
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
             resolved_url: (!p.homepage.is_empty()).then(|| p.homepage.clone()),
             parents: parents.remove(&p.name).unwrap_or_default(),
             name: p.name,

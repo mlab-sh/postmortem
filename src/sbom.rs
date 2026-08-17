@@ -6,7 +6,7 @@
 
 use serde_json::{Value, json};
 
-use crate::model::{Dependency, Ecosystem};
+use crate::model::{Dependency, Ecosystem, License};
 
 /// The [package-URL](https://github.com/package-url/purl-spec) type for an
 /// ecosystem, e.g. `pkg:npm/...`, `pkg:cargo/...`, `pkg:deb/...`.
@@ -39,6 +39,37 @@ pub fn purl(dep: &Dependency) -> String {
     }
 }
 
+/// A component's `licenses` array, or `None` when nothing is known.
+///
+/// CycloneDX 1.5 gives the array three mutually exclusive entry shapes, and
+/// mixing them up is what gets a document rejected:
+///
+/// * `{"license": {"id": "MIT"}}` — `id` **must** be a valid SPDX identifier.
+///   Dependency-Track and friends validate it against the SPDX list and reject
+///   the whole BOM on a miss.
+/// * `{"license": {"name": "..."}}` — free text, for anything not on that list.
+/// * `{"expression": "MIT OR Apache-2.0"}` — a compound expression. Note it is a
+///   *sibling* of `license`, not a field inside it; nesting it is the single
+///   most common way to produce an invalid CycloneDX document.
+///
+/// Emitting an unverified string as `id` would be the worst outcome: a document
+/// that looks richer and validates worse. [`crate::license`] guarantees `Id`
+/// only for identifiers it recognised, so this function can trust the variant.
+fn licenses_field(licenses: &[License]) -> Option<Value> {
+    if licenses.is_empty() {
+        return None;
+    }
+    let entries: Vec<Value> = licenses
+        .iter()
+        .map(|l| match l {
+            License::Id { value } => json!({ "license": { "id": value } }),
+            License::Name { value } => json!({ "license": { "name": value } }),
+            License::Expression { value } => json!({ "expression": value }),
+        })
+        .collect();
+    Some(Value::Array(entries))
+}
+
 /// Build a CycloneDX 1.5 document for `deps`, rooted at an application component
 /// named `root`. `timestamp` is an RFC-3339 string (passed in so this stays a
 /// pure, testable function).
@@ -54,13 +85,17 @@ pub fn cyclonedx(root: &str, deps: &[Dependency], timestamp: &str) -> Value {
         if !seen.insert(r.clone()) {
             continue;
         }
-        components.push(json!({
+        let mut component = json!({
             "type": "library",
             "bom-ref": r,
             "name": d.name,
             "version": d.version,
             "purl": r,
-        }));
+        });
+        if let Some(licenses) = licenses_field(&d.licenses) {
+            component["licenses"] = licenses;
+        }
+        components.push(component);
     }
 
     // dependency edges: rebuild parent → child adjacency from the `parents` field.
@@ -127,6 +162,8 @@ mod tests {
             version: ver.into(),
             ecosystem: Ecosystem::Node,
             scope: crate::model::Scope::Prod,
+            licenses: Vec::new(),
+            license_source: crate::model::LicenseSource::Unknown,
             direct,
             resolved_url: None,
             integrity: None,
@@ -168,5 +205,44 @@ mod tests {
             .find(|d| d["ref"] == "pkg:npm/app@1.0.0")
             .unwrap();
         assert_eq!(app_edge["dependsOn"][0], "pkg:npm/lib@2.0.0");
+    }
+
+    #[test]
+    fn licenses_use_the_right_cyclonedx_shape_per_variant() {
+        // Getting these three shapes wrong is what gets a BOM rejected.
+        let id = licenses_field(&[License::Id { value: "MIT".into() }]).unwrap();
+        assert_eq!(id[0]["license"]["id"], "MIT");
+        assert!(id[0]["license"].get("name").is_none());
+
+        let name = licenses_field(&[License::Name { value: "see LICENSE".into() }]).unwrap();
+        assert_eq!(name[0]["license"]["name"], "see LICENSE");
+        assert!(
+            name[0]["license"].get("id").is_none(),
+            "an unverified value must never be emitted as an SPDX id"
+        );
+
+        let expr =
+            licenses_field(&[License::Expression { value: "MIT OR Apache-2.0".into() }]).unwrap();
+        assert_eq!(expr[0]["expression"], "MIT OR Apache-2.0");
+        assert!(
+            expr[0].get("license").is_none(),
+            "`expression` is a sibling of `license`, never nested inside it"
+        );
+    }
+
+    #[test]
+    fn a_component_without_a_license_omits_the_field_entirely() {
+        // An empty `licenses: []` would assert "we checked, there are none".
+        assert!(licenses_field(&[]).is_none());
+        let bom = cyclonedx("p", &[dep("a", "1.0.0", true, &[])], "2026-01-01T00:00:00Z");
+        assert!(bom["components"][0].get("licenses").is_none());
+    }
+
+    #[test]
+    fn components_carry_their_licenses() {
+        let mut d = dep("a", "1.0.0", true, &[]);
+        d.licenses = vec![License::Id { value: "Apache-2.0".into() }];
+        let bom = cyclonedx("p", &[d], "2026-01-01T00:00:00Z");
+        assert_eq!(bom["components"][0]["licenses"][0]["license"]["id"], "Apache-2.0");
     }
 }

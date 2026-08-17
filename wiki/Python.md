@@ -16,6 +16,13 @@ match.
 
 Poetry lockfiles give a full graph; a bare `requirements.txt` is flatter.
 
+## Licenses
+
+Needs `--online`. PyPI's `license` field is hand-written prose, so postmortem
+prefers the PEP 639 `license_expression`, then the free text, then the trove
+classifiers — whichever first maps to a real SPDX identifier.
+See [Licenses](Licenses).
+
 ## Dependency scopes
 
 Varies by format. `Pipfile.lock` is authoritative (`default` vs `develop`).

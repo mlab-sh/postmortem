@@ -113,6 +113,58 @@ impl Scope {
     }
 }
 
+fn is_unknown_source(s: &LicenseSource) -> bool {
+    *s == LicenseSource::Unknown
+}
+
+/// One license claim about a package.
+///
+/// The three shapes are the ones CycloneDX distinguishes, and conflating them is
+/// what gets a document rejected by SBOM consumers:
+///
+/// * `Id` — a valid SPDX short identifier (`MIT`). Emitted as `license.id`.
+/// * `Expression` — a compound SPDX expression (`MIT OR Apache-2.0`). Emitted as
+///   `expression`, which is a *sibling* of `license`, never a field inside it.
+/// * `Name` — free text we could not map to SPDX (`"see LICENSE file"`).
+///   Emitted as `license.name`. Never as an id: an invalid `id` fails schema
+///   validation, so guessing here is worse than admitting ignorance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum License {
+    Id { value: String },
+    Expression { value: String },
+    Name { value: String },
+}
+
+impl License {
+    /// The text to show a human, whichever shape it is.
+    pub fn label(&self) -> &str {
+        match self {
+            License::Id { value } | License::Expression { value } | License::Name { value } => value,
+        }
+    }
+
+    /// Did we manage to tie this to SPDX at all? Drives the "unknown license"
+    /// count, which is the actionable number: an unidentifiable license is a
+    /// legal unknown, not a permissive default.
+    pub fn is_spdx(&self) -> bool {
+        matches!(self, License::Id { .. } | License::Expression { .. })
+    }
+}
+
+/// Where a license claim came from — a fact read from a lockfile is worth more
+/// than one fetched from a registry describing a possibly different version.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LicenseSource {
+    /// Declared in the project's own lockfile (npm, composer).
+    Lockfile,
+    /// Fetched from the package registry (`--online`).
+    Registry,
+    #[default]
+    Unknown,
+}
+
 /// (name, version) — disambiguates same-name-different-version in transitive graphs.
 pub type DepRef = (String, String);
 
@@ -128,6 +180,14 @@ pub struct Dependency {
     /// an older postmortem still deserializes.
     #[serde(default)]
     pub scope: Scope,
+    /// Declared license(s). Populated offline where the lockfile records them
+    /// (npm, composer) and by `--online` elsewhere. Empty means *unknown*, which
+    /// is a finding in its own right — never assume permissive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub licenses: Vec<License>,
+    /// Where [`Self::licenses`] came from.
+    #[serde(default, skip_serializing_if = "is_unknown_source")]
+    pub license_source: LicenseSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

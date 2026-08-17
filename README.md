@@ -43,6 +43,11 @@ graph, and flags what real compromises look like.
   dependency's real source and runs the full detection suite over it.
 * **CI-ready.** JSON and SARIF (GitHub Code Scanning) output, plus a configurable
   gate that fails the build on risk.
+* **Licenses, honestly.** A CycloneDX SBOM with a real `licenses` array, plus a
+  `licenses` command and a deny/allow policy that fails the build. Read offline
+  for Node and PHP; elsewhere from the same registry call reputation already
+  makes. An identifier we can't verify is reported as free text, never emitted as
+  an SPDX id a consumer would reject the whole document over.
 * **Ships-only view.** `--omit dev` drops your test and build tooling from every
   count, score and CVE tally. Scope is computed by reachability, not by what a
   manifest happens to list — so a package your application also uses is never
@@ -59,6 +64,7 @@ postmortem tree . --online              # score dependencies by repo reputation
 postmortem tree . --online --vulns      # add known CVE / GHSA / OSV advisories
 postmortem tree . --omit dev            # only what actually ships
 postmortem audit . --online --vulns     # one graded verdict: malware + risk + CVEs
+postmortem licenses . --online          # license inventory + policy gate
 postmortem why left-pad .               # why is this package installed?
 postmortem diff ./main ./pr-branch      # what dependencies did this change add?
 postmortem sbom . -o sbom.json          # export a CycloneDX 1.5 SBOM
@@ -93,6 +99,7 @@ cd postmortem && cargo build --release
 | [`scan`](https://github.com/mlab-sh/postmortem/wiki/Scan) | Static analysis of dependency code for malicious patterns, fully local. |
 | [`tree`](https://github.com/mlab-sh/postmortem/wiki/Tree) | Dependency graph, plus online reputation, provenance, and known-vulnerability intelligence. |
 | [`audit`](https://github.com/mlab-sh/postmortem/wiki/Audit) | One-shot graded health check: malware scan + inventory, plus optional reputation and vulns. |
+| [`licenses`](https://github.com/mlab-sh/postmortem/wiki/Licenses) | License inventory across the graph, with a deny / allow / fail-on-unknown policy. |
 | [`why`](https://github.com/mlab-sh/postmortem/wiki/Why) | Explain why a package is installed: its dependency paths up to the roots. |
 | [`diff`](https://github.com/mlab-sh/postmortem/wiki/Diff) | Compare two project states: added / removed / version-changed dependencies. |
 | [`sbom`](https://github.com/mlab-sh/postmortem/wiki/Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |
@@ -110,6 +117,7 @@ The full manual lives in the
 * [Commands](https://github.com/mlab-sh/postmortem/wiki/Home): scan, tree, system, cache
 * [Ecosystems and hosts](https://github.com/mlab-sh/postmortem/wiki/Ecosystems-and-Hosts)
 * [Online resolution and scoring](https://github.com/mlab-sh/postmortem/wiki/Online-Resolution)
+* [Licenses](https://github.com/mlab-sh/postmortem/wiki/Licenses) and [dependency scopes](https://github.com/mlab-sh/postmortem/wiki/Dependency-Scopes)
 * [Source-code scanning](https://github.com/mlab-sh/postmortem/wiki/Source-Code-Scanning)
 * [CI gate](https://github.com/mlab-sh/postmortem/wiki/CI-Gate) and [Configuration](https://github.com/mlab-sh/postmortem/wiki/Configuration)
 

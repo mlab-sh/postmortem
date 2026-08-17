@@ -1123,6 +1123,25 @@ fn seed_entry(home: &std::path::Path, ns: &str, name: &str, body: &str) {
     std::fs::write(d.join(format!("{name}.json")), body).unwrap();
 }
 
+/// The record format version the binary is currently writing, read back from
+/// `cache info`. Seeding entries with a hardcoded number would make every one of
+/// these tests fail the next time the format is bumped — which is exactly when
+/// they most need to keep working.
+fn current_format_version(home: &std::path::Path) -> u32 {
+    let (_, out) = cache_cmd(home, &["info"]);
+    out.split("record format v")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("could not read the format version from: {out}"))
+}
+
+/// A current-format entry wrapping `payload`.
+fn current_entry(home: &std::path::Path, payload: &str) -> String {
+    format!(r#"{{"v":{},"fetched_at":1786000000,"data":{payload}}}"#, current_format_version(home))
+}
+
+
 /// Run `postmortem cache <args>` against a private `$HOME`.
 fn cache_cmd(home: &std::path::Path, args: &[&str]) -> (i32, String) {
     let out = Command::new(bin())
@@ -1185,9 +1204,11 @@ fn cache_info_on_an_empty_cache_says_so() {
 #[test]
 fn cache_info_counts_entries_per_namespace() {
     let home = tmp_home("info");
-    seed_entry(&home, "registry", "a", r#"{"v":1,"fetched_at":1786000000,"data":{"repo":null}}"#);
-    seed_entry(&home, "registry", "b", r#"{"v":1,"fetched_at":1786000000,"data":{"repo":null}}"#);
-    seed_entry(&home, "repo", "c", r#"{"v":1,"fetched_at":1786000000,"data":{"stars":1}}"#);
+    let a = current_entry(&home, r#"{"repo":null}"#);
+    seed_entry(&home, "registry", "a", &a);
+    seed_entry(&home, "registry", "b", &a);
+    let c = current_entry(&home, r#"{"stars":1}"#);
+    seed_entry(&home, "repo", "c", &c);
 
     let (exit, out) = cache_cmd(&home, &["info"]);
     assert_eq!(exit, 0);
@@ -1201,7 +1222,8 @@ fn cache_info_counts_entries_per_namespace() {
 #[test]
 fn cache_info_flags_entries_from_an_older_record_format() {
     let home = tmp_home("stale-info");
-    seed_entry(&home, "registry", "current", r#"{"v":1,"fetched_at":1786000000,"data":{"repo":null}}"#);
+    let cur = current_entry(&home, r#"{"repo":null}"#);
+    seed_entry(&home, "registry", "current", &cur);
     // A record predating the envelope: a bare payload.
     seed_entry(&home, "registry", "legacy", r#"{"repo":null}"#);
     // A payload carrying its OWN `v` field must still be seen as legacy — the
@@ -1219,7 +1241,8 @@ fn cache_info_flags_entries_from_an_older_record_format() {
 #[test]
 fn cache_prune_stale_spares_current_entries() {
     let home = tmp_home("prune-stale");
-    seed_entry(&home, "registry", "current", r#"{"v":1,"fetched_at":1786000000,"data":{"repo":null}}"#);
+    let cur = current_entry(&home, r#"{"repo":null}"#);
+    seed_entry(&home, "registry", "current", &cur);
     seed_entry(&home, "registry", "legacy", r#"{"repo":null}"#);
 
     let (exit, out) = cache_cmd(&home, &["prune", "--stale"]);
@@ -1234,7 +1257,8 @@ fn cache_prune_stale_spares_current_entries() {
 #[test]
 fn cache_prune_dry_run_deletes_nothing() {
     let home = tmp_home("prune-dry");
-    seed_entry(&home, "registry", "a", r#"{"v":1,"fetched_at":1786000000,"data":{"repo":null}}"#);
+    let a = current_entry(&home, r#"{"repo":null}"#);
+    seed_entry(&home, "registry", "a", &a);
 
     let (exit, out) = cache_cmd(&home, &["prune", "--dry-run"]);
     assert_eq!(exit, 0);
@@ -1253,4 +1277,160 @@ fn a_stale_entry_is_not_served_as_data() {
     let (_, before) = cache_cmd(&home, &["info"]);
     assert!(before.contains("1 entries predate") || before.contains("1 entry predate"), "got: {before}");
     let _ = std::fs::remove_dir_all(&home);
+}
+
+// --- `licenses` ----------------------------------------------------------------
+//
+// The `licensed-node` fixture covers the cases that make license handling
+// non-trivial: a permissive id, a dual license (which must escape a denylist via
+// its other option), a copyleft id, free text that must NOT become an SPDX id,
+// and a package declaring nothing at all.
+
+fn licenses_cmd(args: &[&str]) -> (i32, String) {
+    let out = Command::new(bin())
+        .arg("licenses")
+        .arg(fixture("licensed-node"))
+        .args(args)
+        .arg("--no-progress")
+        .output()
+        .expect("postmortem binary did not run");
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.code().unwrap_or(-1), strip_ansi(&s))
+}
+
+fn licenses_json(args: &[&str]) -> Value {
+    let out = Command::new(bin())
+        .arg("licenses")
+        .arg(fixture("licensed-node"))
+        .args(args)
+        .args(["--json", "-o", "-", "--no-progress"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("postmortem binary did not run");
+    serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{}", String::from_utf8_lossy(&out.stderr)))
+}
+
+#[test]
+fn licenses_are_read_from_the_lockfile_without_network() {
+    let (exit, out) = licenses_cmd(&[]);
+    assert_eq!(exit, 0, "no policy means no failure");
+    assert!(out.contains("MIT"), "got: {out}");
+    assert!(out.contains("AGPL-3.0"), "got: {out}");
+    assert!(out.contains("(unknown)"), "the undeclared package must be surfaced");
+}
+
+#[test]
+fn free_text_is_reported_as_non_spdx_not_as_an_id() {
+    let v = licenses_json(&[]);
+    let bespoke = v["licenses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["license"] == "see the LICENSE file")
+        .expect("the free-text license should appear verbatim");
+    assert_eq!(bespoke["spdx"], false, "it must not be claimed as SPDX");
+}
+
+#[test]
+fn an_undeclared_license_is_unresolved_not_permissive() {
+    let v = licenses_json(&[]);
+    assert_eq!(v["unresolved"], 1);
+    let unknown = v["licenses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["license"] == "(unknown)")
+        .unwrap();
+    assert_eq!(unknown["packages"][0], "silent@1.0.0");
+}
+
+#[test]
+fn deny_fails_the_run_and_names_the_package() {
+    let (exit, out) = licenses_cmd(&["--deny", "AGPL-3.0"]);
+    assert_eq!(exit, 1, "a denied license must fail the run");
+    assert!(out.contains("copyleft@1.0.0"), "got: {out}");
+    assert!(out.contains("denied"), "got: {out}");
+}
+
+#[test]
+fn a_dual_licensed_package_escapes_the_denylist() {
+    // `dual` offers `MIT OR AGPL-3.0`: denying AGPL leaves MIT available, so it
+    // must not be flagged. Only `copyleft`, which offers no alternative, fails.
+    let v = licenses_json(&["--deny", "AGPL-3.0"]);
+    let flagged: Vec<&str> =
+        v["violations"].as_array().unwrap().iter().map(|x| x["package"].as_str().unwrap()).collect();
+    assert_eq!(flagged, vec!["copyleft"], "dual-licensed packages keep their other option");
+}
+
+#[test]
+fn an_allowlist_rejects_everything_absent_from_it() {
+    let v = licenses_json(&["--allow", "MIT"]);
+    let flagged: Vec<&str> =
+        v["violations"].as_array().unwrap().iter().map(|x| x["package"].as_str().unwrap()).collect();
+    // `dual` offers MIT, so it passes; the rest do not.
+    assert!(flagged.contains(&"copyleft"), "got: {flagged:?}");
+    assert!(flagged.contains(&"bespoke"), "got: {flagged:?}");
+    assert!(!flagged.contains(&"permissive"), "MIT is allowed");
+    assert!(!flagged.contains(&"dual"), "dual offers MIT");
+}
+
+#[test]
+fn unknown_licenses_only_fail_when_asked() {
+    let (exit, _) = licenses_cmd(&[]);
+    assert_eq!(exit, 0, "an unresolved license is not a failure by default");
+    let (exit, out) = licenses_cmd(&["--fail-on-unknown"]);
+    assert_eq!(exit, 1);
+    assert!(out.contains("silent@1.0.0"), "got: {out}");
+}
+
+#[test]
+fn omit_dev_narrows_the_licence_inventory() {
+    // `devtool` is GPL-3.0-only and never ships, so `--omit dev` must drop it —
+    // this is the combination that answers "what copyleft do I distribute".
+    let v = licenses_json(&["--omit", "dev"]);
+    let labels: Vec<&str> =
+        v["licenses"].as_array().unwrap().iter().map(|b| b["license"].as_str().unwrap()).collect();
+    assert!(!labels.contains(&"GPL-3.0-only"), "the dev tool's licence must be gone: {labels:?}");
+    assert!(labels.contains(&"MIT"));
+
+    let (exit, _) = licenses_cmd(&["--omit", "dev", "--deny", "GPL-3.0-only"]);
+    assert_eq!(exit, 0, "denying a licence only present in dev deps must not fail a prod run");
+}
+
+#[test]
+fn unknown_only_narrows_the_view() {
+    let (exit, out) = licenses_cmd(&["--unknown-only"]);
+    assert_eq!(exit, 0);
+    assert!(out.contains("silent@1.0.0"), "got: {out}");
+    assert!(!out.contains("  MIT "), "other buckets should be hidden, got: {out}");
+}
+
+#[test]
+fn sbom_emits_valid_cyclonedx_license_shapes() {
+    let out = Command::new(bin())
+        .arg("sbom")
+        .arg(fixture("licensed-node"))
+        .args(["-o", "-", "--no-progress"])
+        .stdout(Stdio::piped())
+        .output()
+        .expect("postmortem binary did not run");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    let by_name = |n: &str| {
+        v["components"].as_array().unwrap().iter().find(|c| c["name"] == n).unwrap().clone()
+    };
+
+    // A recognised identifier goes in `license.id`.
+    assert_eq!(by_name("permissive")["licenses"][0]["license"]["id"], "MIT");
+    // A compound value goes in `expression`, as a sibling of `license`.
+    assert_eq!(by_name("dual")["licenses"][0]["expression"], "MIT OR AGPL-3.0");
+    assert!(by_name("dual")["licenses"][0].get("license").is_none());
+    // Free text goes in `license.name` — never `id`, which consumers validate
+    // against the SPDX list and reject the whole document over.
+    assert_eq!(by_name("bespoke")["licenses"][0]["license"]["name"], "see the LICENSE file");
+    assert!(by_name("bespoke")["licenses"][0]["license"].get("id").is_none());
+    // Nothing declared: the field is absent rather than an empty array.
+    assert!(by_name("silent").get("licenses").is_none());
 }

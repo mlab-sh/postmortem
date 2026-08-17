@@ -17,7 +17,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde_yaml::{Mapping, Value};
 
-use crate::model::{DepRef, Dependency, Ecosystem, Scope};
+use crate::model::{DepRef, Dependency, Ecosystem, Scope, LicenseSource};
 
 pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
     let text =
@@ -125,6 +125,8 @@ fn node(name: String, version: String) -> Dependency {
         ecosystem: Ecosystem::Node,
         direct: false,
         scope: Scope::Prod,
+        licenses: Vec::new(),
+        license_source: LicenseSource::Unknown,
         resolved_url: None,
         integrity: None,
         parents: Vec::new(),

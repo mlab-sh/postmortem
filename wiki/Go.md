@@ -14,6 +14,13 @@ Go's transitive parent edges can't be reconstructed offline (that needs
 saying so, plus surfaces `replace` directives - so a flat result is never read as
 "clean".
 
+## Licenses
+
+Needs `--online`, from deps.dev. This is the **one** ecosystem where resolving a
+license costs a request postmortem would not otherwise make: a Go module's repo
+comes straight from its module path, with no registry call at all.
+See [Licenses](Licenses).
+
 ## Dependency scopes - none
 
 Go has no development-dependency concept: `go.mod` records one module set, and

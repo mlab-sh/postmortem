@@ -1,0 +1,7 @@
+{
+  "name": "licensed-app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": { "permissive": "1.0.0", "dual": "1.0.0", "copyleft": "1.0.0", "bespoke": "1.0.0", "silent": "1.0.0" },
+  "devDependencies": { "devtool": "1.0.0" }
+}

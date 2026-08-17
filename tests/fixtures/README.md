@@ -10,4 +10,5 @@ included; the strings/structures are reproductions of publicly documented incide
 | `malicious-python/` | `ctx@0.2.6` (May 2022 PyPI takeover — exfiltrated AWS creds via `setup.py`) | https://blog.sonatype.com/pypi-ctx-and-php-phpass-libraries-hijacked-in-supply-chain-attack |
 | `malicious-rust/` | `rustdecimal` (May 2022 typosquat of `rust_decimal`) | https://blog.rust-lang.org/2022/05/10/malicious-crate-rustdecimal.html |
 | `clean-node/` | benign sanity baseline | — |
+| `licensed-node/` | benign; exercises [licenses](../../wiki/Licenses.md): a permissive id, a dual `MIT OR AGPL-3.0` (which must escape a denylist via its other option), a copyleft id, free text that must never become an SPDX id, and a package declaring nothing. | — |
 | `scoped-node/` | benign; exercises [dependency scopes](../../wiki/Dependency-Scopes.md). `shared-lib` is reachable from **both** `prod-lib` and the dev tool, so `--omit dev` must keep it — a naive "listed under devDependencies" filter would drop it. | — |

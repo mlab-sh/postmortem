@@ -116,6 +116,8 @@ mod tests {
             ecosystem: Ecosystem::Node,
             direct,
             scope,
+            licenses: Vec::new(),
+            license_source: crate::model::LicenseSource::Unknown,
             resolved_url: None,
             integrity: None,
             parents: parents.iter().map(|p| ((*p).to_string(), "1.0.0".to_string())).collect(),

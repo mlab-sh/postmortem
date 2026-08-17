@@ -400,6 +400,8 @@ mod tests {
             version: "1.0".into(),
             ecosystem: Ecosystem::Brew,
             scope: crate::model::Scope::Prod,
+            licenses: Vec::new(),
+            license_source: crate::model::LicenseSource::Unknown,
             direct: parents.is_empty(),
             resolved_url: None,
             integrity: None,

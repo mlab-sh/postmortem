@@ -49,6 +49,36 @@ pub struct Config {
     /// CI-gate policy for `tree` (thresholds + allowlist). Ignored by `scan`.
     #[serde(default)]
     pub gate: GateConfig,
+    /// License policy for `licenses`. Ignored by every other command.
+    #[serde(default)]
+    pub license: LicenseConfig,
+}
+
+/// The `[license]` table: which licenses the project accepts.
+///
+/// ```toml
+/// [license]
+/// deny = ["AGPL-3.0", "SSPL-1.0"]
+/// fail_on_unknown = true
+/// ```
+///
+/// `deny` and `allow` are mutually reinforcing rather than exclusive: with an
+/// `allow` list, anything absent from it fails; `deny` additionally rejects
+/// named identifiers. CLI flags are additive on top of these.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct LicenseConfig {
+    /// SPDX ids that fail the run.
+    #[serde(default)]
+    pub deny: Vec<String>,
+    /// When non-empty, the only SPDX ids permitted.
+    #[serde(default)]
+    pub allow: Vec<String>,
+    /// Treat a package with no resolvable license as a failure. Off by default:
+    /// coverage depends on the ecosystem, so this would otherwise fail runs for
+    /// a reason the user cannot fix.
+    #[serde(default)]
+    pub fail_on_unknown: bool,
 }
 
 /// The `[gate]` table: thresholds and the allowlist consumed by `tree`'s CI
@@ -144,10 +174,10 @@ impl Config {
         if self.skip_categories.contains(&f.category) {
             return true;
         }
-        if let Some(min) = self.min_severity {
-            if f.severity < min {
-                return true;
-            }
+        if let Some(min) = self.min_severity
+            && f.severity < min
+        {
+            return true;
         }
         if self.skip_dependencies.iter().any(|d| dep_matches(d, &f.dependency)) {
             return true;
@@ -178,15 +208,15 @@ fn rule_matches(rule: &IgnoreRule, f: &Finding) -> bool {
     if rule.category.is_none() && rule.dependency.is_none() && rule.path.is_none() {
         return false; // empty rule never matches — guards against accidentally muting everything
     }
-    if let Some(c) = rule.category {
-        if c != f.category {
-            return false;
-        }
+    if let Some(c) = rule.category
+        && c != f.category
+    {
+        return false;
     }
-    if let Some(d) = &rule.dependency {
-        if !dep_matches(d, &f.dependency) {
-            return false;
-        }
+    if let Some(d) = &rule.dependency
+        && !dep_matches(d, &f.dependency)
+    {
+        return false;
     }
     if let Some(g) = &rule.path {
         let loc = f.location.as_deref().unwrap_or("");

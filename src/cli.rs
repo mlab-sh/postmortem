@@ -72,6 +72,10 @@ pub enum Command {
     /// plus optional online reputation (`--online`) and known vulns (`--vulns`).
     Audit(AuditArgs),
 
+    /// Inventory the licenses of the dependency graph, and enforce a policy over
+    /// them. Grouped by license, with the unresolved ones called out.
+    Licenses(LicensesArgs),
+
     /// Manage the on-disk cache (~/.postmortem/cache) used by `tree --online`.
     Cache(CacheArgs),
 
@@ -237,6 +241,13 @@ pub struct SbomArgs {
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
+    /// Go ONLINE to fill in licenses the lockfile does not record. npm and
+    /// composer declare them offline; every other ecosystem needs its registry.
+    /// Reuses the `tree --online` cache, and adds no request beyond the ones
+    /// repo resolution already makes.
+    #[arg(long)]
+    pub online: bool,
+
     /// Omit a dependency set from the analysis. Repeatable: `--omit dev --omit
     /// optional`. A package is dropped only when *every* path to it from a root
     /// goes through an omitted edge, so anything that also ships in production
@@ -291,6 +302,66 @@ pub struct AuditArgs {
     /// Report IOC findings inside test/fixture directories too (off by default).
     #[arg(long)]
     pub allow_test_files: bool,
+
+    /// Omit a dependency set from the analysis. Repeatable: `--omit dev --omit
+    /// optional`. A package is dropped only when *every* path to it from a root
+    /// goes through an omitted edge, so anything that also ships in production
+    /// stays. Ecosystems that do not record the distinction (Go) are unaffected.
+    #[arg(long, value_enum)]
+    pub omit: Vec<OmitSet>,
+
+    /// Disable the animated progress UI.
+    #[arg(long)]
+    pub no_progress: bool,
+}
+
+/// Arguments for `postmortem licenses <path>`.
+#[derive(Args, Debug)]
+pub struct LicensesArgs {
+    /// The project directory to inventory.
+    pub path: PathBuf,
+
+    /// Go ONLINE to resolve licenses the lockfile does not record. npm and
+    /// composer declare them offline; every other ecosystem needs its registry.
+    /// Adds no request beyond the ones repo resolution already makes.
+    #[arg(long)]
+    pub online: bool,
+
+    /// Show only the packages whose license could not be resolved — the set
+    /// worth acting on.
+    #[arg(long)]
+    pub unknown_only: bool,
+
+    /// List the packages under each license instead of just counting them.
+    #[arg(long)]
+    pub packages: bool,
+
+    /// Emit the inventory as JSON.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Write output to file. Pass `-` to force stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// POLICY: fail if this SPDX id is present. Repeatable. A dual-licensed
+    /// package is only flagged when *every* alternative it offers is denied.
+    #[arg(long = "deny", value_name = "SPDX")]
+    pub deny: Vec<String>,
+
+    /// POLICY: permit only these SPDX ids; anything else fails. Repeatable.
+    #[arg(long = "allow", value_name = "SPDX")]
+    pub allow: Vec<String>,
+
+    /// POLICY: fail if any package has no resolvable license. Off by default,
+    /// since coverage depends on the ecosystem — pair it with `--online`.
+    #[arg(long)]
+    pub fail_on_unknown: bool,
+
+    /// Path to a postmortem.conf supplying a [license] policy. Otherwise
+    /// postmortem.conf is auto-loaded from the project directory.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
 
     /// Omit a dependency set from the analysis. Repeatable: `--omit dev --omit
     /// optional`. A package is dropped only when *every* path to it from a root

@@ -139,6 +139,8 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
         deps.push(Dependency {
             direct: userinstalled.is_empty() || userinstalled.contains(&n.name),
             scope: Scope::Prod,
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
             resolved_url: (!n.url.is_empty()).then(|| n.url.clone()),
             parents: parents.remove(&n.name).unwrap_or_default(),
             name: n.name.clone(),

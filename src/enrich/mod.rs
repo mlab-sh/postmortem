@@ -53,7 +53,7 @@ fn host_of(url: &str) -> Option<String> {
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;
     let end = after_scheme
-        .find(|c: char| c == '/' || c == '?' || c == '#' || c == ':')
+        .find(['/', '?', '#', ':'])
         .unwrap_or(after_scheme.len());
     let host = &after_scheme[..end];
     if host.is_empty() {

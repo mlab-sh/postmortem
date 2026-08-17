@@ -18,6 +18,13 @@ Scoped names (`@scope/pkg`) are handled throughout, including cache keys.
 Full transitive graph with real parent/child edges. Diamond deps and cycles are
 collapsed to `(*)` to keep output finite.
 
+## Licenses
+
+Read **offline** from the `license` field on each `package-lock.json` entry —
+present on ~99% of entries in practice, so Node needs no network for this. The
+legacy `{"type": ...}` object and `licenses` array shapes are handled too.
+See [Licenses](Licenses).
+
 ## Dependency scopes
 
 Seeded from `dependencies` / `devDependencies` / `optionalDependencies` — the

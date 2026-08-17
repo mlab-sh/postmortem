@@ -15,6 +15,11 @@ the JVM is `groupId:artifactId`.
 Like Go, transitive edges aren't reconstructed offline; the graph is **flat**
 and a **diagnostic** is emitted.
 
+## Licenses
+
+Needs `--online`, from deps.dev, which is already version-pinned and returns SPDX
+identifiers. See [Licenses](Licenses).
+
 ## Dependency scopes
 
 The two build systems differ sharply:

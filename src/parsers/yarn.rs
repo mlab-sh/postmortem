@@ -12,7 +12,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde_yaml::Value;
 
-use crate::model::{DepRef, Dependency, Ecosystem, Scope};
+use crate::model::{DepRef, Dependency, Ecosystem, Scope, LicenseSource};
 
 pub fn parse(manifest: &Path, lockfile: &Path) -> Result<Vec<Dependency>> {
     let text = std::fs::read_to_string(lockfile)
@@ -59,6 +59,8 @@ fn assemble(entries: Vec<Entry>, manifest: &Path) -> Vec<Dependency> {
             ecosystem: Ecosystem::Node,
             direct: false,
             scope: Scope::Prod,
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
             resolved_url: e.resolved.clone(),
             integrity: e.integrity.clone(),
             parents: Vec::new(),

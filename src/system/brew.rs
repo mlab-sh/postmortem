@@ -220,6 +220,8 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> 
             ecosystem: Ecosystem::Brew,
             direct: inst.installed_on_request,
             scope: Scope::Prod,
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
             resolved_url: tap.and_then(|t| tap_remote.get(t).cloned()),
             integrity: None,
             parents: parents.remove(&f.name).unwrap_or_default(),
@@ -246,6 +248,8 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> 
             ecosystem: Ecosystem::Brew,
             direct: true, // casks are always user-installed
             scope: Scope::Prod,
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
             // The download URL is often a GitHub release → resolves to the repo.
             resolved_url: c.url.clone(),
             integrity: c.sha256.clone(),

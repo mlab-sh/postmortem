@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use crate::model::{Dependency, Ecosystem, Scope};
+use crate::model::{Dependency, Ecosystem, Scope, LicenseSource};
 
 pub fn parse_any(manifest: &Path, lockfile: Option<&Path>) -> Result<Vec<Dependency>> {
     if let Some(lf) = lockfile {
@@ -113,6 +113,8 @@ fn parse_poetry(path: &Path) -> Result<Vec<Dependency>> {
             ecosystem: Ecosystem::Python,
             direct,
             scope: pkg.scope(),
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
             resolved_url: None,
             integrity: None,
             parents,
@@ -157,6 +159,8 @@ fn parse_pipfile_lock(path: &Path) -> Result<Vec<Dependency>> {
                 ecosystem: Ecosystem::Python,
                 direct: true, // Pipfile.lock doesn't distinguish — best we can do.
                 scope,
+                licenses: Vec::new(),
+                license_source: LicenseSource::Unknown,
                 resolved_url: None,
                 integrity: None,
                 parents: Vec::new(),
@@ -195,6 +199,8 @@ fn parse_requirements(path: &Path) -> Result<Vec<Dependency>> {
             ecosystem: Ecosystem::Python,
             direct: true,
             scope,
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
             resolved_url: None,
             integrity: None,
             parents: Vec::new(),

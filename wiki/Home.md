@@ -21,6 +21,7 @@ locally.
 | [`scan`](Scan) | Static analysis of dependency code for malicious patterns (IOCs, obfuscation, install hooks, sensitive APIs). |
 | [`tree`](Tree) | Reconstruct the dependency forest from lockfiles; `--online` adds source-repo reputation, `--vulns` adds known CVEs. |
 | [`audit`](Audit) | One-shot graded health check: malware scan + inventory, plus optional reputation and vulns. |
+| [`licenses`](Licenses) | Inventory the licenses of the dependency graph and enforce a policy (deny / allow / fail-on-unknown). |
 | [`why`](Why) | Explain why a package is installed: its dependency paths up to the roots. |
 | [`diff`](Diff) | Compare two project states: added / removed / version-changed dependencies. |
 | [`sbom`](Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |
@@ -33,6 +34,8 @@ locally.
   3 code hosts postmortem understands.
 - **[Online resolution](Online-Resolution)** - how `--online` turns a package
   into a `risk:dep` score, plus `--languages`.
+- **[Licenses](Licenses)** - where license data comes from per ecosystem, SPDX
+  normalization, and the policy gate.
 - **[Dependency scopes](Dependency-Scopes)** - what `--omit dev` removes, and why
   a package your app also uses is never dropped.
 - **[System package managers](System)** - the Homebrew, [pacman](Pacman), [apt](Apt), [dnf](Dnf), [Nix](Nix), and [apk](Apk) backends in depth.
@@ -66,6 +69,7 @@ postmortem scan .                      # static scan of the current project
 postmortem tree . --depth 2            # offline dependency forest
 postmortem tree . --online --vulns     # + repo reputation + known CVEs
 postmortem tree . --omit dev           # only what actually ships
+postmortem licenses . --online         # license inventory + policy
 postmortem system --online             # audit your installed OS packages
 ```
 

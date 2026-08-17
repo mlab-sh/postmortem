@@ -11,7 +11,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::model::{Dependency, Ecosystem, Scope};
+use crate::model::{Dependency, Ecosystem, LicenseSource, Scope};
 
 #[derive(Debug, Deserialize)]
 struct ComposerLock {
@@ -26,6 +26,10 @@ struct ComposerPkg {
     name: String,
     #[serde(default)]
     version: Option<String>,
+    /// composer.lock records the license per package, as an array meaning "any
+    /// of these" — an offline source, no registry call needed.
+    #[serde(default)]
+    license: Vec<String>,
     #[serde(default)]
     require: std::collections::BTreeMap<String, String>,
     #[serde(default)]
@@ -65,6 +69,7 @@ pub fn parse_lockfile(path: &Path, manifest: Option<&Path>) -> Result<Vec<Depend
     let mut out = Vec::with_capacity(all.len());
     for (idx, pkg) in all.iter().enumerate() {
         let scope = if idx < prod_count { Scope::Prod } else { Scope::Dev };
+        let licenses = crate::license::normalize_list(&pkg.license);
         let parents: Vec<_> = all
             .iter()
             .filter(|o| o.name != pkg.name && o.require.contains_key(&pkg.name))
@@ -94,6 +99,12 @@ pub fn parse_lockfile(path: &Path, manifest: Option<&Path>) -> Result<Vec<Depend
             ecosystem: Ecosystem::Php,
             direct: is_direct,
             scope,
+            licenses: licenses.clone(),
+            license_source: if licenses.is_empty() {
+                LicenseSource::Unknown
+            } else {
+                LicenseSource::Lockfile
+            },
             resolved_url,
             integrity,
             parents,
@@ -133,6 +144,7 @@ fn is_platform_package(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::License;
     use std::io::Write;
 
     const LOCK: &str = r#"{
@@ -231,5 +243,31 @@ mod tests {
         assert_eq!(scope("app/core"), Scope::Prod);
         assert_eq!(scope("phpunit/phpunit"), Scope::Dev);
         assert_eq!(scope("sebastian/diff"), Scope::Dev, "a transitive of a dev package");
+    }
+
+    #[test]
+    fn composer_licenses_are_read_offline() {
+        let lock = tmp(
+            "composer.lock",
+            r#"{
+              "packages": [
+                { "name": "a/one", "version": "1.0.0", "license": ["MIT"] },
+                { "name": "a/two", "version": "1.0.0", "license": ["MIT", "Apache-2.0"] },
+                { "name": "a/none", "version": "1.0.0" }
+              ],
+              "packages-dev": []
+            }"#,
+        );
+        let deps = parse_lockfile(&lock, None).unwrap();
+        let get = |n: &str| deps.iter().find(|d| d.name == n).unwrap();
+        assert_eq!(get("a/one").licenses, vec![License::Id { value: "MIT".into() }]);
+        assert_eq!(get("a/one").license_source, LicenseSource::Lockfile);
+        assert_eq!(
+            get("a/two").licenses,
+            vec![License::Expression { value: "MIT OR Apache-2.0".into() }],
+            "composer's array means alternatives"
+        );
+        assert!(get("a/none").licenses.is_empty());
+        assert_eq!(get("a/none").license_source, LicenseSource::Unknown);
     }
 }

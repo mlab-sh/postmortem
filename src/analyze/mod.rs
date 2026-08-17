@@ -188,6 +188,15 @@ fn plan(detected: &[Detected]) -> Vec<Step<'_>> {
     steps
 }
 
+/// Python is scanned identically at the repo root and (if present) the venv's
+/// site-packages, so both share one step-emitting helper.
+fn push_python<'a>(steps: &mut Vec<Step<'a>>, dir: &'a Path) {
+    steps.push(Step::new("python · install-hooks", move |f| install_hooks::scan_python(dir, f)));
+    steps.push(Step::new("python · ioc", move |f| ioc::scan_dir(dir, f, ioc::Lang::Python)));
+    steps.push(Step::new("python · obfuscation", move |f| obfuscation::scan_dir(dir, f, obfuscation::Lang::Python)));
+    steps.push(Step::new("python · sensitive-api", move |f| sensitive_api::scan_dir(dir, f, sensitive_api::Lang::Python)));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,13 +244,4 @@ mod tests {
         f.category = Category::SensitiveApi;
         assert_eq!(drop_test_iocs(vec![f], false, std::path::Path::new("")).len(), 1);
     }
-}
-
-/// Python is scanned identically at the repo root and (if present) the venv's
-/// site-packages, so both share one step-emitting helper.
-fn push_python<'a>(steps: &mut Vec<Step<'a>>, dir: &'a Path) {
-    steps.push(Step::new("python · install-hooks", move |f| install_hooks::scan_python(dir, f)));
-    steps.push(Step::new("python · ioc", move |f| ioc::scan_dir(dir, f, ioc::Lang::Python)));
-    steps.push(Step::new("python · obfuscation", move |f| obfuscation::scan_dir(dir, f, obfuscation::Lang::Python)));
-    steps.push(Step::new("python · sensitive-api", move |f| sensitive_api::scan_dir(dir, f, sensitive_api::Lang::Python)));
 }

@@ -50,6 +50,25 @@ reason     = "known-good build script"
 **Gate policy** (`tree`): see [CI gate](CI-Gate) for the `[gate]` block and
 `[[gate.allow]]` entries.
 
+## License policy - `[license]`
+
+Consumed by [`licenses`](Licenses); ignored by every other command. CLI flags are
+additive on top of it.
+
+```toml
+# postmortem.conf
+[license]
+deny = ["AGPL-3.0", "SSPL-1.0"]
+# allow = ["MIT", "Apache-2.0", "ISC"]   # when set, nothing else is permitted
+fail_on_unknown = true
+```
+
+| Key | Meaning |
+| --- | --- |
+| `deny` | SPDX ids that fail the run. A dual-licensed package is flagged only when every alternative it offers is denied. |
+| `allow` | When non-empty, the only ids permitted. Satisfied if *any* one alternative is allowed. |
+| `fail_on_unknown` | Fail when a package has no resolvable license. Pair with `--online`, since coverage depends on the ecosystem. |
+
 ## Cache
 
 All networked responses are cached under `~/.postmortem/cache/`. A published

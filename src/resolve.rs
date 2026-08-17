@@ -256,13 +256,29 @@ pub struct Resolution {
     /// Repo language breakdown as `(name, percent)`, biggest first — only when
     /// `--languages` asked for it (one extra, cached, per-host call).
     pub languages: Option<Vec<(String, f64)>>,
+    /// License(s) the registry declares for this exact version. Empty when the
+    /// registry says nothing — never assume permissive.
+    pub licenses: Vec<crate::model::License>,
 }
 
-/// Cached npm-version → repository resolution (an explicit `None` means the
-/// version declared no usable GitHub repo — cached so we don't refetch).
-#[derive(Serialize, Deserialize)]
+/// Cached registry facts for one `name@version` (an explicit `None` repo means
+/// the version declared no usable repo — cached so we don't refetch).
+///
+/// `licenses` was added after this struct first shipped; the cache's
+/// [`crate::cache::FORMAT_VERSION`] was bumped at the same time, because a
+/// missing `Option`/`Vec` field deserializes silently and every pre-existing
+/// entry would otherwise report "no license" forever.
+///
+/// It holds the **raw** strings the registry served, not normalized [`License`]
+/// values. Entries are cached forever, so caching our interpretation would
+/// freeze it: improving the SPDX tables would leave every already-cached package
+/// stuck on the old reading. Normalization happens on every read, in
+/// [`crate::license::resolve_raw`].
+#[derive(Serialize, Deserialize, Default)]
 struct CachedRepo {
     repo: Option<RepoRef>,
+    #[serde(default)]
+    licenses: Vec<String>,
 }
 
 /// Provenance anomalies for one installed version vs its predecessors, derived
@@ -307,6 +323,8 @@ pub struct Resolver {
     agent: ureq::Agent,
     cache: Cache,
     tokens: Tokens,
+    /// Resolve licenses (adds a deps.dev call for Go only — see `with_licenses`).
+    want_licenses: bool,
     thresholds: TreeSettings,
     now: i64,
     /// Also fetch each repo's full language breakdown (one extra, cached,
@@ -326,12 +344,25 @@ impl Resolver {
             thresholds,
             now: chrono::Utc::now().timestamp(),
             languages: false,
+            want_licenses: false,
         }
     }
 
     /// Enable the per-repo language breakdown (`--languages`).
     pub fn with_languages(mut self, on: bool) -> Self {
         self.languages = on;
+        self
+    }
+
+    /// Resolve licenses too.
+    ///
+    /// For every ecosystem but Go this is free — the license rides along in the
+    /// registry document the repo lookup already fetches. Go is the exception:
+    /// its repo comes straight from the module path with no request at all, so a
+    /// license there costs a deps.dev call that would otherwise never happen.
+    /// Hence the opt-in, rather than always paying it.
+    pub fn with_licenses(mut self, on: bool) -> Self {
+        self.want_licenses = on;
         self
     }
 
@@ -399,7 +430,12 @@ impl Resolver {
 
     fn resolve_one(&self, dep: &Dependency) -> Resolution {
         let mut res = Resolution::default();
-        let mut signals: Vec<RiskSignal> = match self.repo_for(dep) {
+        let record = self.registry_record(dep);
+        if let Ok(r) = &record {
+            // Normalized here, never in the cache — see `CachedRepo`.
+            res.licenses = crate::license::resolve_raw(&r.licenses);
+        }
+        let mut signals: Vec<RiskSignal> = match record.map(|r| r.repo) {
             Ok(Some(repo)) => {
                 let signals = match self.stats_for(&repo) {
                     Ok(Some(stats)) => {
@@ -492,21 +528,61 @@ impl Resolver {
     ///
     /// Go is special: a module path *is* its repo (`github.com/gin-gonic/gin`),
     /// so it's parsed directly with no network call.
-    fn repo_for(&self, dep: &Dependency) -> Result<Option<RepoRef>> {
+    /// The registry-derived facts for a dependency: its source repo and its
+    /// declared license. Both come from the *same* document, so adding licenses
+    /// costs no extra request — and both are cached together under one key.
+    fn registry_record(&self, dep: &Dependency) -> Result<CachedRepo> {
+        // Go's module path *is* its repo, so the repo needs no request at all.
+        // The license does: it is the one ecosystem where postmortem makes a
+        // call it would not otherwise make, so it is skipped unless the caller
+        // asked for licenses.
         if dep.ecosystem == Ecosystem::Go {
-            return Ok(parse_repo(&dep.name));
+            let repo = parse_repo(&dep.name);
+            if !self.want_licenses {
+                return Ok(CachedRepo { repo, licenses: Vec::new() });
+            }
+            let key = format!("go:{}@{}", dep.name, dep.version);
+            if let Some(hit) = self.cache.get::<CachedRepo>("registry", &key) {
+                return Ok(hit);
+            }
+            let url = format!(
+                "https://api.deps.dev/v3/systems/go/packages/{}/versions/{}",
+                urlencode(&dep.name),
+                urlencode(&dep.version),
+            );
+            let licenses = match self.get_json(&url, &[]) {
+                Ok(Some(v)) => raw_licenses_from(dep, &v),
+                // deps.dev not knowing a module is normal (private, or too new);
+                // a transport failure is not cached, so it retries next run.
+                Ok(None) => Vec::new(),
+                Err(_) => return Ok(CachedRepo { repo, licenses: Vec::new() }),
+            };
+            let record = CachedRepo { repo, licenses };
+            self.cache.put("registry", &key, &record);
+            return Ok(record);
         }
         let key = format!("{}:{}@{}", dep.ecosystem.as_str(), dep.name, dep.version);
         if let Some(hit) = self.cache.get::<CachedRepo>("registry", &key) {
-            return Ok(hit.repo);
+            return Ok(hit);
         }
         let Some(url) = registry_url(dep) else {
-            return Ok(None);
+            return Ok(CachedRepo::default());
         };
-        let mut repo = match self.get_json(&url, &[])? {
-            Some(v) => repo_candidates(dep.ecosystem, &v)
-                .iter()
-                .find_map(|u| parse_repo(u)),
+        let doc = match self.get_json(&url, &[])? {
+            Some(v) => Some(v),
+            // Some registries only expose the *pinned* version through a second
+            // endpoint, and that one 404s for versions they never served (yanked
+            // releases, platform-suffixed gems). Fall back to the name-only
+            // document rather than lose the repo entirely — the license it
+            // carries is then the latest version's, which `licenses_from` knows.
+            None => match registry_url_fallback(dep) {
+                Some(fb) => self.get_json(&fb, &[])?,
+                None => None,
+            },
+        };
+        let licenses = doc.as_ref().map(|v| raw_licenses_from(dep, v)).unwrap_or_default();
+        let mut repo = match &doc {
+            Some(v) => repo_candidates(dep.ecosystem, v).iter().find_map(|u| parse_repo(u)),
             None => None, // 404 — unpublished/private/unknown package
         };
         // Homebrew third-party taps aren't on formulae.brew.sh (404 above), but
@@ -522,8 +598,9 @@ impl Resolver {
         {
             repo = dep.resolved_url.as_deref().and_then(parse_repo);
         }
-        self.cache.put("registry", &key, &CachedRepo { repo: repo.clone() });
-        Ok(repo)
+        let record = CachedRepo { repo, licenses };
+        self.cache.put("registry", &key, &record);
+        Ok(record)
     }
 
     /// Provenance anomalies for the installed version, from the npm packument.
@@ -729,9 +806,15 @@ impl Resolver {
 fn registry_url(dep: &Dependency) -> Option<String> {
     Some(match dep.ecosystem {
         Ecosystem::Node => format!("{NPM_REGISTRY}/{}/{}", dep.name, dep.version),
-        Ecosystem::Python => format!("https://pypi.org/pypi/{}/json", dep.name),
+        // Version-pinned: the name-only document describes the *latest* release,
+        // whose license may differ from the pinned one. `registry_url_fallback`
+        // covers versions these endpoints never served.
+        Ecosystem::Python => format!("https://pypi.org/pypi/{}/{}/json", dep.name, dep.version),
         Ecosystem::Rust => format!("https://crates.io/api/v1/crates/{}", dep.name),
-        Ecosystem::Ruby => format!("https://rubygems.org/api/v1/gems/{}.json", dep.name),
+        Ecosystem::Ruby => format!(
+            "https://rubygems.org/api/v2/rubygems/{}/versions/{}.json",
+            dep.name, dep.version
+        ),
         Ecosystem::Php => format!("https://packagist.org/packages/{}.json", dep.name),
         Ecosystem::Java => format!(
             "https://api.deps.dev/v3/systems/maven/packages/{}/versions/{}",
@@ -745,6 +828,145 @@ fn registry_url(dep: &Dependency) -> Option<String> {
         // call (repo parsed from the name / `resolved_url`).
         Ecosystem::Go | Ecosystem::Pacman | Ecosystem::Apt | Ecosystem::Dnf | Ecosystem::Nix | Ecosystem::Apk => return None,
     })
+}
+
+/// Copy registry-resolved licenses back onto the dependency list.
+///
+/// A lockfile declaration always wins: npm and composer record the license for
+/// the exact artifact that was installed, whereas a registry describes what the
+/// publisher currently says about that version. So this only fills packages that
+/// have none, and never overwrites a [`LicenseSource::Lockfile`] value.
+pub fn apply_licenses(
+    deps: &mut [Dependency],
+    resolutions: &HashMap<DepRef, Resolution>,
+) {
+    for d in deps.iter_mut() {
+        if !d.licenses.is_empty() {
+            continue;
+        }
+        if let Some(res) = resolutions.get(&(d.name.clone(), d.version.clone()))
+            && !res.licenses.is_empty()
+        {
+            d.licenses = res.licenses.clone();
+            d.license_source = crate::model::LicenseSource::Registry;
+        }
+    }
+}
+
+/// A second endpoint to try when [`registry_url`] 404s.
+///
+/// PyPI and RubyGems are the two registries whose *name-only* document describes
+/// the **latest** version rather than the pinned one — so [`registry_url`] asks
+/// for the exact version, and this is the name-only form to fall back on when
+/// that version was never served under that spelling (a yanked release, or a
+/// platform-suffixed gem like `nokogiri-1.13.9-x86_64-linux`).
+fn registry_url_fallback(dep: &Dependency) -> Option<String> {
+    Some(match dep.ecosystem {
+        Ecosystem::Python => format!("https://pypi.org/pypi/{}/json", dep.name),
+        Ecosystem::Ruby => format!("https://rubygems.org/api/v1/gems/{}.json", dep.name),
+        _ => return None,
+    })
+}
+
+/// The **raw** license strings a registry document declares for `dep`.
+///
+/// Deliberately returns registry text rather than [`crate::model::License`]:
+/// this result is cached forever, so it must record what the registry said, not
+/// how we currently read it. Interpretation happens in
+/// [`crate::license::resolve_raw`] on every read.
+///
+/// Version matching is the subtlety here. A project can relicense between
+/// releases — Redis, Terraform, Elasticsearch, MongoDB and Sentry all did — so
+/// reading the license off the *latest* version while the lockfile pins an older
+/// one is wrong in exactly the cases that matter legally. Where a document
+/// carries every version (crates.io, Packagist) the pinned one is looked up;
+/// where it does not, [`registry_url`] already asked for the pinned version.
+///
+/// Several values mean "alternatives", except for PyPI where they are ranked
+/// candidates — `resolve_raw` prefers whichever maps to SPDX, which handles both.
+fn raw_licenses_from(dep: &Dependency, v: &serde_json::Value) -> Vec<String> {
+    let str_at = |val: &serde_json::Value, key: &str| {
+        val.get(key).and_then(|x| x.as_str()).map(String::from)
+    };
+    let arr_at = |val: &serde_json::Value, key: &str| -> Vec<String> {
+        val.get(key)
+            .and_then(|x| x.as_array())
+            .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    };
+    /// npm values may be a bare string or a `{type, url}` object.
+    fn as_text(v: &serde_json::Value) -> Option<String> {
+        v.as_str()
+            .map(String::from)
+            .or_else(|| v.get("type").and_then(|t| t.as_str()).map(String::from))
+    }
+
+    match dep.ecosystem {
+        // The versioned manifest. `license` is usually an SPDX string; ancient
+        // packages used `{type: ...}` or a `licenses` array.
+        Ecosystem::Node => {
+            if let Some(l) = v.get("license") {
+                if let Some(t) = as_text(l) {
+                    return vec![t];
+                }
+                if let Some(a) = l.as_array() {
+                    return a.iter().filter_map(as_text).collect();
+                }
+            }
+            v.get("licenses")
+                .and_then(|x| x.as_array())
+                .map(|a| a.iter().filter_map(as_text).collect())
+                .unwrap_or_default()
+        }
+        // PyPI's `license` is hand-written prose. PEP 639 added the SPDX-valued
+        // `license_expression`, still empty for most projects, so offer it first,
+        // then the free text, then the trove classifiers — whose last segment is
+        // the license name (`License :: OSI Approved :: MIT License`).
+        Ecosystem::Python => {
+            let Some(info) = v.get("info") else { return Vec::new() };
+            let mut out = Vec::new();
+            out.extend(str_at(info, "license_expression"));
+            out.extend(str_at(info, "license"));
+            out.extend(
+                arr_at(info, "classifiers")
+                    .iter()
+                    .filter(|c| c.starts_with("License ::"))
+                    .filter_map(|c| c.rsplit("::").next().map(|s| s.trim().to_string())),
+            );
+            out
+        }
+        // `crate.license` is null on crates.io: the license lives per version.
+        Ecosystem::Rust => {
+            let pinned = v
+                .get("versions")
+                .and_then(|a| a.as_array())
+                .and_then(|a| {
+                    a.iter().find(|ver| str_at(ver, "num").as_deref() == Some(&dep.version))
+                })
+                .and_then(|ver| str_at(ver, "license"));
+            pinned
+                .or_else(|| v.get("crate").and_then(|c| str_at(c, "license")))
+                .into_iter()
+                .collect()
+        }
+        // v2 (version-pinned) and v1 (latest) both expose a `licenses` array.
+        Ecosystem::Ruby => arr_at(v, "licenses"),
+        // Packagist returns every version; the key may or may not carry a `v`.
+        Ecosystem::Php => {
+            let Some(versions) = v.get("package").and_then(|p| p.get("versions")) else {
+                return Vec::new();
+            };
+            versions
+                .get(&dep.version)
+                .or_else(|| versions.get(format!("v{}", dep.version)))
+                .map(|ver| arr_at(ver, "license"))
+                .unwrap_or_default()
+        }
+        // deps.dev is already version-pinned and returns SPDX identifiers.
+        Ecosystem::Java | Ecosystem::Go => arr_at(v, "licenses"),
+        // OS packages: licensing is a distro concern, not resolved here.
+        _ => Vec::new(),
+    }
 }
 
 /// Candidate repo URLs from a registry manifest, in priority order. `repo_for`
@@ -1426,6 +1648,7 @@ mod tests {
             thresholds: TreeSettings { min_stars: 20, recent_days: 30, stale_days: 365 },
             now: 1_000_000_000,
             languages: false,
+            want_licenses: false,
         };
         let fresh_lowstar = RepoStats {
             stars: 1,

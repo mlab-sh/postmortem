@@ -11,7 +11,7 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use crate::model::{DepRef, Dependency, Ecosystem, Scope};
+use crate::model::{DepRef, Dependency, Ecosystem, License, LicenseSource, Scope};
 
 #[derive(Debug, Deserialize)]
 struct Lockfile {
@@ -29,6 +29,13 @@ struct PkgEntry {
     resolved: Option<String>,
     #[serde(default)]
     integrity: Option<String>,
+    /// npm records the license on almost every entry of a v2/v3 lockfile — a
+    /// fully offline source for the biggest ecosystem. Usually a plain SPDX
+    /// string; very old packages instead used a `licenses` array, kept below.
+    #[serde(default)]
+    license: Option<serde_json::Value>,
+    #[serde(default)]
+    licenses: Option<serde_json::Value>,
     #[serde(default)]
     dependencies: HashMap<String, String>,
     #[serde(default, rename = "devDependencies")]
@@ -137,6 +144,7 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
                 continue;
             };
             let entry = lock.packages.get(&resolved_key).cloned().unwrap_or_default();
+            let (lics, lsrc) = entry_licenses_sourced(&entry);
             let dep_key = (rn.clone(), rv.clone());
             let dep = acc.entry(dep_key.clone()).or_insert_with(|| Dependency {
                 name: rn.clone(),
@@ -144,6 +152,8 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
                 ecosystem: Ecosystem::Node,
                 direct: false,
                 scope: Scope::Prod,
+                licenses: lics,
+                license_source: lsrc,
                 resolved_url: entry.resolved.clone(),
                 integrity: entry.integrity.clone(),
                 parents: Vec::new(),
@@ -156,10 +166,10 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
                 dep.direct = true;
                 dep.scope = *scope;
             }
-            if let Some(pr) = parent_ref.clone() {
-                if !dep.parents.contains(&pr) {
-                    dep.parents.push(pr);
-                }
+            if let Some(pr) = parent_ref.clone()
+                && !dep.parents.contains(&pr)
+            {
+                dep.parents.push(pr);
             }
             if dep.resolved_url.is_none() {
                 dep.resolved_url = entry.resolved.clone();
@@ -175,17 +185,19 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
     // with no parents; mark direct if applicable.
     for (key, (name, version)) in &by_path {
         let dep_key = (name.clone(), version.clone());
-        if !acc.contains_key(&dep_key) {
+        if let std::collections::btree_map::Entry::Vacant(slot) = acc.entry(dep_key) {
             let entry = lock.packages.get(key).cloned().unwrap_or_default();
+            let (lics, lsrc) = entry_licenses_sourced(&entry);
             let declared = parent_is_root(key).then(|| root_direct.get(name)).flatten();
-            acc.insert(
-                dep_key,
+            slot.insert(
                 Dependency {
                     name: name.clone(),
                     version: version.clone(),
                     ecosystem: Ecosystem::Node,
                     direct: declared.is_some(),
                     scope: declared.copied().unwrap_or(Scope::Prod),
+                    licenses: lics,
+                    license_source: lsrc,
                     resolved_url: entry.resolved.clone(),
                     integrity: entry.integrity.clone(),
                     parents: Vec::new(),
@@ -195,6 +207,52 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
     }
 
     Ok(acc.into_values().collect())
+}
+
+/// The licenses plus the source to record for them. An empty list must stay
+/// [`LicenseSource::Unknown`]: claiming a lockfile *told* us nothing is different
+/// from it not telling us anything.
+fn entry_licenses_sourced(entry: &PkgEntry) -> (Vec<License>, LicenseSource) {
+    let l = entry_licenses(entry);
+    let src = if l.is_empty() { LicenseSource::Unknown } else { LicenseSource::Lockfile };
+    (l, src)
+}
+
+/// Licenses declared by a package-lock entry.
+///
+/// npm has used three shapes over the years, all still present in lockfiles in
+/// the wild:
+///
+/// * `"license": "MIT"` — the modern form, an SPDX string or expression.
+/// * `"license": {"type": "MIT", "url": "..."}` — an older object form.
+/// * `"licenses": [{"type": "MIT"}, ...]` — the oldest, an array meaning
+///   "any of these".
+fn entry_licenses(entry: &PkgEntry) -> Vec<License> {
+    /// A value that may be a bare string or a `{type: ...}` object.
+    fn as_text(v: &serde_json::Value) -> Option<String> {
+        v.as_str()
+            .map(String::from)
+            .or_else(|| v.get("type").and_then(|t| t.as_str()).map(String::from))
+    }
+
+    if let Some(v) = &entry.license {
+        // The modern string form may itself be an expression; `normalize`
+        // handles that. An array here is unusual but harmless to accept.
+        if let Some(arr) = v.as_array() {
+            let raws: Vec<String> = arr.iter().filter_map(as_text).collect();
+            return crate::license::normalize_list(&raws);
+        }
+        if let Some(t) = as_text(v) {
+            return crate::license::normalize(&t).into_iter().collect();
+        }
+    }
+    if let Some(v) = &entry.licenses
+        && let Some(arr) = v.as_array()
+    {
+        let raws: Vec<String> = arr.iter().filter_map(as_text).collect();
+        return crate::license::normalize_list(&raws);
+    }
+    Vec::new()
 }
 
 fn parent_is_root(key: &str) -> bool {
@@ -328,5 +386,60 @@ mod tests {
         assert!(!deep.direct);
         assert_eq!(deep.scope, Scope::Prod, "unclassified until propagation runs");
         assert!(deep.parents.iter().any(|(n, _)| n == "dev-tool"), "edge is present");
+    }
+
+    #[test]
+    fn lockfile_licenses_are_read_offline() {
+        // npm records the license on ~99% of v2/v3 lock entries, so the biggest
+        // ecosystem needs no network at all.
+        let lock = tmp_lock(
+            r#"{
+              "lockfileVersion": 3,
+              "packages": {
+                "": { "dependencies": { "a": "1.0.0", "b": "1.0.0", "c": "1.0.0" } },
+                "node_modules/a": { "version": "1.0.0", "license": "MIT" },
+                "node_modules/b": { "version": "1.0.0", "license": "MIT OR Apache-2.0" },
+                "node_modules/c": { "version": "1.0.0" }
+              }
+            }"#,
+        );
+        let deps = parse_lockfile(&lock).unwrap();
+        let get = |n: &str| deps.iter().find(|d| d.name == n).unwrap();
+        assert_eq!(get("a").licenses, vec![License::Id { value: "MIT".into() }]);
+        assert_eq!(get("a").license_source, LicenseSource::Lockfile);
+        assert_eq!(
+            get("b").licenses,
+            vec![License::Expression { value: "MIT OR Apache-2.0".into() }]
+        );
+        // No license declared: stays empty AND unsourced — claiming the lockfile
+        // told us nothing differs from it not telling us anything.
+        assert!(get("c").licenses.is_empty());
+        assert_eq!(get("c").license_source, LicenseSource::Unknown);
+    }
+
+    #[test]
+    fn legacy_npm_license_shapes_are_understood() {
+        // `{"type": ...}` and the `licenses` array are both still in the wild.
+        let lock = tmp_lock(
+            r#"{
+              "lockfileVersion": 3,
+              "packages": {
+                "": { "dependencies": { "old": "1.0.0", "older": "1.0.0" } },
+                "node_modules/old": { "version": "1.0.0", "license": {"type": "ISC", "url": "x"} },
+                "node_modules/older": {
+                  "version": "1.0.0",
+                  "licenses": [{"type": "MIT"}, {"type": "Apache-2.0"}]
+                }
+              }
+            }"#,
+        );
+        let deps = parse_lockfile(&lock).unwrap();
+        let get = |n: &str| deps.iter().find(|d| d.name == n).unwrap();
+        assert_eq!(get("old").licenses, vec![License::Id { value: "ISC".into() }]);
+        assert_eq!(
+            get("older").licenses,
+            vec![License::Expression { value: "MIT OR Apache-2.0".into() }],
+            "an array of alternatives collapses into one OR expression"
+        );
     }
 }

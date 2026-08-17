@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::model::{Dependency, Ecosystem, Scope};
+use crate::model::{Dependency, Ecosystem, Scope, LicenseSource};
 
 pub fn parse(manifest: &Path, lockfile: Option<&Path>) -> Result<Vec<Dependency>> {
     let text = std::fs::read_to_string(manifest)
@@ -47,6 +47,8 @@ pub fn parse(manifest: &Path, lockfile: Option<&Path>) -> Result<Vec<Dependency>
             // set, and test-only imports are recorded exactly like the rest. So
             // everything stays production and `--omit dev` is a no-op here.
             scope: Scope::Prod,
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
             resolved_url: None,
             parents: Vec::new(),
         })

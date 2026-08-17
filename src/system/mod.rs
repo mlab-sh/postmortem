@@ -36,7 +36,7 @@ use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use serde::Deserialize;
 
-use crate::model::{DepRef, Dependency, Ecosystem, Scope, Severity};
+use crate::model::{DepRef, Dependency, Ecosystem, Scope, Severity, LicenseSource};
 use crate::tree::{Node, Tree};
 
 mod apk;

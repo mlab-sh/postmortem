@@ -103,6 +103,8 @@ mod tests {
             version: ver.into(),
             ecosystem: Ecosystem::Node,
             scope: crate::model::Scope::Prod,
+            licenses: Vec::new(),
+            license_source: crate::model::LicenseSource::Unknown,
             direct,
             resolved_url: None,
             integrity: None,

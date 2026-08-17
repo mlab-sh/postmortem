@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::model::{Dependency, Ecosystem, Scope};
+use crate::model::{Dependency, Ecosystem, Scope, LicenseSource};
 
 #[derive(Debug, Deserialize)]
 struct CargoLock {
@@ -57,10 +57,9 @@ pub fn parse_lockfile(path: &Path, manifest: Option<&Path>) -> Result<Vec<Depend
                 let dname = parts.next().unwrap_or("");
                 let dver = parts.next();
                 dname == pkg.name && dver.map(|v| v == pkg.version).unwrap_or(true)
-            }) {
-                if other.source.is_some() {
-                    parents.push((other.name.clone(), other.version.clone()));
-                }
+            }) && other.source.is_some()
+            {
+                parents.push((other.name.clone(), other.version.clone()));
             }
         }
         out.push(Dependency {
@@ -69,6 +68,8 @@ pub fn parse_lockfile(path: &Path, manifest: Option<&Path>) -> Result<Vec<Depend
             ecosystem: Ecosystem::Rust,
             direct: direct.contains_key(&pkg.name),
             scope: direct.get(&pkg.name).copied().unwrap_or(Scope::Prod),
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
             resolved_url: pkg.source.clone(),
             integrity: pkg.checksum.clone(),
             parents,
@@ -115,11 +116,11 @@ fn read_manifest_direct(path: &Path) -> Result<BTreeMap<String, Scope>> {
         }
     }
     // Workspace deps — the table itself carries no dev/prod distinction.
-    if let Some(ws) = val.get("workspace").and_then(|v| v.as_table()) {
-        if let Some(deps) = ws.get("dependencies").and_then(|v| v.as_table()) {
-            for k in deps.keys() {
-                add(k, Scope::Prod);
-            }
+    if let Some(ws) = val.get("workspace").and_then(|v| v.as_table())
+        && let Some(deps) = ws.get("dependencies").and_then(|v| v.as_table())
+    {
+        for k in deps.keys() {
+            add(k, Scope::Prod);
         }
     }
     Ok(out)

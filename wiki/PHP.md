@@ -12,6 +12,12 @@ Part of the [ecosystems](Ecosystems-and-Hosts) matrix.
 Built from the lock; Composer vendors dependencies under `vendor/` when
 installed, so a committed vendor tree is also covered by [`scan`](Scan).
 
+## Licenses
+
+Read **offline** from each package's `license` array in `composer.lock`. The
+array means "any of these", so several entries collapse into one `OR`
+expression. See [Licenses](Licenses).
+
 ## Dependency scopes
 
 The most complete of any ecosystem: composer resolves the dev tree separately

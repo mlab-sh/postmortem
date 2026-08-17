@@ -17,18 +17,18 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use crate::model::{Dependency, Ecosystem, Scope};
+use crate::model::{Dependency, Ecosystem, Scope, LicenseSource};
 
 pub fn parse(manifest: Option<&Path>, lockfile: Option<&Path>) -> Result<Vec<Dependency>> {
-    if let Some(lock) = lockfile {
-        if lock.file_name().and_then(|s| s.to_str()) == Some("gradle.lockfile") {
-            return parse_gradle(lock, manifest);
-        }
+    if let Some(lock) = lockfile
+        && lock.file_name().and_then(|s| s.to_str()) == Some("gradle.lockfile")
+    {
+        return parse_gradle(lock, manifest);
     }
-    if let Some(m) = manifest {
-        if m.file_name().and_then(|s| s.to_str()) == Some("pom.xml") {
-            return parse_maven(m);
-        }
+    if let Some(m) = manifest
+        && m.file_name().and_then(|s| s.to_str()) == Some("pom.xml")
+    {
+        return parse_maven(m);
     }
     Ok(Vec::new())
 }
@@ -63,6 +63,8 @@ fn parse_maven(path: &Path) -> Result<Vec<Dependency>> {
             ecosystem: Ecosystem::Java,
             direct: true, // pom.xml lists direct dependencies
             scope: maven_scope(tag(block, "scope").as_deref()),
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
             resolved_url: None,
             integrity: None,
             parents: Vec::new(),
@@ -134,6 +136,8 @@ fn parse_gradle(lock: &Path, manifest: Option<&Path>) -> Result<Vec<Dependency>>
             ecosystem: Ecosystem::Java,
             direct: is_direct,
             scope: gradle_scope(configurations),
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
             resolved_url: None,
             integrity: None,
             parents: Vec::new(),

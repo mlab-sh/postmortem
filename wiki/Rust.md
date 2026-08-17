@@ -15,6 +15,12 @@ Full graph from the lock's `dependencies` edges.
 **Exception:** workspace member crates have no `source` field - they're local,
 not dependencies, so they're skipped (the scan target isn't its own dependency).
 
+## Licenses
+
+Needs `--online`. `crate.license` is null on crates.io — the license lives per
+version, so the pinned one is looked up inside the response. The pre-SPDX slash
+form (`MIT/Apache-2.0`) is read as `OR`. See [Licenses](Licenses).
+
 ## Dependency scopes
 
 Read from `Cargo.toml` (`Cargo.lock` is a flat resolved set with no dev/prod

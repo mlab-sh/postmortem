@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::model::{Dependency, Ecosystem, Scope};
+use crate::model::{Dependency, Ecosystem, Scope, LicenseSource};
 
 struct Spec {
     name: String,
@@ -58,6 +58,8 @@ fn build_deps(
             ecosystem: Ecosystem::Ruby,
             direct: direct.contains(&spec.name),
             scope: groups.get(&spec.name).copied().unwrap_or(Scope::Prod),
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
             resolved_url: spec.remote.clone(),
             integrity: None,
             parents: specs
@@ -183,12 +185,11 @@ fn parse_text(text: &str) -> (Vec<Spec>, HashSet<String>) {
                     if let Some((name, version)) = parse_spec_line(content) {
                         specs.push(Spec { name, version, remote: remote.clone(), deps: Vec::new() });
                     }
-                } else if indent >= 6 {
-                    if let Some(last) = specs.last_mut() {
-                        if let Some(dep) = content.split_whitespace().next() {
-                            last.deps.push(dep.to_string());
-                        }
-                    }
+                } else if indent >= 6
+                    && let Some(last) = specs.last_mut()
+                    && let Some(dep) = content.split_whitespace().next()
+                {
+                    last.deps.push(dep.to_string());
                 }
             }
             "DEPENDENCIES" => {

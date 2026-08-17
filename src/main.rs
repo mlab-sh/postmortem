@@ -10,6 +10,7 @@ mod enrich;
 mod gate;
 mod gochi;
 mod inspect;
+mod license;
 mod model;
 mod osv;
 mod parsers;
@@ -38,6 +39,7 @@ fn main() -> Result<()> {
         cli::Command::Sbom(args) => run_sbom(args),
         cli::Command::Why(args) => run_why(args),
         cli::Command::Audit(args) => run_audit(args),
+        cli::Command::Licenses(args) => run_licenses(args),
         cli::Command::Cache(args) => run_cache(args),
         cli::Command::System(args) => run_system(args),
         cli::Command::Help => {
@@ -200,6 +202,170 @@ fn run_diff(args: cli::DiffArgs) -> Result<()> {
     Ok(())
 }
 
+/// `postmortem licenses <path>` — group the dependency graph by license, and
+/// enforce a policy over it.
+///
+/// Exits 1 on a policy violation, so it drops into CI as its own step. The
+/// policy comes from `postmortem.conf`'s `[license]` table, with CLI flags added
+/// on top rather than replacing it.
+fn run_licenses(args: cli::LicensesArgs) -> Result<()> {
+    let ui = ui::Ui::new(!args.no_progress);
+    let root = args
+        .path
+        .canonicalize()
+        .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
+    let Some((_, mut deps, _)) = detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))?
+    else {
+        anyhow::bail!("no supported ecosystem detected at {}", root.display());
+    };
+    if args.online {
+        let resolutions = license_resolver(&ui)?.resolve_all(&deps, &ui);
+        resolve::apply_licenses(&mut deps, &resolutions);
+    }
+
+    // Policy: config first, CLI flags additive on top.
+    let cfg_path = args
+        .config
+        .clone()
+        .or_else(|| {
+            let c = root.join(config::DEFAULT_FILENAME);
+            c.is_file().then_some(c)
+        });
+    let file_policy = match &cfg_path {
+        Some(p) => config::Config::load(p)?.license,
+        None => config::LicenseConfig::default(),
+    };
+    let policy = license::Policy {
+        deny: [file_policy.deny, args.deny.clone()].concat(),
+        allow: [file_policy.allow, args.allow.clone()].concat(),
+        fail_on_unknown: file_policy.fail_on_unknown || args.fail_on_unknown,
+    };
+
+    let inventory = license::inventory(&deps);
+    let violations = license::evaluate(&deps, &policy);
+
+    if args.json {
+        let doc = license::inventory_json(&inventory, &violations, &deps);
+        let out = serde_json::to_string_pretty(&doc)?;
+        cli::OutputTarget::resolve_named(args.output.as_deref(), "licenses", "json").write(&out)?;
+    } else {
+        render_licenses(&inventory, &violations, &deps, args.unknown_only, args.packages);
+    }
+
+    if !violations.is_empty() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// The `licenses` terminal view.
+fn render_licenses(
+    inventory: &[license::Bucket],
+    violations: &[license::Violation],
+    deps: &[model::Dependency],
+    unknown_only: bool,
+    show_packages: bool,
+) {
+    use owo_colors::OwoColorize;
+    const ORANGE: (u8, u8, u8) = (255, 165, 0);
+
+    let unknown = inventory.iter().find(|b| b.label == "(unknown)").map_or(0, |b| b.packages.len());
+    println!(
+        "{}  {}",
+        "licenses".bold(),
+        format!("({} deps, {} unresolved)", deps.len(), unknown).dimmed()
+    );
+
+    // Which labels the policy rejected, so they can be marked in the listing.
+    let denied: std::collections::HashSet<&str> =
+        violations.iter().filter_map(|v| v.license.as_deref()).collect();
+
+    let shown: Vec<&license::Bucket> = if unknown_only {
+        inventory.iter().filter(|b| b.label == "(unknown)").collect()
+    } else {
+        inventory.iter().collect()
+    };
+    if shown.is_empty() {
+        println!("\n  {}", "nothing to report".dimmed());
+        return;
+    }
+
+    println!();
+    let width = shown.iter().map(|b| b.label.chars().count()).max().unwrap_or(10).clamp(10, 40);
+    for b in &shown {
+        let count = b.packages.len();
+        let label = if b.label == "(unknown)" {
+            b.label.truecolor(ORANGE.0, ORANGE.1, ORANGE.2).to_string()
+        } else if denied.contains(b.label.as_str()) {
+            b.label.red().to_string()
+        } else if b.spdx {
+            b.label.green().to_string()
+        } else {
+            // Resolved to something, but not to an SPDX identifier.
+            b.label.yellow().to_string()
+        };
+        // Pad on the plain text: ANSI escapes count toward a format width.
+        let pad = width.saturating_sub(b.label.chars().count());
+        let mark = if denied.contains(b.label.as_str()) {
+            format!("  {}", "⚠ denied".red())
+        } else if !b.spdx && b.label != "(unknown)" {
+            format!("  {}", "non-SPDX".dimmed())
+        } else {
+            String::new()
+        };
+        println!("  {label}{:pad$}  {count:>4}{mark}", "", pad = pad);
+        if show_packages || unknown_only {
+            for p in &b.packages {
+                println!("      {}", p.dimmed());
+            }
+        }
+    }
+
+    if violations.is_empty() {
+        return;
+    }
+    println!();
+    let by_reason = |r: license::Reason| violations.iter().filter(|v| v.reason == r).count();
+    let mut parts = Vec::new();
+    for (r, word) in [
+        (license::Reason::Denied, "denied"),
+        (license::Reason::NotAllowed, "not allowed"),
+        (license::Reason::Unknown, "unresolved"),
+    ] {
+        let n = by_reason(r);
+        if n > 0 {
+            parts.push(format!("{n} {word}"));
+        }
+    }
+    println!("{}", format!("⚠ policy: {}", parts.join(", ")).red().bold());
+    for v in violations.iter().take(20) {
+        println!(
+            "  {} {}  {}",
+            format!("{}@{}", v.package, v.version).red(),
+            v.license.as_deref().unwrap_or("(no license)").dimmed(),
+            v.reason.as_str().dimmed()
+        );
+    }
+    if violations.len() > 20 {
+        println!("  {}", format!("… and {} more", violations.len() - 20).dimmed());
+    }
+}
+
+/// A resolver configured only to fill in licenses.
+///
+/// Reputation scoring is not wanted here, but the registry document that carries
+/// the license is the same one the repo lookup fetches — so this shares the
+/// resolver, and the cache, without asking for language breakdowns.
+fn license_resolver(_ui: &ui::Ui) -> Result<resolve::Resolver> {
+    let mut settings = settings::Settings::load().unwrap_or_default();
+    let tokens = resolve::Tokens {
+        github: settings.resolve_github_token()?,
+        gitlab: settings.gitlab_token(),
+        codeberg: settings.codeberg_token(),
+    };
+    Ok(resolve::Resolver::new(tokens, settings.tree.clone()).with_licenses(true))
+}
+
 /// `postmortem sbom <path>` — resolve the project and emit a CycloneDX 1.5 SBOM.
 fn run_sbom(args: cli::SbomArgs) -> Result<()> {
     let ui = ui::Ui::new(!args.no_progress);
@@ -207,9 +373,14 @@ fn run_sbom(args: cli::SbomArgs) -> Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
-    let Some((_, deps, _)) = detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))? else {
+    let Some((_, mut deps, _)) = detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))?
+    else {
         anyhow::bail!("no supported ecosystem detected at {}", root.display());
     };
+    if args.online {
+        let resolutions = license_resolver(&ui)?.resolve_all(&deps, &ui);
+        resolve::apply_licenses(&mut deps, &resolutions);
+    }
     let name = root.file_name().and_then(|s| s.to_str()).unwrap_or("project");
     let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let bom = sbom::cyclonedx(name, &deps, &timestamp);
@@ -241,7 +412,7 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
-    let Some((detected, deps, diags)) = detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))? else {
+    let Some((detected, mut deps, diags)) = detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))? else {
         std::process::exit(2);
     };
 
@@ -279,8 +450,11 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
             codeberg: settings.codeberg_token(),
         };
         let resolver =
-            resolve::Resolver::new(tokens, settings.tree.clone()).with_languages(args.languages);
+            resolve::Resolver::new(tokens, settings.tree.clone())
+            .with_languages(args.languages)
+            .with_licenses(true);
         let resolutions = resolver.resolve_all(&deps, &ui);
+        resolve::apply_licenses(&mut deps, &resolutions);
         tree::enrich(&mut forest, &resolutions);
         tree::score(&mut forest);
     }
@@ -390,7 +564,9 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
             codeberg: settings.codeberg_token(),
         };
         let resolver =
-            resolve::Resolver::new(tokens, settings.tree.clone()).with_languages(args.languages);
+            resolve::Resolver::new(tokens, settings.tree.clone())
+            .with_languages(args.languages)
+            .with_licenses(true);
         let resolutions = resolver.resolve_all(&inv.deps, &ui);
         tree::enrich(&mut forest, &resolutions);
     }
@@ -455,19 +631,18 @@ fn run_system_gate(args: &cli::SystemArgs, forest: &tree::Tree) {
     }
     // Fail-closed: an active vuln gate over an un-scannable backend (brew/nix,
     // Fedora/RHEL) or a scan that errored is INCONCLUSIVE, not clean.
-    if policy.needs_vulns() {
-        if let Some(d) = forest
+    if policy.needs_vulns()
+        && let Some(d) = forest
             .diagnostics
             .iter()
             .find(|d| d.kind == "vuln_source_unavailable" || d.kind == "vuln_scan_failed")
-        {
-            eprintln!(
-                "error: vuln gate cannot be evaluated — {} ({}); \
-                 an un-scanned backend is not the same as clean",
-                d.message, d.kind
-            );
-            std::process::exit(2);
-        }
+    {
+        eprintln!(
+            "error: vuln gate cannot be evaluated — {} ({}); \
+             an un-scanned backend is not the same as clean",
+            d.message, d.kind
+        );
+        std::process::exit(2);
     }
 
     let today = chrono::Local::now().date_naive();
@@ -753,7 +928,9 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
             gitlab: settings.gitlab_token(),
             codeberg: settings.codeberg_token(),
         };
-        Some(resolve::Resolver::new(tokens, settings.tree.clone()).with_languages(args.languages))
+        Some(resolve::Resolver::new(tokens, settings.tree.clone())
+            .with_languages(args.languages)
+            .with_licenses(true))
     } else {
         None
     };
@@ -807,7 +984,7 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
                 continue;
             }
         };
-        let (detected, deps, diags) = parsed;
+        let (detected, mut deps, diags) = parsed;
         any_detected = true;
 
         let ecosystems: Vec<String> = detected.iter().map(|e| e.name().to_string()).collect();
@@ -816,6 +993,7 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
 
         if let Some(resolver) = &resolver {
             let resolutions = resolver.resolve_all(&deps, &ui);
+            resolve::apply_licenses(&mut deps, &resolutions);
             tree::enrich(&mut forest, &resolutions);
             tree::score(&mut forest);
         }
