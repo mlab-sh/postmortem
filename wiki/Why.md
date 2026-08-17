@@ -28,6 +28,70 @@ flatmap-stream@0.1.1
 
 If the package isn't in the graph, `why` says so and stops.
 
+## `--blast` — what a compromise would reach
+
+`why` answers *how did this get here*. `--blast` answers *what happens if it
+turns hostile tomorrow* — the question that decides whether you act on a signal
+or file it.
+
+```bash
+postmortem why brace-expansion . --blast
+```
+
+```
+blast radius  brace-expansion  (in .)
+
+  installed    1.1.12, 1.1.15, 2.0.2
+  reach        27 of 466 packages depend on it (6%)
+  ships        yes — prod (it is in the shipped artifact)
+  runs         runtime only — executes when the code is called
+  entered via  bcrypt@5.1.1, ejs@3.1.10, jest@30.4.2
+
+  if compromised, it reaches
+    • the running application, and whatever it can reach in production
+
+(@_@)  brace-expansion ships to production and 27 package(s) depend on it —
+       a compromise reaches your users
+```
+
+### Position is the ceiling; current code is only a floor
+
+The report has two sections, and the split is the whole point.
+
+**`if compromised, it reaches`** follows from *where the package sits*. An
+install hook executes on every machine that installs, with that machine's
+environment — CI secrets, cloud credentials, the developer's SSH agent. That is
+true regardless of what the code does today, and a hostile version inherits all
+of it.
+
+**`what its current code does`** is the sensitive APIs the published code already
+calls. It is a **lower bound, not a limit** — a package that reads no files today
+can read every file tomorrow. The output says so explicitly, because presenting
+it as the limit would be the dangerous mistake.
+
+### Positions, worst first
+
+| Position | Reach |
+| --- | --- |
+| **Install hook** | Every machine that installs — CI runners and laptops — before any review or test runs. The highest-leverage position there is; scope does not soften it, a dev-only package with a hook still runs everywhere. |
+| **Ships to production** | The running application and whatever it can reach. |
+| **Dev/test, no hook** | The build machine only, and only when the tooling that pulls it in actually runs. |
+
+### "unknown" is a real answer
+
+Most ecosystems keep dependencies outside the project — Rust in
+`~/.cargo/registry`, Ruby in the bundle path, Go in the module cache — so a
+lockfile-only scan reads none of their code:
+
+```
+runs  unknown — dependency code not on disk, so not checked
+```
+
+That is deliberately **not** reported as "runtime only". Install-time execution
+is the highest-leverage thing to be wrong about, so a clean-looking verdict
+nobody measured is exactly what this refuses to print. Install the project's
+dependencies and re-run to settle it.
+
 ## JSON
 
 ```json
@@ -51,6 +115,7 @@ answer, not a failure.
 
 | Flag | Description |
 | --- | --- |
-| `--json` / `-o <FILE>` | Emit the paths as JSON. |
+| `--blast` | Report the blast radius instead of the paths. |
+| `--json` / `-o <FILE>` | Emit the paths (or the blast radius) as JSON. |
 | `--omit <dev\|optional>` | Drop a dependency set. Repeatable. A package reachable from production is always kept — see [Dependency scopes](Dependency-Scopes). |
 | `--no-progress` | Disable the animated progress UI. |

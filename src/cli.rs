@@ -365,6 +365,12 @@ pub struct WhyArgs {
     /// The project directory to resolve.
     pub path: PathBuf,
 
+    /// Blast radius instead of the paths: what a compromise of this package
+    /// would reach — how much of the tree depends on it, whether it ships,
+    /// whether it runs at install time, and what that position exposes.
+    #[arg(long)]
+    pub blast: bool,
+
     /// Emit the result as JSON instead of the terminal view.
     #[arg(long)]
     pub json: bool,

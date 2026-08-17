@@ -76,6 +76,7 @@ postmortem audit . --online --vulns     # one graded verdict: malware + risk + C
 postmortem licenses . --online          # license inventory + policy gate
 postmortem fix .                        # the minimum upgrade that clears the CVEs
 postmortem why left-pad .               # why is this package installed?
+postmortem why left-pad . --blast       # if it were compromised, what breaks?
 postmortem diff <github-pr-url> --online # what does this PR pull in, and is it safe?
 postmortem sbom . -o sbom.json          # export a CycloneDX 1.5 SBOM
 postmortem tree . --online --html -o r.html   # a shareable HTML report
@@ -112,7 +113,7 @@ cd postmortem && cargo build --release
 | [`audit`](https://github.com/mlab-sh/postmortem/wiki/Audit) | One-shot graded health check: malware scan + inventory, plus optional reputation and vulns. |
 | [`licenses`](https://github.com/mlab-sh/postmortem/wiki/Licenses) | License inventory across the graph, with a deny / allow / fail-on-unknown policy. |
 | [`fix`](https://github.com/mlab-sh/postmortem/wiki/Fix) | Turn the vulnerability report into the change that clears it: minimum upgrade, direct command or override snippet. |
-| [`why`](https://github.com/mlab-sh/postmortem/wiki/Why) | Explain why a package is installed: its dependency paths up to the roots. |
+| [`why`](https://github.com/mlab-sh/postmortem/wiki/Why) | Explain why a package is installed — and with `--blast`, what a compromise of it would reach. |
 | [`diff`](https://github.com/mlab-sh/postmortem/wiki/Diff) | Compare two project states — or a GitHub PR by URL — and assess what the change introduces. |
 | [`sbom`](https://github.com/mlab-sh/postmortem/wiki/Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |
 | [`system`](https://github.com/mlab-sh/postmortem/wiki/System) | Audit your machine's OS package managers, and deep-inspect any package's real source. |

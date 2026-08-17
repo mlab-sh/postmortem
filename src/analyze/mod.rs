@@ -38,6 +38,27 @@ pub fn drop_test_iocs(findings: Vec<Finding>, allow_test_files: bool, base: &Pat
         .collect()
 }
 
+/// Is the *dependencies'* own code on disk to be analyzed?
+///
+/// Most ecosystems keep dependencies outside the project — Rust in
+/// `~/.cargo/registry`, Ruby in the bundle path, Go in the module cache — so a
+/// scan of those reads the project's own source and nothing else. Node is the
+/// exception when `node_modules` is present, and PHP when `vendor/` is committed.
+///
+/// Callers that draw conclusions *about a dependency* need this: with no code to
+/// read, "we found no install hook" means "we could not look", and reporting the
+/// two the same way would invent a clean result. Mirrors [`plan`].
+pub fn scans_dependency_code(detected: &[Detected]) -> bool {
+    detected.iter().any(|d| match d {
+        Detected::Node { node_modules, .. } => node_modules.is_some(),
+        Detected::Python { site_packages, .. } => site_packages.is_some(),
+        // Composer vendors in-tree; the walk covers it when it is there.
+        Detected::Php { root, .. } => root.join("vendor").is_dir(),
+        Detected::Go { root, .. } => root.join("vendor").is_dir(),
+        Detected::Rust { .. } | Detected::Ruby { .. } | Detected::Java { .. } => false,
+    })
+}
+
 /// A boxed analyzer invocation that appends its findings to the shared vec.
 type RunFn<'a> = Box<dyn FnOnce(&mut Vec<Finding>) + 'a>;
 

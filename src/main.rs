@@ -1,6 +1,7 @@
 mod analyze;
 mod archsec;
 mod audit;
+mod blast;
 mod cache;
 mod cli;
 mod config;
@@ -729,10 +730,35 @@ fn run_why(args: cli::WhyArgs) -> Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
-    let Some((_, deps, _)) = detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))? else {
+    let Some((detected, deps, _)) = detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))?
+    else {
         anyhow::bail!("no supported ecosystem detected at {}", root.display());
     };
     let label = args.path.display().to_string();
+
+    if args.blast {
+        // The behavioural half needs the offline analyzers; the positional half
+        // does not, so a failure there would still leave a useful answer — but
+        // running them is cheap and local, so they always run.
+        let findings = {
+            let f = analyze::run_all(&detected, &deps, &ui);
+            analyze::drop_test_iocs(f, false, &root)
+        };
+        // Whether the dependencies' own code was on disk decides between "no
+        // install hook" and "could not check" — see `blast::Trigger::Unknown`.
+        let code_scanned = analyze::scans_dependency_code(&detected);
+        let Some(b) = blast::analyze(&deps, &findings, &args.package, code_scanned) else {
+            anyhow::bail!("{} is not in the dependency graph", args.package);
+        };
+        if args.json {
+            let out = serde_json::to_string_pretty(&blast::to_json(&b, &label))?;
+            cli::OutputTarget::resolve_named(args.output.as_deref(), "blast", "json").write(&out)?;
+        } else {
+            blast::render(&b, &label);
+        }
+        return Ok(());
+    }
+
     if args.json {
         let doc = why::to_json(&deps, &args.package, &label);
         let out = serde_json::to_string_pretty(&doc)?;

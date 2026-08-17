@@ -1930,3 +1930,60 @@ fn allowlist_on_a_project_without_a_config_is_empty_not_an_error() {
     assert_eq!(exit, 0);
     assert!(out.contains("no suppressions"), "got: {out}");
 }
+
+// --- `why --blast` -------------------------------------------------------------
+
+#[test]
+fn blast_reports_reach_and_entry_points() {
+    let (exit, out) = run(&["why", "shared-lib", fixture("scoped-node").to_str().unwrap(), "--blast"]);
+    assert_eq!(exit, 0, "got: {out}");
+    assert!(out.contains("blast radius"), "got: {out}");
+    // shared-lib is pulled by both prod-lib and the dev tool.
+    assert!(out.contains("entered via"), "got: {out}");
+    assert!(out.contains("prod-lib"), "got: {out}");
+}
+
+#[test]
+fn blast_on_an_absent_package_is_an_error_not_an_empty_report() {
+    let (exit, _) = run(&["why", "nope", fixture("clean-node").to_str().unwrap(), "--blast"]);
+    assert_ne!(exit, 0, "a package that is not there has no blast radius to report");
+}
+
+#[test]
+fn blast_says_unknown_when_the_dependency_code_was_never_read() {
+    // The fixture has node_modules, so the hook question IS answerable there;
+    // a lockfile-only project must say so instead of implying a clean result.
+    let dir = std::env::temp_dir().join(format!("pm-blast-lock-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for f in ["package.json", "package-lock.json"] {
+        std::fs::copy(fixture("scoped-node").join(f), dir.join(f)).unwrap();
+    }
+    let (_, out) = run(&["why", "shared-lib", dir.to_str().unwrap(), "--blast"]);
+    assert!(out.contains("unknown"), "got: {out}");
+    assert!(out.contains("not on disk"), "and it should say why: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn blast_json_separates_the_ceiling_from_current_behaviour() {
+    let v = json_of(&[
+        "why",
+        "flatmap-stream",
+        fixture("malicious-node").to_str().unwrap(),
+        "--blast",
+    ]);
+    assert_eq!(v["package"], "flatmap-stream");
+    assert_eq!(v["position"]["trigger"], "install");
+    // `exposure` follows from position; `observed` is only what the code does now.
+    let exposure = v["exposure"].as_array().unwrap();
+    assert!(exposure.iter().any(|e| e.as_str().unwrap().contains("CI")));
+    assert!(v["observed"].is_array());
+}
+
+#[test]
+fn blast_does_not_change_the_default_why_output() {
+    let (_, plain) = run(&["why", "flatmap-stream", fixture("malicious-node").to_str().unwrap()]);
+    assert!(plain.contains("required by"), "the path view is unchanged: {plain}");
+    assert!(!plain.contains("blast radius"));
+}
