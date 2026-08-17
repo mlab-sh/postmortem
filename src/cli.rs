@@ -313,9 +313,16 @@ pub struct CacheArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum CacheAction {
-    /// Remove cached entries. With no filter, prunes everything; more actions
-    /// (path, info, …) will land here later.
+    /// Remove cached entries. With no filter, prunes everything.
     Prune(PruneArgs),
+
+    /// Summarize the cache: entries, size and age per namespace, plus how many
+    /// entries were written by an older record format and will be refetched.
+    Info,
+
+    /// Print the cache directory, and nothing else — so it composes:
+    /// `du -sh "$(postmortem cache path)"`.
+    Path,
 }
 
 #[derive(Args, Debug)]
@@ -323,6 +330,12 @@ pub struct PruneArgs {
     /// Only remove entries older than this many days (default: remove all).
     #[arg(long)]
     pub older_than: Option<u64>,
+
+    /// Only remove entries written by an older record format — the ones a
+    /// postmortem upgrade has already invalidated. They are dropped lazily as
+    /// they are touched anyway; this sweeps them all in one pass.
+    #[arg(long)]
+    pub stale: bool,
 
     /// Show what would be removed without deleting anything.
     #[arg(long)]

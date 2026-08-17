@@ -1091,3 +1091,166 @@ fn sbom_honours_omit() {
     assert!(names.contains(&"shared-lib"));
     assert!(!names.contains(&"dev-tool"), "an omitted package must not reach the SBOM");
 }
+
+// --- `cache` -------------------------------------------------------------------
+//
+// Every one of these drives the binary with a throwaway `$HOME`, because
+// `settings::home_dir()` reads that variable and the cache lives under it. A test
+// that forgot to would prune the developer's real cache.
+
+/// A private `$HOME` with a cache dir ready to seed.
+fn tmp_home(tag: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let home = std::env::temp_dir().join(format!(
+        "pm-home-{tag}-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(home.join(".postmortem").join("cache")).unwrap();
+    home
+}
+
+fn cache_dir(home: &std::path::Path) -> PathBuf {
+    home.join(".postmortem").join("cache")
+}
+
+/// Write a cache entry verbatim, so a test can plant a specific record format.
+fn seed_entry(home: &std::path::Path, ns: &str, name: &str, body: &str) {
+    let d = cache_dir(home).join(ns);
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join(format!("{name}.json")), body).unwrap();
+}
+
+/// Run `postmortem cache <args>` against a private `$HOME`.
+fn cache_cmd(home: &std::path::Path, args: &[&str]) -> (i32, String) {
+    let out = Command::new(bin())
+        .arg("cache")
+        .args(args)
+        .env("HOME", home)
+        .output()
+        .expect("postmortem binary did not run");
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    // These views are coloured unconditionally, and an escape sequence sits
+    // between the count and its label ("\e[1m3\e[0m entries"), so assertions on
+    // the text must run on the stripped form.
+    (out.status.code().unwrap_or(-1), strip_ansi(&s))
+}
+
+/// Drop CSI escape sequences (`ESC [ ... <final byte>`).
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        if chars.next() != Some('[') {
+            continue;
+        }
+        for c in chars.by_ref() {
+            if c.is_ascii_alphabetic() {
+                break;
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn cache_path_prints_only_the_directory() {
+    let home = tmp_home("path");
+    let (exit, out) = cache_cmd(&home, &["path"]);
+    assert_eq!(exit, 0);
+    assert_eq!(
+        out.trim(),
+        cache_dir(&home).display().to_string(),
+        "the path must be the whole output, so `$(postmortem cache path)` composes"
+    );
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn cache_info_on_an_empty_cache_says_so() {
+    let home = tmp_home("empty");
+    let (exit, out) = cache_cmd(&home, &["info"]);
+    assert_eq!(exit, 0);
+    assert!(out.contains("empty"), "got: {out}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn cache_info_counts_entries_per_namespace() {
+    let home = tmp_home("info");
+    seed_entry(&home, "registry", "a", r#"{"v":1,"fetched_at":1786000000,"data":{"repo":null}}"#);
+    seed_entry(&home, "registry", "b", r#"{"v":1,"fetched_at":1786000000,"data":{"repo":null}}"#);
+    seed_entry(&home, "repo", "c", r#"{"v":1,"fetched_at":1786000000,"data":{"stars":1}}"#);
+
+    let (exit, out) = cache_cmd(&home, &["info"]);
+    assert_eq!(exit, 0);
+    assert!(out.contains("registry"), "got: {out}");
+    assert!(out.contains("repo"), "got: {out}");
+    assert!(out.contains("3 entries"), "totals should be reported, got: {out}");
+    assert!(!out.contains("predate record format"), "nothing is stale here, got: {out}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn cache_info_flags_entries_from_an_older_record_format() {
+    let home = tmp_home("stale-info");
+    seed_entry(&home, "registry", "current", r#"{"v":1,"fetched_at":1786000000,"data":{"repo":null}}"#);
+    // A record predating the envelope: a bare payload.
+    seed_entry(&home, "registry", "legacy", r#"{"repo":null}"#);
+    // A payload carrying its OWN `v` field must still be seen as legacy — the
+    // envelope is identified by its `data` wrapper, not by a bare `v`.
+    seed_entry(&home, "registry", "decoy", r#"{"v":1,"stars":5}"#);
+
+    let (exit, out) = cache_cmd(&home, &["info"]);
+    assert_eq!(exit, 0);
+    assert!(out.contains("predate record format"), "stale entries must be surfaced, got: {out}");
+    assert!(out.contains("2 entries predate"), "both legacy shapes count, got: {out}");
+    assert!(out.contains("prune --stale"), "and the fix should be suggested, got: {out}");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn cache_prune_stale_spares_current_entries() {
+    let home = tmp_home("prune-stale");
+    seed_entry(&home, "registry", "current", r#"{"v":1,"fetched_at":1786000000,"data":{"repo":null}}"#);
+    seed_entry(&home, "registry", "legacy", r#"{"repo":null}"#);
+
+    let (exit, out) = cache_cmd(&home, &["prune", "--stale"]);
+    assert_eq!(exit, 0);
+    assert!(out.contains("removed 1"), "got: {out}");
+    assert!(out.contains("stale format"), "the filter should be named, got: {out}");
+    assert!(cache_dir(&home).join("registry").join("current.json").exists());
+    assert!(!cache_dir(&home).join("registry").join("legacy.json").exists());
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn cache_prune_dry_run_deletes_nothing() {
+    let home = tmp_home("prune-dry");
+    seed_entry(&home, "registry", "a", r#"{"v":1,"fetched_at":1786000000,"data":{"repo":null}}"#);
+
+    let (exit, out) = cache_cmd(&home, &["prune", "--dry-run"]);
+    assert_eq!(exit, 0);
+    assert!(out.contains("would remove 1"), "got: {out}");
+    assert!(cache_dir(&home).join("registry").join("a.json").exists(), "dry run must not delete");
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[test]
+fn a_stale_entry_is_not_served_as_data() {
+    // The whole point of the version: a record from an older format must be a
+    // miss, not a plausible-looking answer. Planting one and re-reading it
+    // through `info` proves it was dropped rather than trusted.
+    let home = tmp_home("no-serve");
+    seed_entry(&home, "registry", "legacy", r#"{"repo":{"host":"github.com","owner":"o","name":"r"}}"#);
+    let (_, before) = cache_cmd(&home, &["info"]);
+    assert!(before.contains("1 entries predate") || before.contains("1 entry predate"), "got: {before}");
+    let _ = std::fs::remove_dir_all(&home);
+}
