@@ -55,6 +55,7 @@ postmortem tree . --online --vulns      # reputation + CVEs together
 | Flag | Description |
 | --- | --- |
 | `--depth <N>` | Limit the tree to N levels below each root. |
+| `--human` | Show the maintainer graph instead of the tree. Needs `--online`. |
 | `--online` | Resolve source repos + reputation/provenance signals (network). |
 | `--languages` | With `--online`, add each repo's language breakdown (one extra cached call/repo). |
 | `--vulns` | Query known vulnerabilities via `vuln.mlab.sh` (network). |
@@ -114,6 +115,73 @@ upload, so a monorepo needs one gate job, not one per package.
 A target that cannot be read - a typo, a lockfile with no manifest beside it, a
 file that isn't a manifest at all - is a **configuration error (exit 2)**, never
 a silently skipped one. A green build must mean everything was checked.
+
+## `--human` — the maintainer graph
+
+A dependency tree is usually read as a list of packages, but packages are not
+what gets compromised — **accounts** are. One phished maintainer publishes to
+every package they own, and everything downstream inherits it.
+
+```bash
+postmortem tree . --online --human
+```
+
+```
+maintainer graph  .
+
+  466 package(s), 465 with a known maintainer, 1 without
+
+   REACH  MAINTAINER                   OWNS  SHARE
+     125  sindresorhus                   59  27%
+     100  isaacs                         39  21%
+      72  qix                             6  15%
+      ...
+      46  dfcreative                      1  10%
+
+  3 account(s) control 189 of 466 packages (41%)
+
+(T_T)  one compromised account at the top reaches 125 package(s)
+```
+
+### Reach, not the package count
+
+Each account is measured by **reach** — everything that transitively depends on
+any package it controls — not by how many packages it owns. Look at the two ends
+of that table: `qix` owns 6 packages and reaches 72; `dfcreative` owns **one**
+and reaches 46. Owning a package everything depends on beats owning fifty
+leaves, and only reach shows it.
+
+### The headline is a union, never a sum
+
+Reaches overlap heavily — two accounts on the same package each reach everything
+above it. "3 accounts control 41%" is the size of the **union** of their reach,
+computed as a set. Adding the three numbers would give 297 of 466 and be
+meaningless.
+
+### Coverage is part of the answer
+
+Maintainer sets are free only where the registry document postmortem already
+fetches carries them:
+
+| Ecosystem | Maintainers | Cost |
+| --- | --- | --- |
+| **npm** | packument `maintainers` | free — already fetched for provenance |
+| **Packagist** | package `maintainers` | free — already fetched |
+| crates.io, RubyGems, PyPI | would need another call per package | not queried |
+
+Packages with no attribution are counted and reported:
+
+```
+⚠ 1 package(s) have no maintainer data (node), so the real concentration
+  can only be higher than shown
+```
+
+A concentration figure over a half-attributed tree means something very
+different from the same figure over a fully-attributed one, so the gap is stated
+rather than hidden. Note the direction of the error: unattributed packages can
+only *add* to someone's reach, never subtract, so the number shown is a floor.
+
+Needs `--online`; `--json` works alongside it.
 
 ## `--html` — the shareable report
 

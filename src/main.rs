@@ -11,6 +11,7 @@ mod enrich;
 mod fix;
 mod gate;
 mod gochi;
+mod human;
 mod inspect;
 mod license;
 mod model;
@@ -1357,6 +1358,12 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
             args.paths.len()
         );
     }
+    if args.human && !args.online {
+        anyhow::bail!(
+            "--human needs --online: maintainer sets come from the package registry, and \
+             nothing in a lockfile names who can publish"
+        );
+    }
     if args.allow_multiple && !machine {
         eprintln!("note: --allow-multiple only affects --json/--sarif/--html; the terminal view already renders every target");
     }
@@ -1448,6 +1455,25 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
         if let Some(resolver) = &resolver {
             let resolutions = resolver.resolve_all(&deps, &ui);
             resolve::apply_licenses(&mut deps, &resolutions);
+
+            // The maintainer graph replaces the tree view rather than adding to
+            // it: it answers a different question over the same resolution.
+            if args.human {
+                let g = human::graph(&deps, &resolutions);
+                if args.json {
+                    let out = serde_json::to_string_pretty(&human::to_json(
+                        &g,
+                        &deps,
+                        &root.display().to_string(),
+                    ))?;
+                    cli::OutputTarget::resolve_named(args.output.as_deref(), "human", "json")
+                        .write(&out)?;
+                } else {
+                    human::render(&g, &deps, &root.display().to_string());
+                }
+                continue;
+            }
+
             tree::enrich(&mut forest, &resolutions);
             tree::score(&mut forest);
         }

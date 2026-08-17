@@ -40,7 +40,8 @@ use serde::{Deserialize, Serialize};
 /// check is required and not merely nice to have.
 /// History: 1 — the initial envelope. 2 — `CachedRepo` gained `licenses`.
 /// 3 — `Vuln` gained `fixed`, the version that remediates it.
-pub const FORMAT_VERSION: u32 = 3;
+/// 4 — `VersionMeta` / `CachedRepo` gained `maintainers`.
+pub const FORMAT_VERSION: u32 = 4;
 
 pub struct Cache {
     root: Option<PathBuf>,

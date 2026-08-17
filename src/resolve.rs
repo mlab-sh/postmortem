@@ -255,6 +255,9 @@ pub struct Resolution {
     /// License(s) the registry declares for this exact version. Empty when the
     /// registry says nothing — never assume permissive.
     pub licenses: Vec<crate::model::License>,
+    /// Accounts that can publish this package. Empty means *unknown* — the
+    /// registry did not tell us — never "nobody".
+    pub maintainers: Vec<String>,
 }
 
 /// Cached registry facts for one `name@version` (an explicit `None` repo means
@@ -275,6 +278,11 @@ struct CachedRepo {
     repo: Option<RepoRef>,
     #[serde(default)]
     licenses: Vec<String>,
+    /// Accounts that can publish the package, where the registry document we
+    /// already fetch carries them (Packagist). npm's come from the packument via
+    /// [`VersionMeta`] instead.
+    #[serde(default)]
+    maintainers: Vec<String>,
 }
 
 /// Provenance anomalies for one installed version vs its predecessors, derived
@@ -300,6 +308,13 @@ struct VersionMeta {
     /// publish that skipped the trusted OIDC/CI flow (the axios pattern).
     #[serde(default)]
     provenance_removed: bool,
+    /// Every account that can publish this package.
+    ///
+    /// The *control* surface, not the publish history: any maintainer can push a
+    /// new version, so a compromise of any one of them reaches the package. That
+    /// is the unit a maintainer graph has to count.
+    #[serde(default)]
+    maintainers: Vec<String>,
 }
 
 /// Flag a gap this large (days) between releases as a dormancy anomaly.
@@ -472,6 +487,9 @@ impl Resolver {
         // packument, which has no equivalent elsewhere.
         if dep.ecosystem == Ecosystem::Node {
             if let Ok(Some(meta)) = self.version_meta(dep) {
+                if !meta.maintainers.is_empty() {
+                    res.maintainers = meta.maintainers.clone();
+                }
                 if meta.install_script_added {
                     signals.push(RiskSignal::InstallScriptAdded);
                 }
@@ -537,7 +555,7 @@ impl Resolver {
         if dep.ecosystem == Ecosystem::Go {
             let repo = parse_repo(&dep.name);
             if !self.want_licenses {
-                return Ok(CachedRepo { repo, licenses: Vec::new() });
+                return Ok(CachedRepo { repo, licenses: Vec::new(), maintainers: Vec::new() });
             }
             let key = format!("go:{}@{}", dep.name, dep.version);
             if let Some(hit) = self.cache.get::<CachedRepo>("registry", &key) {
@@ -554,9 +572,10 @@ impl Resolver {
                 // deps.dev not knowing a module is normal (private, or too new);
                 // a transport failure is not cached, so it retries next run.
                 Ok(None) => Vec::new(),
-                Err(_) => return Ok(CachedRepo { repo, licenses: Vec::new() }),
+                Err(_) => return Ok(CachedRepo { repo, licenses: Vec::new(), maintainers: Vec::new() }),
             };
-            let record = CachedRepo { repo, licenses };
+            // Go resolves through deps.dev, which publishes no maintainer set.
+            let record = CachedRepo { repo, licenses, maintainers: Vec::new() };
             self.cache.put("registry", &key, &record);
             return Ok(record);
         }
@@ -580,6 +599,15 @@ impl Resolver {
             },
         };
         let licenses = doc.as_ref().map(|v| raw_licenses_from(dep, v)).unwrap_or_default();
+        // Packagist publishes the maintainer set in the same document; npm's
+        // comes from the packument, and the other registries need a call we do
+        // not make — those stay empty, meaning *unknown*, never "nobody".
+        let maintainers = doc
+            .as_ref()
+            .filter(|_| dep.ecosystem == Ecosystem::Php)
+            .and_then(|v| v.get("package"))
+            .map(|p| maintainer_names(p.get("maintainers")))
+            .unwrap_or_default();
         let mut repo = match &doc {
             Some(v) => repo_candidates(dep.ecosystem, v).iter().find_map(|u| parse_repo(u)),
             None => None, // 404 — unpublished/private/unknown package
@@ -597,7 +625,7 @@ impl Resolver {
         {
             repo = dep.resolved_url.as_deref().and_then(parse_repo);
         }
-        let record = CachedRepo { repo, licenses };
+        let record = CachedRepo { repo, licenses, maintainers };
         self.cache.put("registry", &key, &record);
         Ok(record)
     }
@@ -1283,7 +1311,12 @@ fn parse_ts(s: &str) -> Option<i64> {
 /// never shipped an earlier version (account-takeover / trojanized-update tells,
 /// à la event-stream and ua-parser-js).
 fn compute_version_meta(doc: &serde_json::Value, version: &str) -> VersionMeta {
-    let mut meta = VersionMeta::default();
+    // The maintainer set is a property of the package, not of a version, so it
+    // is recorded before any of the version-comparison logic can return early.
+    let mut meta = VersionMeta {
+        maintainers: maintainer_names(doc.get("maintainers")),
+        ..Default::default()
+    };
     let (Some(times), Some(versions)) = (
         doc.get("time").and_then(|t| t.as_object()),
         doc.get("versions").and_then(|v| v.as_object()),
@@ -1368,6 +1401,28 @@ fn has_install_hook(manifest: &serde_json::Value) -> bool {
 }
 
 /// The npm user who published this version (`_npmUser.name`).
+/// Account names from an npm/Packagist `maintainers` array (`[{name, email}]`),
+/// deduplicated and sorted so the graph is stable across runs.
+fn maintainer_names(v: Option<&serde_json::Value>) -> Vec<String> {
+    let mut out: Vec<String> = v
+        .and_then(|m| m.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|m| {
+                    m.get("name")
+                        .and_then(|n| n.as_str())
+                        .or_else(|| m.as_str())
+                        .map(str::to_string)
+                })
+                .filter(|n| !n.trim().is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn publisher(manifest: &serde_json::Value) -> Option<&str> {
     manifest.get("_npmUser").and_then(|u| u.get("name")).and_then(|n| n.as_str())
 }

@@ -39,6 +39,9 @@ graph, and flags what real compromises look like.
   of nowhere).
 * **Reputation intelligence.** Score every dependency on its real source repo
   (stars, age, activity, language) across GitHub, GitLab, and Codeberg.
+* **Maintainer graph.** `tree --human` ranks the *accounts* that control your
+  tree by what a compromise of each would reach — the unit that actually gets
+  phished. On a real 466-package project: 3 accounts control 41% of it.
 * **Audit your machine too.** `system` inspects your OS packages (Homebrew,
   Arch/pacman, Debian/Ubuntu apt, Fedora/RHEL dnf, Nix, and Alpine apk): unsigned
   or third-party sources, PPAs and AUR builds, unverified store paths,
@@ -72,6 +75,7 @@ postmortem scan .                       # find malicious code in your dependenci
 postmortem tree . --online              # score dependencies by repo reputation
 postmortem tree . --online --vulns      # add known CVE / GHSA / OSV advisories
 postmortem tree . --omit dev            # only what actually ships
+postmortem tree . --online --human      # which humans control your tree
 postmortem audit . --online --vulns     # one graded verdict: malware + risk + CVEs
 postmortem licenses . --online          # license inventory + policy gate
 postmortem fix .                        # the minimum upgrade that clears the CVEs

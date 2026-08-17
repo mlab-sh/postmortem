@@ -594,6 +594,12 @@ pub struct TreeArgs {
     #[arg(long)]
     pub depth: Option<usize>,
 
+    /// Show the **maintainer graph** instead of the tree: which accounts control
+    /// the largest share of it, measured by what a compromise of each would
+    /// reach. Requires --online (the maintainer sets come from the registry).
+    #[arg(long)]
+    pub human: bool,
+
     /// Emit the resolved tree as JSON instead of the terminal view.
     #[arg(long)]
     pub json: bool,

@@ -19,7 +19,7 @@ locally.
 | Command | What it does |
 | --- | --- |
 | [`scan`](Scan) | Static analysis of dependency code for malicious patterns (IOCs, obfuscation, install hooks, sensitive APIs). |
-| [`tree`](Tree) | Reconstruct the dependency forest from lockfiles; `--online` adds source-repo reputation, `--vulns` adds known CVEs. |
+| [`tree`](Tree) | Reconstruct the dependency forest from lockfiles; `--online` adds source-repo reputation, `--vulns` adds known CVEs, `--human` shows which accounts control it. |
 | [`audit`](Audit) | One-shot graded health check: malware scan + inventory, plus optional reputation and vulns — and the same [CI gate](CI-Gate) as `tree`. |
 | [`licenses`](Licenses) | Inventory the licenses of the dependency graph and enforce a policy (deny / allow / fail-on-unknown). |
 | [`fix`](Fix) | Turn the vulnerability report into the change that clears it: the minimum upgrade per package, and where to make it. |
@@ -75,6 +75,7 @@ postmortem scan .                      # static scan of the current project
 postmortem tree . --depth 2            # offline dependency forest
 postmortem tree . --online --vulns     # + repo reputation + known CVEs
 postmortem tree . --omit dev           # only what actually ships
+postmortem tree . --online --human     # which humans control your tree
 postmortem licenses . --online         # license inventory + policy
 postmortem diff <github-pr-url>        # what does this PR do to my tree?
 postmortem fix .                       # the upgrade that clears the CVEs

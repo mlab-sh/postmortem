@@ -1987,3 +1987,18 @@ fn blast_does_not_change_the_default_why_output() {
     assert!(plain.contains("required by"), "the path view is unchanged: {plain}");
     assert!(!plain.contains("blast radius"));
 }
+
+// --- `tree --human` -------------------------------------------------------------
+//
+// The graph itself is unit-tested in `src/human.rs`, where resolutions can be
+// built without a network. These pin the command's contract.
+
+#[test]
+fn human_requires_online_and_says_why() {
+    // Nothing in a lockfile names who can publish, so an offline maintainer
+    // graph would be empty for a reason the user could not guess.
+    let (exit, out) = run(&["tree", fixture("clean-node").to_str().unwrap(), "--human"]);
+    assert_ne!(exit, 0);
+    assert!(out.contains("--online"), "got: {out}");
+    assert!(out.contains("who can publish"), "the error should explain: {out}");
+}
