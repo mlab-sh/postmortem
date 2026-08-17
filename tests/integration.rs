@@ -1434,3 +1434,93 @@ fn sbom_emits_valid_cyclonedx_license_shapes() {
     // Nothing declared: the field is absent rather than an empty array.
     assert!(by_name("silent").get("licenses").is_none());
 }
+
+// --- `audit` CI gate -----------------------------------------------------------
+//
+// `audit` used to hardcode "exit 1 on CRITICAL" and ignore `[gate]` entirely, so
+// a project's policy silently did not apply to the command sold as the CI-ready
+// one. These pin both halves: the built-in grade still fails the build, and the
+// layered policy now does too.
+
+fn audit_cmd(fixture_name: &str, args: &[&str]) -> (i32, String) {
+    let out = Command::new(bin())
+        .arg("audit")
+        .arg(fixture(fixture_name))
+        .args(args)
+        .arg("--no-progress")
+        .output()
+        .expect("postmortem binary did not run");
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.code().unwrap_or(-1), strip_ansi(&s))
+}
+
+#[test]
+fn audit_without_a_gate_is_unchanged() {
+    let (exit, out) = audit_cmd("clean-node", &[]);
+    assert_eq!(exit, 0, "a clean project with no policy still passes: {out}");
+    assert!(!out.contains("gate"), "no gate output when no policy is set: {out}");
+}
+
+#[test]
+fn audit_still_fails_on_a_critical_verdict() {
+    // The built-in floor: malware fails the build with or without a policy.
+    let (exit, out) = audit_cmd("malicious-node", &[]);
+    assert_eq!(exit, 1);
+    assert!(out.contains("CRITICAL"), "got: {out}");
+}
+
+#[test]
+fn audit_risk_thresholds_require_online() {
+    // Fail-closed: a threshold over data the run never collected is a
+    // misconfiguration (exit 2), never a silent pass.
+    let (exit, out) = audit_cmd("clean-node", &["--max-high", "0"]);
+    assert_eq!(exit, 2, "got: {out}");
+    assert!(out.contains("require --online"), "the error should say why: {out}");
+}
+
+#[test]
+fn audit_vuln_thresholds_require_vulns() {
+    let (exit, out) = audit_cmd("clean-node", &["--fail-on-vuln", "high"]);
+    assert_eq!(exit, 2, "got: {out}");
+    assert!(out.contains("require --vulns"), "got: {out}");
+}
+
+#[test]
+fn audit_rejects_an_unreadable_baseline() {
+    let (exit, out) = audit_cmd("clean-node", &["--baseline", "/nonexistent-baseline.json"]);
+    assert_eq!(exit, 2, "a baseline that cannot be read must not pass silently: {out}");
+}
+
+#[test]
+fn audit_reads_the_gate_table_from_a_config() {
+    // The regression this whole change is about: `audit` previously ignored
+    // `[gate]` completely, so a project policy did not apply to it at all.
+    // Reaching the fail-closed error proves the table was read.
+    let dir = std::env::temp_dir().join(format!("pm-audit-gate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("postmortem.conf"), "[gate]\nmax_high = 0\n").unwrap();
+
+    let out = Command::new(bin())
+        .arg("audit")
+        .arg(fixture("clean-node"))
+        .args(["--config", dir.join("postmortem.conf").to_str().unwrap()])
+        .arg("--no-progress")
+        .output()
+        .expect("postmortem binary did not run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
+    assert!(stderr.contains("require --online"), "the [gate] table must be honoured: {stderr}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn audit_gate_flags_are_accepted_alongside_the_data_they_need() {
+    // With `--online` present the thresholds are evaluated rather than rejected;
+    // the clean fixture scores 0, so nothing trips and the run passes.
+    let (exit, out) = audit_cmd("clean-node", &["--online", "--max-high", "0"]);
+    assert_eq!(exit, 0, "got: {out}");
+    assert!(out.contains("gate PASS"), "the gate result should be reported: {out}");
+}

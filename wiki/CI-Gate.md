@@ -1,5 +1,9 @@
 # CI gate
 
+[`tree`](Tree), [`audit`](Audit) and [`system`](System) share one gate: the same
+thresholds, the same `[gate]` table, the same fail-closed rules. Pick `tree` for
+the precise view, `audit` when you also want a graded verdict in the same step.
+
 `tree` can turn its scores and vuln scan into a **pass/fail exit code**, so a
 build fails when supply-chain risk crosses a threshold. Every threshold is a
 **ceiling**: the gate trips (exit `1`) when the measured value is strictly

@@ -36,9 +36,28 @@ grade, with a one-line reason.
 | **WARN** | Softer signals: Medium/Low static findings, graph diagnostics, any known vulnerability, high-risk / suspicious dependencies, or an elevated risk score (>= 40). |
 | **CLEAN** | None of the above. |
 
-`audit` exits **1** on a CRITICAL verdict and **2** when no supported ecosystem is
-found, so it is usable as a CI guard on its own. (For fine-grained thresholds, the
-[`tree`](Tree) gate stays the precise tool.)
+## Exit codes and the gate
+
+| Exit | When |
+| --- | --- |
+| `0` | Verdict is CLEAN or WARN, and no gate threshold tripped. |
+| `1` | Verdict is **CRITICAL**, *or* a [gate](CI-Gate) threshold tripped. |
+| `2` | No supported ecosystem found, or the gate is misconfigured (see below). |
+
+The grade is the **built-in floor**: malicious code fails the build whether or not
+you configure anything. On top of it, `audit` accepts the same
+[CI gate](CI-Gate) as [`tree`](Tree) — the `--max-*` thresholds, `--allow`,
+`--baseline` and `--config`, plus the `[gate]` table of a `postmortem.conf`
+auto-loaded from the project. Either the grade or the gate failing fails the run.
+
+```bash
+postmortem audit . --online --vulns --max-high 0 --fail-on-vuln high
+```
+
+Thresholds are **fail-closed**: `--max-risk` / `--max-dep` / `--max-high` /
+`--max-sus` need `--online`, and `--max-vulns` / `--fail-on-vuln` need `--vulns`.
+Asking for a threshold over data the run never collected exits **2**, because an
+unmeasured check is not a passing one.
 
 ## Options
 
@@ -50,3 +69,4 @@ found, so it is usable as a CI guard on its own. (For fine-grained thresholds, t
 | `--allow-test-files` | Report IOC findings inside test/fixture directories too. |
 | `--omit <dev\|optional>` | Drop a dependency set. Repeatable. A package reachable from production is always kept — see [Dependency scopes](Dependency-Scopes). |
 | `--no-progress` | Disable the animated progress UI. |
+| **Gate flags** | `--max-risk` `--max-dep` `--max-high` `--max-sus` `--max-vulns` `--fail-on-vuln` `--allow` `--baseline` `--config` — see [CI gate](CI-Gate). |

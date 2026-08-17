@@ -20,7 +20,7 @@ locally.
 | --- | --- |
 | [`scan`](Scan) | Static analysis of dependency code for malicious patterns (IOCs, obfuscation, install hooks, sensitive APIs). |
 | [`tree`](Tree) | Reconstruct the dependency forest from lockfiles; `--online` adds source-repo reputation, `--vulns` adds known CVEs. |
-| [`audit`](Audit) | One-shot graded health check: malware scan + inventory, plus optional reputation and vulns. |
+| [`audit`](Audit) | One-shot graded health check: malware scan + inventory, plus optional reputation and vulns — and the same [CI gate](CI-Gate) as `tree`. |
 | [`licenses`](Licenses) | Inventory the licenses of the dependency graph and enforce a policy (deny / allow / fail-on-unknown). |
 | [`why`](Why) | Explain why a package is installed: its dependency paths up to the roots. |
 | [`diff`](Diff) | Compare two project states: added / removed / version-changed dependencies. |
@@ -39,7 +39,8 @@ locally.
 - **[Dependency scopes](Dependency-Scopes)** - what `--omit dev` removes, and why
   a package your app also uses is never dropped.
 - **[System package managers](System)** - the Homebrew, [pacman](Pacman), [apt](Apt), [dnf](Dnf), [Nix](Nix), and [apk](Apk) backends in depth.
-- **[CI gate](CI-Gate)** - turn scores and vulns into a pass/fail build.
+- **[CI gate](CI-Gate)** - turn scores and vulns into a pass/fail build, from
+  `tree`, `audit` or `system`.
 - **[Configuration](Configuration)** - tokens, thresholds, and per-project policy.
 
 ---

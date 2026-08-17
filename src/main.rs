@@ -469,9 +469,52 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
         }
     }
 
-    // Reduce the forest to the summary metrics via an empty (no-threshold) gate.
+    // The CI gate, sharing `tree`'s policy: the `[gate]` table plus CLI flags.
     let today = chrono::Local::now().date_naive();
-    let m = gate::evaluate(&gate::Policy::default(), &forest, today, None).metrics;
+    let policy = build_gate_policy(
+        load_gate_config(&root, args.config.as_deref()),
+        args.max_risk,
+        args.max_dep,
+        args.max_high,
+        args.max_sus,
+        args.max_vulns,
+        args.fail_on_vuln,
+        &args.allow,
+    );
+
+    // A threshold over data this run never collected is a misconfiguration, not
+    // a pass — the same fail-closed rule `tree` applies. Checked before the
+    // report so the user is not shown a green verdict they cannot trust.
+    if policy.needs_scores() && !args.online {
+        eprintln!(
+            "error: gate thresholds (--max-risk/--max-dep/--max-high/--max-sus) require --online; \
+             no scores were computed"
+        );
+        std::process::exit(2);
+    }
+    if policy.needs_vulns() && !args.vulns {
+        eprintln!(
+            "error: gate thresholds (--max-vulns/--fail-on-vuln) require --vulns; no vuln scan \
+             was run"
+        );
+        std::process::exit(2);
+    }
+
+    let baseline = match args.baseline.as_deref() {
+        Some(p) => match gate::Baseline::load(p) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                std::process::exit(2);
+            }
+        },
+        None => None,
+    };
+
+    // One evaluation serves both purposes: its metrics feed the graded verdict,
+    // and its outcome drives the gate.
+    let outcome = gate::evaluate(&policy, &forest, today, baseline.as_ref());
+    let m = &outcome.metrics;
     if args.online {
         summary.risk = Some(m.risk);
         summary.high_deps = m.high;
@@ -483,8 +526,15 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
     }
 
     audit::render(&summary, &args.path.display().to_string());
-    // Non-zero exit on a CRITICAL verdict, so `audit` is CI-usable.
-    if audit::grade(&summary) == audit::Grade::Critical {
+    if policy.is_active() {
+        gate::report(&outcome, &policy);
+    }
+
+    // Non-zero exit on a CRITICAL verdict *or* a tripped threshold. The grade is
+    // the built-in floor; the gate is the policy the project layered on top, and
+    // either one failing must fail the build.
+    let critical = audit::grade(&summary) == audit::Grade::Critical;
+    if critical || outcome.tripped() {
         std::process::exit(1);
     }
     Ok(())
@@ -1107,22 +1157,8 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
 /// `--config` (or an auto-loaded `postmortem.conf`) with CLI flags layered on
 /// top (CLI wins on each threshold; allowlists are unioned).
 fn resolve_gate_policy(root: &Path, args: &cli::TreeArgs) -> gate::Policy {
-    let cfg_path = args.config.clone().or_else(|| {
-        let c = root.join(config::DEFAULT_FILENAME);
-        c.is_file().then_some(c)
-    });
-    let gc = match cfg_path {
-        Some(p) => match config::Config::load(&p) {
-            Ok(c) => c.gate,
-            Err(e) => {
-                eprintln!("warn: failed to load gate config {}: {e:#}", p.display());
-                config::GateConfig::default()
-            }
-        },
-        None => config::GateConfig::default(),
-    };
     build_gate_policy(
-        gc,
+        load_gate_config(root, args.config.as_deref()),
         args.max_risk,
         args.max_dep,
         args.max_high,
@@ -1131,6 +1167,27 @@ fn resolve_gate_policy(root: &Path, args: &cli::TreeArgs) -> gate::Policy {
         args.fail_on_vuln,
         &args.allow,
     )
+}
+
+/// The `[gate]` table for `root`: an explicit `--config`, else an auto-loaded
+/// `postmortem.conf`, else empty. A config that fails to parse warns and yields
+/// an empty table rather than aborting — a broken policy file must not look like
+/// a passing gate, and the caller's own thresholds still apply.
+fn load_gate_config(root: &Path, explicit: Option<&Path>) -> config::GateConfig {
+    let cfg_path = explicit.map(Path::to_path_buf).or_else(|| {
+        let c = root.join(config::DEFAULT_FILENAME);
+        c.is_file().then_some(c)
+    });
+    match cfg_path {
+        Some(p) => match config::Config::load(&p) {
+            Ok(c) => c.gate,
+            Err(e) => {
+                eprintln!("warn: failed to load gate config {}: {e:#}", p.display());
+                config::GateConfig::default()
+            }
+        },
+        None => config::GateConfig::default(),
+    }
 }
 
 /// Layer CLI gate thresholds over a `[gate]` config table into an effective

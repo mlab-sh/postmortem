@@ -42,7 +42,9 @@ graph, and flags what real compromises look like.
 * **Deep source inspection.** `system inspect <pkg> --deep` clones every
   dependency's real source and runs the full detection suite over it.
 * **CI-ready.** JSON and SARIF (GitHub Code Scanning) output, plus a configurable
-  gate that fails the build on risk.
+  gate — shared by `tree`, `audit` and `system` — that fails the build on risk.
+  Thresholds are fail-closed: asking for a check the run could not perform exits
+  2 rather than passing.
 * **Licenses, honestly.** A CycloneDX SBOM with a real `licenses` array, plus a
   `licenses` command and a deny/allow policy that fails the build. Read offline
   for Node and PHP; elsewhere from the same registry call reputation already

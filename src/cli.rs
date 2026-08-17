@@ -310,6 +310,48 @@ pub struct AuditArgs {
     #[arg(long, value_enum)]
     pub omit: Vec<OmitSet>,
 
+    // --- CI gate (see `crate::gate`), mirroring `tree`. Each threshold is a
+    // ceiling: the gate trips (exit 1) when the measured value is strictly
+    // greater. Thresholds needing data the run did not collect are a
+    // misconfiguration (exit 2), never a silent pass. ---
+    /// GATE: fail if the worst risk score exceeds this (0–100). Needs --online.
+    #[arg(long, value_name = "N")]
+    pub max_risk: Option<u8>,
+
+    /// GATE: fail if any dependency's subtree (dep) score exceeds this (0–100). Needs --online.
+    #[arg(long, value_name = "N")]
+    pub max_dep: Option<u8>,
+
+    /// GATE: fail if more than N high-risk deps are present. Needs --online.
+    #[arg(long, value_name = "N")]
+    pub max_high: Option<usize>,
+
+    /// GATE: fail if more than N suspicious deps are present. Needs --online.
+    #[arg(long, value_name = "N")]
+    pub max_sus: Option<usize>,
+
+    /// GATE: fail if more than N known vulnerabilities are present. Needs --vulns.
+    #[arg(long, value_name = "N")]
+    pub max_vulns: Option<usize>,
+
+    /// GATE: fail if any known vulnerability is at least this severe. Needs --vulns.
+    #[arg(long, value_enum, value_name = "SEV")]
+    pub fail_on_vuln: Option<Severity>,
+
+    /// GATE: allowlist a package (name or name@version) from every gate count.
+    /// Repeatable. For a reason/expiry, use a [[gate.allow]] block in a config.
+    #[arg(long = "allow", value_name = "PKG")]
+    pub allow: Vec<String>,
+
+    /// GATE: diff mode — only count risk absent from this baseline (a prior
+    /// `tree --json`), so an existing problem does not fail every build.
+    #[arg(long, value_name = "FILE")]
+    pub baseline: Option<PathBuf>,
+
+    /// Path to a postmortem.conf supplying a [gate] policy.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
     /// Disable the animated progress UI.
     #[arg(long)]
     pub no_progress: bool,
