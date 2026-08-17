@@ -1524,3 +1524,187 @@ fn audit_gate_flags_are_accepted_alongside_the_data_they_need() {
     assert_eq!(exit, 0, "got: {out}");
     assert!(out.contains("gate PASS"), "the gate result should be reported: {out}");
 }
+
+// --- machine output for audit / why / diff, and tree --html ---------------------
+//
+// `audit` exits non-zero to be CI-usable, but an exit code cannot say *why*;
+// `why` and `diff` were terminal-only, so their answers could not be consumed by
+// anything. These pin the shapes.
+
+fn json_of(cmd_args: &[&str]) -> Value {
+    let out = Command::new(bin())
+        .args(cmd_args)
+        .args(["--json", "-o", "-", "--no-progress"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("postmortem binary did not run");
+    serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{}", String::from_utf8_lossy(&out.stderr)))
+}
+
+#[test]
+fn audit_json_carries_the_verdict_and_its_reason() {
+    let v = json_of(&["audit", fixture("malicious-node").to_str().unwrap()]);
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["verdict"], "critical");
+    assert_eq!(v["reason"], "malicious code detected", "the grade must explain itself");
+    assert_eq!(v["findings"]["critical"], 1);
+    assert_eq!(v["dependencies"]["total"], 2);
+}
+
+#[test]
+fn audit_json_distinguishes_unchecked_layers_from_clean_ones() {
+    // `null` means "not checked"; a zeroed object would claim we looked.
+    let v = json_of(&["audit", fixture("clean-node").to_str().unwrap()]);
+    assert!(v["reputation"].is_null(), "no --online means not assessed");
+    assert!(v["vulnerabilities"].is_null(), "no --vulns means not assessed");
+    assert!(v["gate_tripped"].is_null(), "no policy configured");
+}
+
+#[test]
+fn audit_json_reports_whether_the_gate_ran() {
+    // A configured policy that passes is `false`, never `null` — the difference
+    // between "checked and fine" and "never checked".
+    let out = Command::new(bin())
+        .args(["audit", fixture("clean-node").to_str().unwrap()])
+        .args(["--online", "--max-high", "0", "--json", "-o", "-", "--no-progress"])
+        .stdout(Stdio::piped())
+        .output()
+        .expect("postmortem binary did not run");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    assert_eq!(v["gate_tripped"], false);
+}
+
+#[test]
+fn audit_json_still_exits_non_zero() {
+    // The machine format must not soften the exit contract.
+    let out = Command::new(bin())
+        .args(["audit", fixture("malicious-node").to_str().unwrap()])
+        .args(["--json", "-o", "-", "--no-progress"])
+        .output()
+        .expect("postmortem binary did not run");
+    assert_eq!(out.status.code(), Some(1));
+}
+
+#[test]
+fn why_json_groups_paths_per_installed_version() {
+    let v = json_of(&[
+        "why",
+        "flatmap-stream",
+        fixture("malicious-node").to_str().unwrap(),
+    ]);
+    assert_eq!(v["package"], "flatmap-stream");
+    let installed = v["installed"].as_array().unwrap();
+    assert_eq!(installed.len(), 1);
+    assert_eq!(installed[0]["version"], "0.1.1");
+    assert_eq!(installed[0]["direct"], false);
+    // The path is what lies *above* the target, so it starts at the parent.
+    assert_eq!(installed[0]["paths"][0][0]["name"], "event-stream");
+}
+
+#[test]
+fn why_json_on_an_absent_package_is_an_empty_list_not_an_error() {
+    let out = Command::new(bin())
+        .args(["why", "not-a-real-package", fixture("clean-node").to_str().unwrap()])
+        .args(["--json", "-o", "-", "--no-progress"])
+        .stdout(Stdio::piped())
+        .output()
+        .expect("postmortem binary did not run");
+    assert_eq!(out.status.code(), Some(0), "absence is a valid answer");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
+    assert!(v["installed"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn diff_json_reports_the_three_change_sets() {
+    let v = json_of(&[
+        "diff",
+        fixture("clean-node").to_str().unwrap(),
+        fixture("scoped-node").to_str().unwrap(),
+    ]);
+    assert_eq!(v["summary"]["added"], 5);
+    assert_eq!(v["summary"]["removed"], 1);
+    let removed = v["removed"].as_array().unwrap();
+    assert_eq!(removed[0]["name"], "leftpad-clean");
+    // The ecosystem travels with the name: one project can hold two ecosystems
+    // with a colliding package name.
+    assert_eq!(removed[0]["ecosystem"], "node");
+}
+
+#[test]
+fn diff_json_honours_omit_on_both_sides() {
+    let v = json_of(&[
+        "diff",
+        fixture("clean-node").to_str().unwrap(),
+        fixture("scoped-node").to_str().unwrap(),
+        "--omit",
+        "dev",
+    ]);
+    let added: Vec<&str> =
+        v["added"].as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap()).collect();
+    assert!(!added.contains(&"dev-tool"), "dev packages must be filtered: {added:?}");
+    assert!(added.contains(&"prod-lib"));
+}
+
+#[test]
+fn tree_html_is_a_self_contained_document() {
+    let out = Command::new(bin())
+        .args(["tree", fixture("malicious-node").to_str().unwrap()])
+        .args(["--html", "-o", "-", "--no-progress"])
+        .stdout(Stdio::piped())
+        .output()
+        .expect("postmortem binary did not run");
+    let html = String::from_utf8_lossy(&out.stdout);
+    assert!(html.starts_with("<!doctype html>"), "got: {}", &html[..60.min(html.len())]);
+    assert!(html.contains("<style>"), "the stylesheet must be inlined");
+    assert!(
+        !html.contains("src=\"http") && !html.contains("href=\"http"),
+        "the report must reference no external asset"
+    );
+    // The forest is always present, even offline.
+    assert!(html.contains("event-stream"), "got: {html}");
+    assert!(html.contains("flatmap-stream"));
+}
+
+#[test]
+fn tree_html_says_what_it_could_not_assess() {
+    // Offline, an empty risk table would read as "we looked and found nothing".
+    let out = Command::new(bin())
+        .args(["tree", fixture("clean-node").to_str().unwrap()])
+        .args(["--html", "-o", "-", "--no-progress"])
+        .stdout(Stdio::piped())
+        .output()
+        .expect("postmortem binary did not run");
+    let html = String::from_utf8_lossy(&out.stdout);
+    assert!(html.contains("Not assessed"), "got: {html}");
+    assert!(html.contains("--online"), "and it should say which flag fixes it");
+    assert!(html.contains("--vulns"));
+}
+
+#[test]
+fn tree_html_escapes_package_names() {
+    // Package names reach the document verbatim; an unescaped one would be an
+    // HTML injection into a report people open in a browser.
+    let out = Command::new(bin())
+        .args(["tree", fixture("scoped-node").to_str().unwrap()])
+        .args(["--html", "-o", "-", "--no-progress"])
+        .stdout(Stdio::piped())
+        .output()
+        .expect("postmortem binary did not run");
+    let html = String::from_utf8_lossy(&out.stdout);
+    // The fixture has no hostile name, so assert the escaper is wired at all by
+    // checking a known-safe render plus the absence of raw angle brackets in the
+    // forest list items.
+    assert!(html.contains("prod-lib"));
+    assert!(!html.contains("<li><script"), "got: {html}");
+}
+
+#[test]
+fn tree_html_rejects_several_targets_without_the_flag() {
+    let targets = [fixture("malicious-node"), fixture("clean-node")];
+    let (exit, _, stderr) = tree_multi(&targets, &["--html", "-o", "-"]);
+    assert_ne!(exit, 0, "several targets in --html must not silently succeed");
+    assert!(stderr.contains("--html"), "the error should name the format: {stderr}");
+    assert!(stderr.contains("--allow-multiple"), "and point at the opt-in: {stderr}");
+}

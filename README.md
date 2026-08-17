@@ -41,10 +41,11 @@ graph, and flags what real compromises look like.
   apt/apk/dnf, the Arch Security Tracker for pacman).
 * **Deep source inspection.** `system inspect <pkg> --deep` clones every
   dependency's real source and runs the full detection suite over it.
-* **CI-ready.** JSON and SARIF (GitHub Code Scanning) output, plus a configurable
-  gate — shared by `tree`, `audit` and `system` — that fails the build on risk.
-  Thresholds are fail-closed: asking for a check the run could not perform exits
-  2 rather than passing.
+* **CI-ready.** Every command has a machine format — JSON throughout, SARIF for
+  GitHub Code Scanning, and a self-contained HTML report from `scan` and `tree`.
+  Plus a configurable gate — shared by `tree`, `audit` and `system` — that fails
+  the build on risk. Thresholds are fail-closed: asking for a check the run could
+  not perform exits 2 rather than passing.
 * **Licenses, honestly.** A CycloneDX SBOM with a real `licenses` array, plus a
   `licenses` command and a deny/allow policy that fails the build. Read offline
   for Node and PHP; elsewhere from the same registry call reputation already
@@ -70,6 +71,7 @@ postmortem licenses . --online          # license inventory + policy gate
 postmortem why left-pad .               # why is this package installed?
 postmortem diff ./main ./pr-branch      # what dependencies did this change add?
 postmortem sbom . -o sbom.json          # export a CycloneDX 1.5 SBOM
+postmortem tree . --online --html -o r.html   # a shareable HTML report
 postmortem system                       # audit your installed OS packages
 postmortem system --vulns               # + known CVEs for what's installed
 postmortem system inspect wget --deep   # clone + audit one package's full source

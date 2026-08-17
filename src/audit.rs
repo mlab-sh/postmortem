@@ -31,11 +31,55 @@ pub struct AuditSummary {
 }
 
 /// The overall verdict.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Grade {
     Clean,
     Warn,
     Critical,
+}
+
+/// The `audit --json` document.
+///
+/// `audit` exits non-zero to be CI-usable, but an exit code alone cannot say
+/// *why*, and re-deriving the verdict from `scan --json` plus `tree --json` means
+/// re-running both. So the same summary the terminal view renders is emitted
+/// verbatim, with the grade and its reason as first-class fields.
+///
+/// `gate_tripped` is `None` when no policy was configured — distinct from
+/// `Some(false)`, which means a policy ran and passed.
+pub fn to_json(s: &AuditSummary, root: &str, gate_tripped: Option<bool>) -> serde_json::Value {
+    let g = grade(s);
+    serde_json::json!({
+        "schema_version": 1,
+        "root": root,
+        "verdict": g,
+        "reason": reason(s, g),
+        "gate_tripped": gate_tripped,
+        "ecosystems": s.ecosystems,
+        "dependencies": {
+            "total": s.total_deps,
+            "direct": s.direct_deps,
+        },
+        "findings": {
+            "critical": s.critical,
+            "high": s.high_findings,
+            "medium": s.medium,
+            "low": s.low,
+        },
+        "diagnostics": s.diagnostics,
+        // `null` distinguishes "not checked" from "checked, found none" — the
+        // whole point of the layer being opt-in.
+        "reputation": s.risk.map(|r| serde_json::json!({
+            "risk": r,
+            "high_deps": s.high_deps,
+            "sus_deps": s.sus_deps,
+        })),
+        "vulnerabilities": s.vulns.map(|v| serde_json::json!({
+            "count": v,
+            "worst": s.worst_vuln,
+        })),
+    })
 }
 
 /// Grade the audit. Malicious code or a severe vuln / high risk is CRITICAL; softer

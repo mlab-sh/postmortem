@@ -198,7 +198,14 @@ fn run_diff(args: cli::DiffArgs) -> Result<()> {
     let old = resolve_deps(&args.old)?;
     let new = resolve_deps(&args.new)?;
     let report = diff::diff(&old, &new);
-    diff::render(&report, &args.old.display().to_string(), &args.new.display().to_string());
+    let (ol, nl) = (args.old.display().to_string(), args.new.display().to_string());
+    if args.json {
+        let doc = diff::to_json(&report, &ol, &nl);
+        let out = serde_json::to_string_pretty(&doc)?;
+        cli::OutputTarget::resolve_named(args.output.as_deref(), "diff", "json").write(&out)?;
+    } else {
+        diff::render(&report, &ol, &nl);
+    }
     Ok(())
 }
 
@@ -400,7 +407,14 @@ fn run_why(args: cli::WhyArgs) -> Result<()> {
     let Some((_, deps, _)) = detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))? else {
         anyhow::bail!("no supported ecosystem detected at {}", root.display());
     };
-    why::render(&deps, &args.package, &args.path.display().to_string());
+    let label = args.path.display().to_string();
+    if args.json {
+        let doc = why::to_json(&deps, &args.package, &label);
+        let out = serde_json::to_string_pretty(&doc)?;
+        cli::OutputTarget::resolve_named(args.output.as_deref(), "why", "json").write(&out)?;
+    } else {
+        why::render(&deps, &args.package, &label);
+    }
     Ok(())
 }
 
@@ -525,9 +539,16 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
         summary.worst_vuln = m.worst_vuln;
     }
 
-    audit::render(&summary, &args.path.display().to_string());
-    if policy.is_active() {
-        gate::report(&outcome, &policy);
+    let gate_tripped = policy.is_active().then(|| outcome.tripped());
+    if args.json {
+        let doc = audit::to_json(&summary, &args.path.display().to_string(), gate_tripped);
+        let out = serde_json::to_string_pretty(&doc)?;
+        cli::OutputTarget::resolve_named(args.output.as_deref(), "audit", "json").write(&out)?;
+    } else {
+        audit::render(&summary, &args.path.display().to_string());
+        if policy.is_active() {
+            gate::report(&outcome, &policy);
+        }
     }
 
     // Non-zero exit on a CRITICAL verdict *or* a tripped threshold. The grade is
@@ -541,8 +562,9 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
 }
 
 /// `postmortem system` — detect OS package managers, list their source repos,
-/// and tree the installed forest with risk scoring. Homebrew only today. Exit 2
-/// if no supported manager is present.
+/// and tree the installed forest with risk scoring. Six backends today
+/// (Homebrew, pacman, apt, dnf, Nix, apk); MacPorts is detected but unsupported.
+/// Exit 2 if no supported manager is present.
 fn run_system(args: cli::SystemArgs) -> Result<()> {
     // `system inspect <pkg>` focuses on a single package (its own flow).
     if let Some(cli::SystemCommand::Inspect(i)) = &args.command {
@@ -554,7 +576,9 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
 
     system::render_detected(&managers);
 
-    // Use the first available manager we have a backend for (Homebrew, pacman).
+    // Use the first available manager we have a backend for. On a machine with
+    // several (Homebrew alongside apt, say) the detection order in
+    // `system::KNOWN` decides; `--repos` and the tree then describe that one.
     let Some(backend) =
         managers.iter().find(|m| m.available && m.implemented).map(|m| m.name)
     else {
@@ -944,17 +968,18 @@ fn run_scan(args: cli::ScanArgs) -> Result<()> {
 /// the lockfiles. Offline today; `--online` is reserved for repository-reputation
 /// resolution (see [`resolve`]). Exit 2 if no supported ecosystem was found.
 fn run_tree(args: cli::TreeArgs) -> Result<()> {
-    let machine = args.json || args.sarif;
+    let machine = args.json || args.sarif || args.html;
     if args.paths.len() > 1 && machine && !args.allow_multiple {
         anyhow::bail!(
-            "machine formats (--json/--sarif) support a single target; got {}. \
+            "machine formats (--json/--sarif/--html) support a single target; got {}. \
              Pass --allow-multiple to emit them all — note the shape changes: \
-             --json becomes an array of trees, --sarif one runs[] entry per target.",
+             --json becomes an array of trees, --sarif one runs[] entry per target, \
+             and --html one page per target concatenated.",
             args.paths.len()
         );
     }
     if args.allow_multiple && !machine {
-        eprintln!("note: --allow-multiple only affects --json/--sarif; the terminal view already renders every target");
+        eprintln!("note: --allow-multiple only affects --json/--sarif/--html; the terminal view already renders every target");
     }
 
     let ui = ui::Ui::new(!args.no_progress);
@@ -1135,6 +1160,15 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
                 false => serde_json::to_string_pretty(&machine_trees[0])?,
             };
             cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "json").write(&out)?;
+        } else if args.html {
+            // One document per target: HTML has no multi-run container the way
+            // SARIF does, so several targets are concatenated as separate pages.
+            let out = machine_trees
+                .iter()
+                .map(report::html::render_tree)
+                .collect::<Vec<_>>()
+                .join("\n");
+            cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "html").write(&out)?;
         } else {
             let out = match args.allow_multiple {
                 true => report::sarif::render_trees(&machine_trees)?,

@@ -28,9 +28,29 @@ flatmap-stream@0.1.1
 
 If the package isn't in the graph, `why` says so and stops.
 
+## JSON
+
+```json
+{
+  "schema_version": 1,
+  "package": "flatmap-stream",
+  "installed": [
+    { "name": "flatmap-stream", "version": "0.1.1", "direct": false, "ecosystem": "node",
+      "paths": [[{ "name": "event-stream", "version": "3.3.6" }]] }
+  ]
+}
+```
+
+Paths are grouped per **installed version**, because "why is this here" has a
+different answer per version — which is the case you read this command for. Each
+path lists what lies *above* the target, starting at its parent. A package absent
+from the graph yields `installed: []` and exit 0: not being there is a valid
+answer, not a failure.
+
 ## Options
 
 | Flag | Description |
 | --- | --- |
+| `--json` / `-o <FILE>` | Emit the paths as JSON. |
 | `--omit <dev\|optional>` | Drop a dependency set. Repeatable. A package reachable from production is always kept — see [Dependency scopes](Dependency-Scopes). |
 | `--no-progress` | Disable the animated progress UI. |

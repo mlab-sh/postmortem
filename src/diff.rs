@@ -33,6 +33,40 @@ impl DiffReport {
     }
 }
 
+/// The `diff --json` document.
+///
+/// The three lists carry the ecosystem alongside the name, because the same
+/// package name can legitimately exist in two ecosystems of one project and a
+/// consumer must not conflate them.
+pub fn to_json(r: &DiffReport, old: &str, new: &str) -> serde_json::Value {
+    let entry = |(eco, name): &Key, version: &String| {
+        serde_json::json!({ "ecosystem": eco, "name": name, "version": version })
+    };
+    serde_json::json!({
+        "schema_version": 1,
+        "old": old,
+        "new": new,
+        "summary": {
+            "added": r.added.len(),
+            "removed": r.removed.len(),
+            "changed": r.changed.len(),
+            "unchanged": r.unchanged,
+        },
+        "added": r.added.iter().map(|(k, v)| entry(k, v)).collect::<Vec<_>>(),
+        "removed": r.removed.iter().map(|(k, v)| entry(k, v)).collect::<Vec<_>>(),
+        "changed": r
+            .changed
+            .iter()
+            .map(|((eco, name), ov, nv)| serde_json::json!({
+                "ecosystem": eco,
+                "name": name,
+                "from": ov,
+                "to": nv,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
 /// Index a dependency list by `(ecosystem, name)` → version. Duplicate keys (the
 /// same package pinned twice) keep the first version seen.
 fn index(deps: &[Dependency]) -> std::collections::BTreeMap<Key, String> {

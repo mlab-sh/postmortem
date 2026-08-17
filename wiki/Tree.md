@@ -58,7 +58,7 @@ postmortem tree . --online --vulns      # reputation + CVEs together
 | `--online` | Resolve source repos + reputation/provenance signals (network). |
 | `--languages` | With `--online`, add each repo's language breakdown (one extra cached call/repo). |
 | `--vulns` | Query known vulnerabilities via `vuln.mlab.sh` (network). |
-| `--json` / `--sarif` | Emit the resolved forest as JSON, or SARIF for Code Scanning. One target only, unless `--allow-multiple`. |
+| `--json` / `--sarif` / `--html` | Emit the resolved forest as JSON, SARIF for Code Scanning, or a self-contained HTML report. One target only, unless `--allow-multiple`. |
 | `--allow-multiple` | Allow `--json`/`--sarif` with several targets - **the output shape changes**, see [Several targets](#several-targets). |
 | `-o, --output <FILE>` | Output file (`-` = stdout). |
 | `--omit <dev\|optional>` | Drop a dependency set. Repeatable. A package reachable from production is always kept — see [Dependency scopes](Dependency-Scopes). |
@@ -114,6 +114,32 @@ upload, so a monorepo needs one gate job, not one per package.
 A target that cannot be read - a typo, a lockfile with no manifest beside it, a
 file that isn't a manifest at all - is a **configuration error (exit 2)**, never
 a silently skipped one. A green build must mean everything was checked.
+
+## `--html` — the shareable report
+
+A single self-contained file, no external assets, no JavaScript. Where
+[`scan --html`](Scan) reports *findings in code*, this reports *packages and
+their provenance* — so the main table is the flagged packages, worst-first, with
+the source repo each resolved to and the signals it raised:
+
+```bash
+postmortem tree . --online --vulns --html -o report.html
+```
+
+| Section | Contents |
+| --- | --- |
+| Summary cards | dependencies, direct / transitive, max depth, worst risk, high-risk count, vulns |
+| Graph diagnostics | present only when the graph is incomplete |
+| Flagged packages | severity, package, source repo (+ stars), `risk`, `dep`, the signals raised |
+| Vulnerabilities | severity, package, advisory id, summary |
+| Full forest | the whole tree, collapsed by default |
+
+Sections that depend on an opt-in flag **say so** rather than rendering an empty
+table: without `--online` the flagged-packages section reads "Not assessed —
+re-run with `--online`", because an empty table would read as "we looked and
+found nothing".
+
+With `--allow-multiple`, one page per target is concatenated.
 
 ## Exit codes
 

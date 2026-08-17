@@ -79,9 +79,10 @@ pub enum Command {
     /// Manage the on-disk cache (~/.postmortem/cache) used by `tree --online`.
     Cache(CacheArgs),
 
-    /// Audit the machine's OS-level package managers (Homebrew today): detect
-    /// them, list their source repos, and tree the installed forest with the
-    /// same risk scoring as `tree`. `--online` adds repo reputation.
+    /// Audit the machine's OS-level package managers (Homebrew, pacman/AUR,
+    /// apt/dpkg, dnf/rpm, Nix, apk): detect them, list their source repos, and
+    /// tree the installed forest with the same risk scoring as `tree`.
+    /// `--online` adds repo reputation, `--vulns` known CVEs.
     System(SystemArgs),
 
     /// Show an overview of postmortem: what it does and the available commands.
@@ -218,6 +219,14 @@ pub struct DiffArgs {
     /// The project directory to compare against it (the "after" state).
     pub new: PathBuf,
 
+    /// Emit the result as JSON instead of the terminal view.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Write output to file. Pass `-` to force stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
     /// Omit a dependency set from the analysis. Repeatable: `--omit dev --omit
     /// optional`. A package is dropped only when *every* path to it from a root
     /// goes through an omitted edge, so anything that also ships in production
@@ -269,6 +278,14 @@ pub struct WhyArgs {
     /// The project directory to resolve.
     pub path: PathBuf,
 
+    /// Emit the result as JSON instead of the terminal view.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Write output to file. Pass `-` to force stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
     /// Omit a dependency set from the analysis. Repeatable: `--omit dev --omit
     /// optional`. A package is dropped only when *every* path to it from a root
     /// goes through an omitted edge, so anything that also ships in production
@@ -302,6 +319,14 @@ pub struct AuditArgs {
     /// Report IOC findings inside test/fixture directories too (off by default).
     #[arg(long)]
     pub allow_test_files: bool,
+
+    /// Emit the result as JSON instead of the terminal view.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Write output to file. Pass `-` to force stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
 
     /// Omit a dependency set from the analysis. Repeatable: `--omit dev --omit
     /// optional`. A package is dropped only when *every* path to it from a root
@@ -482,8 +507,15 @@ pub struct TreeArgs {
 
     /// Emit SARIF 2.1.0 — risk signals + known vulns as GitHub Code Scanning
     /// alerts. Combine with --online / --vulns for content.
-    #[arg(long, conflicts_with = "json")]
+    #[arg(long, conflicts_with_all = ["json", "html"])]
     pub sarif: bool,
+
+    /// Emit a self-contained HTML report: the flagged packages worst-first with
+    /// their source repos and signals, known vulnerabilities, and the full
+    /// forest. Combine with --online / --vulns for content. One target only,
+    /// unless --allow-multiple.
+    #[arg(long, conflicts_with = "json")]
+    pub html: bool,
 
     /// Write output to file. Pass `-` to force stdout. When omitted for --json a
     /// file named `postmortem-tree-[MM.DD.YYYY::HH:MM].json` is written in the cwd.

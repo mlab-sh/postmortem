@@ -59,6 +59,33 @@ Thresholds are **fail-closed**: `--max-risk` / `--max-dep` / `--max-high` /
 Asking for a threshold over data the run never collected exits **2**, because an
 unmeasured check is not a passing one.
 
+## JSON
+
+An exit code says *whether* the build failed; it cannot say *why*, and
+re-deriving the verdict from `scan --json` plus `tree --json` means running both
+again. `--json` emits the same summary the terminal renders:
+
+```json
+{
+  "schema_version": 1,
+  "verdict": "critical",
+  "reason": "malicious code detected",
+  "gate_tripped": null,
+  "dependencies": { "total": 2, "direct": 1 },
+  "findings": { "critical": 1, "high": 3, "medium": 3, "low": 1 },
+  "reputation": null,
+  "vulnerabilities": null
+}
+```
+
+`null` is meaningful throughout: `reputation` and `vulnerabilities` are `null`
+when the layer was never run (`--online` / `--vulns` absent), which is different
+from a zeroed object claiming we looked and found nothing. Likewise
+`gate_tripped` is `null` with no policy configured, `false` when a policy ran and
+passed.
+
+The exit contract is unchanged by `--json`.
+
 ## Options
 
 | Flag | Description |
@@ -69,4 +96,5 @@ unmeasured check is not a passing one.
 | `--allow-test-files` | Report IOC findings inside test/fixture directories too. |
 | `--omit <dev\|optional>` | Drop a dependency set. Repeatable. A package reachable from production is always kept — see [Dependency scopes](Dependency-Scopes). |
 | `--no-progress` | Disable the animated progress UI. |
+| `--json` / `-o <FILE>` | Emit the verdict as JSON instead of the terminal view. |
 | **Gate flags** | `--max-risk` `--max-dep` `--max-high` `--max-sus` `--max-vulns` `--fail-on-vuln` `--allow` `--baseline` `--config` — see [CI gate](CI-Gate). |

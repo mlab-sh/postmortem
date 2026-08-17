@@ -45,9 +45,25 @@ deltas on top (does this change *raise* the risk score, add an unsigned package,
 or introduce a known CVE) is the intended next step, and already has a foothold in
 the gate's [`--baseline`](CI-Gate) flow.
 
+## JSON
+
+```json
+{
+  "schema_version": 1,
+  "summary": { "added": 5, "removed": 1, "changed": 0, "unchanged": 0 },
+  "added":   [{ "ecosystem": "node", "name": "prod-lib", "version": "1.0.0" }],
+  "removed": [{ "ecosystem": "node", "name": "leftpad-clean", "version": "1.0.0" }],
+  "changed": [{ "ecosystem": "node", "name": "ms", "from": "2.1.2", "to": "2.1.3" }]
+}
+```
+
+The ecosystem travels with every name: one project can hold two ecosystems with
+a colliding package name, and a consumer must not merge them.
+
 ## Options
 
 | Flag | Description |
 | --- | --- |
+| `--json` / `-o <FILE>` | Emit the diff as JSON. |
 | `--omit <dev\|optional>` | Drop a dependency set. Repeatable. A package reachable from production is always kept — see [Dependency scopes](Dependency-Scopes). |
 | `--no-progress` | Disable the animated progress UI. |

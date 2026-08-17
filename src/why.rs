@@ -53,6 +53,51 @@ fn walk(
     }
 }
 
+/// The `why --json` document.
+///
+/// Each installed version gets its own entry with the paths leading to it,
+/// because "why is this here" has a different answer per version — which is
+/// exactly the case a human reads this command for, and the one a script most
+/// needs to branch on.
+///
+/// A package absent from the graph yields `installed: []` rather than an error:
+/// "it is not there" is a legitimate answer, and a consumer should not have to
+/// distinguish it from a failed run.
+pub fn to_json(deps: &[Dependency], target: &str, root: &str) -> serde_json::Value {
+    let all = paths(deps, target);
+    let installed: Vec<serde_json::Value> = deps
+        .iter()
+        .filter(|d| d.name == target)
+        .map(|d| {
+            let for_version: Vec<Vec<serde_json::Value>> = all
+                .iter()
+                .filter(|p| p.first().is_some_and(|(_, pv)| pv == &d.version))
+                .map(|p| {
+                    // Skip the target itself: the path is what lies *above* it.
+                    p.iter()
+                        .skip(1)
+                        .map(|(n, v)| serde_json::json!({ "name": n, "version": v }))
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            serde_json::json!({
+                "name": d.name,
+                "version": d.version,
+                "direct": d.direct,
+                "ecosystem": d.ecosystem,
+                "paths": for_version,
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "schema_version": 1,
+        "root": root,
+        "package": target,
+        "installed": installed,
+    })
+}
+
 /// Render the reverse-dependency paths for `target` to stdout.
 pub fn render(deps: &[Dependency], target: &str, root_label: &str) {
     println!("{}  {}  {}", "why".bold(), target.cyan(), format!("(in {root_label})").dimmed());
