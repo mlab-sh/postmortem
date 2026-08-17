@@ -441,7 +441,7 @@ mod tests {
     }
 
     fn vuln(id: &str, sev: Severity) -> Vuln {
-        Vuln { id: id.into(), severity: sev, summary: "x".into() }
+        Vuln { id: id.into(), severity: sev, summary: "x".into(), fixed: None }
     }
 
     #[test]

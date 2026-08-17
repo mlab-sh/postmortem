@@ -76,6 +76,10 @@ pub enum Command {
     /// them. Grouped by license, with the unresolved ones called out.
     Licenses(LicensesArgs),
 
+    /// Turn the vulnerability report into the change that clears it: the
+    /// minimum upgrade per package, and where to make it.
+    Fix(FixArgs),
+
     /// Manage the on-disk cache (~/.postmortem/cache) used by `tree --online`.
     Cache(CacheArgs),
 
@@ -87,6 +91,37 @@ pub enum Command {
 
     /// Show an overview of postmortem: what it does and the available commands.
     Help,
+}
+
+/// Arguments for `postmortem fix <path>`.
+#[derive(Args, Debug)]
+pub struct FixArgs {
+    /// Project directory to plan a fix for.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+
+    /// Omit a dependency set from the plan. Repeatable: `--omit dev --omit
+    /// optional`. A package reachable from production is always kept — see
+    /// the dependency-scopes documentation.
+    #[arg(long, value_enum)]
+    pub omit: Vec<OmitSet>,
+
+    /// Emit the plan as JSON instead of the terminal view.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Write output to file. Pass `-` to force stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Exit 0 even when advisories remain. By default the command exits 1 while
+    /// anything is still outstanding, so it drops into CI as a blocking step.
+    #[arg(long)]
+    pub no_fail: bool,
+
+    /// Disable the animated progress UI.
+    #[arg(long)]
+    pub no_progress: bool,
 }
 
 /// Arguments for `postmortem system`.

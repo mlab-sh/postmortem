@@ -74,6 +74,7 @@ postmortem tree . --online --vulns      # add known CVE / GHSA / OSV advisories
 postmortem tree . --omit dev            # only what actually ships
 postmortem audit . --online --vulns     # one graded verdict: malware + risk + CVEs
 postmortem licenses . --online          # license inventory + policy gate
+postmortem fix .                        # the minimum upgrade that clears the CVEs
 postmortem why left-pad .               # why is this package installed?
 postmortem diff <github-pr-url> --online # what does this PR pull in, and is it safe?
 postmortem sbom . -o sbom.json          # export a CycloneDX 1.5 SBOM
@@ -110,6 +111,7 @@ cd postmortem && cargo build --release
 | [`tree`](https://github.com/mlab-sh/postmortem/wiki/Tree) | Dependency graph, plus online reputation, provenance, and known-vulnerability intelligence. |
 | [`audit`](https://github.com/mlab-sh/postmortem/wiki/Audit) | One-shot graded health check: malware scan + inventory, plus optional reputation and vulns. |
 | [`licenses`](https://github.com/mlab-sh/postmortem/wiki/Licenses) | License inventory across the graph, with a deny / allow / fail-on-unknown policy. |
+| [`fix`](https://github.com/mlab-sh/postmortem/wiki/Fix) | Turn the vulnerability report into the change that clears it: minimum upgrade, direct command or override snippet. |
 | [`why`](https://github.com/mlab-sh/postmortem/wiki/Why) | Explain why a package is installed: its dependency paths up to the roots. |
 | [`diff`](https://github.com/mlab-sh/postmortem/wiki/Diff) | Compare two project states — or a GitHub PR by URL — and assess what the change introduces. |
 | [`sbom`](https://github.com/mlab-sh/postmortem/wiki/Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |

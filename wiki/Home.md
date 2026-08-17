@@ -22,6 +22,7 @@ locally.
 | [`tree`](Tree) | Reconstruct the dependency forest from lockfiles; `--online` adds source-repo reputation, `--vulns` adds known CVEs. |
 | [`audit`](Audit) | One-shot graded health check: malware scan + inventory, plus optional reputation and vulns — and the same [CI gate](CI-Gate) as `tree`. |
 | [`licenses`](Licenses) | Inventory the licenses of the dependency graph and enforce a policy (deny / allow / fail-on-unknown). |
+| [`fix`](Fix) | Turn the vulnerability report into the change that clears it: the minimum upgrade per package, and where to make it. |
 | [`why`](Why) | Explain why a package is installed: its dependency paths up to the roots. |
 | [`diff`](Diff) | Compare two project states — or a GitHub PR by URL — and assess what the change introduces. |
 | [`sbom`](Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |
@@ -75,6 +76,7 @@ postmortem tree . --online --vulns     # + repo reputation + known CVEs
 postmortem tree . --omit dev           # only what actually ships
 postmortem licenses . --online         # license inventory + policy
 postmortem diff <github-pr-url>        # what does this PR do to my tree?
+postmortem fix .                       # the upgrade that clears the CVEs
 postmortem system --online             # audit your installed OS packages
 ```
 

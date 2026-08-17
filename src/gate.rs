@@ -457,7 +457,7 @@ mod tests {
             name: name.into(),
             version: "1.0.0".into(),
             ecosystem: "node".into(),
-            vulns: vec![Vuln { id: "CVE-0000-0000".into(), severity: sev, summary: String::new() }],
+            vulns: vec![Vuln { id: "CVE-0000-0000".into(), severity: sev, summary: String::new(), fixed: None }],
         }
     }
 

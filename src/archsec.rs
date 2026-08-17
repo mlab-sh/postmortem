@@ -90,6 +90,9 @@ pub fn scan(
                         id: cve.clone(),
                         severity,
                         summary: g.kind.clone(),
+                        // The tracker publishes the patched package version
+                        // directly, so `fix` works for pacman too.
+                        fixed: g.fixed.clone(),
                     });
                 }
             }

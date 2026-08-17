@@ -6,6 +6,7 @@
 - [scan](Scan)
 - [tree](Tree)
 - [audit](Audit)
+- [fix](Fix)
 - [licenses](Licenses)
 - [why](Why)
 - [diff](Diff)

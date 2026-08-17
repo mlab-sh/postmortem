@@ -511,7 +511,7 @@ mod tests {
                 name: "lodash".into(),
                 version: "4.17.11".into(),
                 ecosystem: "node".into(),
-                vulns: vec![Vuln { id: "GHSA-x".into(), severity: Severity::Medium, summary: "proto".into() }],
+                vulns: vec![Vuln { id: "GHSA-x".into(), severity: Severity::Medium, summary: "proto".into(), fixed: None }],
             }],
         );
         let v: Value = serde_json::from_str(&render_tree(&t).unwrap()).unwrap();

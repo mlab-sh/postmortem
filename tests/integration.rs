@@ -1743,3 +1743,68 @@ fn diff_accepts_the_assessment_flags() {
     let v: Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
     assert_eq!(v["summary"]["added"], 5);
 }
+
+// --- `fix` ---------------------------------------------------------------------
+//
+// The plan itself is unit-tested in `src/fix.rs`, where remedies can be built
+// without a network. These pin the command's contract: the exit code, the clean
+// case, and that nothing is ever written.
+
+#[test]
+fn fix_on_a_project_without_advisories_exits_zero() {
+    let out = Command::new(bin())
+        .arg("fix")
+        .arg(fixture("clean-node"))
+        .arg("--no-progress")
+        .output()
+        .expect("postmortem binary did not run");
+    assert_eq!(out.status.code(), Some(0));
+    let s = strip_ansi(&String::from_utf8_lossy(&out.stdout));
+    assert!(s.contains("no known vulnerabilities"), "got: {s}");
+}
+
+#[test]
+fn fix_never_writes_to_the_project() {
+    // The plan is advice, not an edit: applying it is the user's decision.
+    let dir = std::env::temp_dir().join(format!("pm-fix-ro-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for f in ["package.json", "package-lock.json"] {
+        std::fs::copy(fixture("clean-node").join(f), dir.join(f)).unwrap();
+    }
+    let before: Vec<(String, u64)> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.metadata().unwrap().len()))
+        .collect();
+
+    let _ = Command::new(bin()).arg("fix").arg(&dir).arg("--no-progress").output();
+
+    let after: Vec<(String, u64)> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.metadata().unwrap().len()))
+        .collect();
+    assert_eq!(before, after, "fix must not touch the project");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn fix_json_has_a_summary_even_when_empty() {
+    let v = json_of(&["fix", fixture("clean-node").to_str().unwrap()]);
+    assert_eq!(v["schema_version"], 1);
+    assert_eq!(v["summary"]["packages"], 0);
+    assert_eq!(v["summary"]["advisories"], 0);
+    assert!(v["remedies"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn fix_rejects_a_project_it_cannot_parse() {
+    let out = Command::new(bin())
+        .arg("fix")
+        .arg(fixture("README.md"))
+        .arg("--no-progress")
+        .output()
+        .expect("postmortem binary did not run");
+    assert_ne!(out.status.code(), Some(0));
+}

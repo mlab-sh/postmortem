@@ -38,6 +38,15 @@ pub struct Vuln {
     pub severity: Severity,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub summary: String,
+    /// The earliest version that fixes this advisory *for the installed
+    /// version*, when the database publishes one.
+    ///
+    /// `None` covers two genuinely different situations that must not be
+    /// conflated with "safe": no fix has been released yet, or the ranges could
+    /// not be ordered. Both are reported as unfixable rather than silently
+    /// dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed: Option<String>,
 }
 
 /// A package that has at least one known vulnerability.
@@ -178,7 +187,7 @@ fn parse_coordinate_results(
         let vulns: Vec<Vuln> = res
             .get("vulns")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().map(parse_vuln).collect())
+            .map(|arr| arr.iter().map(|v| parse_vuln_for(v, name, version)).collect())
             .unwrap_or_default();
         if vulns.is_empty() {
             continue;
@@ -204,27 +213,35 @@ fn parse_response(doc: &serde_json::Value) -> Vec<VulnPackage> {
 
     let mut out = Vec::new();
     for (pkg, res) in packages.iter().zip(results) {
+        let str_at = |k: &str| {
+            pkg.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string()
+        };
+        let (name, version) = (str_at("name"), str_at("version"));
+        // The name and version are what select this package's ranges out of the
+        // advisory's `affected` array, so they must reach the parser — without
+        // them every advisory reports as having no published fix.
         let vulns: Vec<Vuln> = res
             .get("vulns")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().map(parse_vuln).collect())
+            .map(|arr| arr.iter().map(|v| parse_vuln_for(v, &name, &version)).collect())
             .unwrap_or_default();
         if vulns.is_empty() {
             continue;
         }
-        out.push(VulnPackage {
-            name: pkg.get("name").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
-            version: pkg.get("version").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-            ecosystem: pkg.get("ecosystem").and_then(|e| e.as_str()).unwrap_or_default().to_string(),
-            vulns,
-        });
+        out.push(VulnPackage { name, version, ecosystem: str_at("ecosystem"), vulns });
     }
     out
 }
 
 /// Parse one OSV-schema advisory object into our slim [`Vuln`]. Shared with the
 /// [`crate::osv`] client (OSV.dev returns the same schema mlab does).
-pub(crate) fn parse_vuln(v: &serde_json::Value) -> Vuln {
+/// Parse an OSV vuln, resolving the fixed version for `name`@`installed`.
+///
+/// The `affected` array covers every package an advisory touches — the lodash
+/// prototype-pollution entry lists `lodash`, `lodash-es`, `lodash-amd` and a
+/// dozen more — so it is filtered by name before any range is read. Taking the
+/// first entry blindly would report another package's fix version.
+pub(crate) fn parse_vuln_for(v: &serde_json::Value, name: &str, installed: &str) -> Vuln {
     let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("UNKNOWN").to_string();
     let summary = v
         .get("summary")
@@ -234,7 +251,61 @@ pub(crate) fn parse_vuln(v: &serde_json::Value) -> Vuln {
         .chars()
         .take(120)
         .collect();
-    Vuln { id, severity: osv_severity(v), summary }
+    Vuln { id, severity: osv_severity(v), summary, fixed: fixed_version(v, name, installed) }
+}
+
+/// The earliest published fix that applies to `installed`.
+///
+/// OSV expresses affected ranges as an event stream: `introduced` opens a
+/// window, `fixed` closes it. A package may carry several windows (a fix
+/// back-ported to 1.x and 2.x), so the one containing the installed version is
+/// what matters — recommending the 2.x fix to someone on 1.x would be a major
+/// upgrade dressed up as a patch.
+///
+/// Returns `None` when no window contains the installed version, when the window
+/// is still open (no fix released), or when the versions cannot be ordered.
+fn fixed_version(v: &serde_json::Value, name: &str, installed: &str) -> Option<String> {
+    if name.is_empty() || installed.is_empty() {
+        return None;
+    }
+    let affected = v.get("affected")?.as_array()?;
+    let mut best: Option<String> = None;
+
+    for a in affected {
+        // Only this package's ranges; an advisory routinely lists siblings.
+        let a_name = a.get("package").and_then(|p| p.get("name")).and_then(|n| n.as_str());
+        if a_name != Some(name) {
+            continue;
+        }
+        for range in a.get("ranges").and_then(|r| r.as_array()).into_iter().flatten() {
+            // GIT ranges are commit hashes, not versions — unusable here.
+            if range.get("type").and_then(|t| t.as_str()) == Some("GIT") {
+                continue;
+            }
+            let events = range.get("events").and_then(|e| e.as_array())?;
+            let mut introduced: Option<String> = None;
+            for e in events {
+                if let Some(i) = e.get("introduced").and_then(|x| x.as_str()) {
+                    introduced = Some(i.to_string());
+                    continue;
+                }
+                let Some(fix) = e.get("fixed").and_then(|x| x.as_str()) else { continue };
+                // `introduced: "0"` means "from the beginning".
+                let opened = match introduced.as_deref() {
+                    Some("0") | None => true,
+                    Some(i) => crate::semver::gte(installed, i),
+                };
+                // The window must actually contain the installed version.
+                if opened && crate::semver::lt(installed, fix) {
+                    best = Some(match best {
+                        Some(b) if crate::semver::lt(&b, fix) => b,
+                        _ => fix.to_string(),
+                    });
+                }
+            }
+        }
+    }
+    best
 }
 
 /// Map an OSV vuln's severity to our scale. Prefer the GHSA-style

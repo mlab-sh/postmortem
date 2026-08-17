@@ -39,7 +39,8 @@ use serde::{Deserialize, Serialize};
 /// discarded on read rather than misread. See the module docs for why a version
 /// check is required and not merely nice to have.
 /// History: 1 — the initial envelope. 2 — `CachedRepo` gained `licenses`.
-pub const FORMAT_VERSION: u32 = 2;
+/// 3 — `Vuln` gained `fixed`, the version that remediates it.
+pub const FORMAT_VERSION: u32 = 3;
 
 pub struct Cache {
     root: Option<PathBuf>,
