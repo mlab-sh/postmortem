@@ -319,6 +319,7 @@ fn apt_graph(text: &str, manual: &std::collections::HashSet<String>) -> Vec<Depe
     pkgs.into_iter()
         .map(|p| Dependency {
             direct: manual.contains(&p.name),
+            scope: Scope::Prod,
             resolved_url: (!p.homepage.is_empty()).then(|| p.homepage.clone()),
             parents: parents.remove(&p.name).unwrap_or_default(),
             name: p.name,

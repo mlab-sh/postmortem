@@ -16,6 +16,14 @@ match.
 
 Poetry lockfiles give a full graph; a bare `requirements.txt` is flatter.
 
+## Dependency scopes
+
+Varies by format. `Pipfile.lock` is authoritative (`default` vs `develop`).
+`poetry.lock` uses `groups` (poetry >= 1.5) or the legacy `category` field.
+A bare `requirements.txt` carries no metadata, so only the filename convention
+(`requirements-dev.txt`, `requirements/dev.txt`, ...) marks it as development.
+See [Dependency scopes](Dependency-Scopes).
+
 ## Online resolution
 
 - **Registry:** `pypi.org/pypi/<name>/json`.

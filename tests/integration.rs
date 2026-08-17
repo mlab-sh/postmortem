@@ -718,7 +718,7 @@ fn default_output_filename_when_no_dash_o() {
     // The file is valid JSON
     let body = std::fs::read_to_string(entries[0].path()).unwrap();
     let v: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(v["schema_version"], 2);
+    assert_eq!(v["schema_version"], 3);
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -734,7 +734,7 @@ fn dash_o_dash_forces_stdout() {
         .unwrap();
     let body = String::from_utf8(out.stdout).unwrap();
     let v: Value = serde_json::from_str(&body).expect("valid JSON on stdout");
-    assert_eq!(v["schema_version"], 2);
+    assert_eq!(v["schema_version"], 3);
 }
 
 #[test]
@@ -922,4 +922,172 @@ fn an_unusable_target_is_a_configuration_error_not_a_clean_run() {
         stderr.contains("not a recognised manifest or lockfile"),
         "stderr should say why, got: {stderr}"
     );
+}
+
+// --- `--omit` / dependency scopes ---------------------------------------------
+//
+// The `scoped-node` fixture is built around the case that makes this feature
+// non-trivial: `shared-lib` is reachable from BOTH a production dependency and a
+// dev tool. Omitting dev must never drop it.
+
+/// Every dependency name in a `tree --json` forest, flattened.
+fn tree_names(extra_args: &[&str]) -> Vec<String> {
+    let out = Command::new(bin())
+        .arg("tree")
+        .arg(fixture("scoped-node"))
+        .args(extra_args)
+        .args(["--json", "-o", "-", "--no-progress"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("postmortem binary did not run");
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{}", String::from_utf8_lossy(&out.stderr)));
+    fn walk(n: &Value, acc: &mut Vec<String>) {
+        acc.push(n["name"].as_str().unwrap().to_string());
+        for c in n["children"].as_array().into_iter().flatten() {
+            walk(c, acc);
+        }
+    }
+    let mut acc = Vec::new();
+    for r in v["roots"].as_array().unwrap() {
+        walk(r, &mut acc);
+    }
+    acc.sort();
+    acc.dedup();
+    acc
+}
+
+#[test]
+fn without_omit_every_scope_is_present() {
+    assert_eq!(
+        tree_names(&[]),
+        ["dev-only-lib", "dev-tool", "opt-lib", "prod-lib", "shared-lib"]
+    );
+}
+
+#[test]
+fn omit_dev_drops_the_dev_subtree() {
+    assert_eq!(tree_names(&["--omit", "dev"]), ["opt-lib", "prod-lib", "shared-lib"]);
+}
+
+#[test]
+fn omit_dev_keeps_a_package_that_also_ships() {
+    // The whole point: `shared-lib` is a child of the dev tool AND of a prod
+    // dependency. A naive "listed under devDependencies" filter would drop it.
+    let names = tree_names(&["--omit", "dev"]);
+    assert!(names.contains(&"shared-lib".to_string()), "shared-lib ships and must survive");
+    assert!(!names.contains(&"dev-only-lib".to_string()), "dev-only-lib must be dropped");
+}
+
+#[test]
+fn omit_optional_is_independent_of_dev() {
+    assert_eq!(
+        tree_names(&["--omit", "optional"]),
+        ["dev-only-lib", "dev-tool", "prod-lib", "shared-lib"]
+    );
+}
+
+#[test]
+fn omit_flags_combine() {
+    assert_eq!(
+        tree_names(&["--omit", "dev", "--omit", "optional"]),
+        ["prod-lib", "shared-lib"]
+    );
+}
+
+#[test]
+fn omit_rejects_production() {
+    // `--omit prod` must not parse: it would only ever hide shipped code.
+    let out = Command::new(bin())
+        .args(["tree", "--omit", "prod"])
+        .arg(fixture("scoped-node"))
+        .output()
+        .expect("postmortem binary did not run");
+    assert_eq!(out.status.code(), Some(2), "invalid value should be a usage error");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("dev") && stderr.contains("optional"), "usage should list the valid values, got: {stderr}");
+}
+
+#[test]
+fn scan_reports_the_scope_of_each_dependency() {
+    let (_, v) = scan_json("scoped-node", &[]);
+    let by_name = |n: &str| -> String {
+        v["dependencies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["name"] == n)
+            .unwrap_or_else(|| panic!("{n} missing"))["scope"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert_eq!(by_name("prod-lib"), "prod");
+    assert_eq!(by_name("dev-tool"), "dev");
+    assert_eq!(by_name("opt-lib"), "optional");
+    assert_eq!(by_name("dev-only-lib"), "dev", "a transitive of the dev tool");
+    assert_eq!(by_name("shared-lib"), "prod", "reachable from prod, so it ships");
+}
+
+#[test]
+fn omitting_is_disclosed_as_a_diagnostic() {
+    // The progress UI is suppressed off-TTY, so the omission must still reach
+    // the machine output — a silently smaller dependency set is exactly what
+    // this tool refuses to produce.
+    let (_, v) = scan_json("scoped-node", &["--omit", "dev"]);
+    let diags = v["diagnostics"].as_array().expect("diagnostics present");
+    let omitted = diags
+        .iter()
+        .find(|d| d["kind"] == "scope_omitted")
+        .expect("an omit must be recorded as a diagnostic");
+    let msg = omitted["message"].as_str().unwrap();
+    assert!(msg.contains("2 of 5"), "message should quantify the omission, got: {msg}");
+}
+
+#[test]
+fn omitting_does_not_worsen_the_audit_verdict() {
+    // `scope_omitted` is deliberate, so unlike a parse failure it must not
+    // downgrade a clean project to WARN.
+    let run = |args: &[&str]| -> String {
+        let out = Command::new(bin())
+            .arg("audit")
+            .arg(fixture("scoped-node"))
+            .args(args)
+            .arg("--no-progress")
+            .output()
+            .expect("postmortem binary did not run");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let plain = run(&[]);
+    let omitted = run(&["--omit", "dev"]);
+    let verdict = |s: &str| {
+        for tier in ["CRITICAL", "WARN", "CLEAN"] {
+            if s.contains(tier) {
+                return tier;
+            }
+        }
+        "NONE"
+    };
+    assert_eq!(
+        verdict(&plain),
+        verdict(&omitted),
+        "--omit must not change the grade\n--- plain ---\n{plain}\n--- omitted ---\n{omitted}"
+    );
+}
+
+#[test]
+fn sbom_honours_omit() {
+    let out = Command::new(bin())
+        .arg("sbom")
+        .arg(fixture("scoped-node"))
+        .args(["--omit", "dev", "-o", "-", "--no-progress"])
+        .stdout(Stdio::piped())
+        .output()
+        .expect("postmortem binary did not run");
+    let v: Value = serde_json::from_slice(&out.stdout).expect("valid CycloneDX JSON");
+    let names: Vec<&str> =
+        v["components"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"shared-lib"));
+    assert!(!names.contains(&"dev-tool"), "an omitted package must not reach the SBOM");
 }

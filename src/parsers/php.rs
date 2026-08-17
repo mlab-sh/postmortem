@@ -11,7 +11,7 @@ use serde::Deserialize;
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::model::{Dependency, Ecosystem};
+use crate::model::{Dependency, Ecosystem, Scope};
 
 #[derive(Debug, Deserialize)]
 struct ComposerLock {
@@ -53,10 +53,18 @@ pub fn parse_lockfile(path: &Path, manifest: Option<&Path>) -> Result<Vec<Depend
         .and_then(|m| read_manifest_direct(m).ok())
         .unwrap_or_default();
 
+    // composer.lock is the one lockfile that resolves the dev tree separately and
+    // completely: `packages-dev` already holds the *transitive* dev closure, and
+    // composer promotes anything also required by a prod package into `packages`.
+    // So the scope here is authoritative rather than a seed — propagation later
+    // can only confirm it.
+    let dev_count = lock.packages_dev.len();
     let all: Vec<&ComposerPkg> = lock.packages.iter().chain(lock.packages_dev.iter()).collect();
+    let prod_count = all.len() - dev_count;
 
     let mut out = Vec::with_capacity(all.len());
-    for pkg in &all {
+    for (idx, pkg) in all.iter().enumerate() {
+        let scope = if idx < prod_count { Scope::Prod } else { Scope::Dev };
         let parents: Vec<_> = all
             .iter()
             .filter(|o| o.name != pkg.name && o.require.contains_key(&pkg.name))
@@ -85,6 +93,7 @@ pub fn parse_lockfile(path: &Path, manifest: Option<&Path>) -> Result<Vec<Depend
             version: pkg.version.clone().unwrap_or_else(|| "unknown".into()),
             ecosystem: Ecosystem::Php,
             direct: is_direct,
+            scope,
             resolved_url,
             integrity,
             parents,
@@ -188,5 +197,39 @@ mod tests {
         assert!(deps.iter().find(|d| d.name == "monolog/monolog").unwrap().direct);
         assert!(deps.iter().find(|d| d.name == "phpunit/phpunit").unwrap().direct);
         assert!(!deps.iter().find(|d| d.name == "psr/log").unwrap().direct);
+    }
+
+    #[test]
+    fn packages_dev_section_classifies_scope() {
+        let deps = parse_lockfile(&tmp("composer.lock", LOCK), None).unwrap();
+        let scope = |n: &str| deps.iter().find(|d| d.name == n).unwrap().scope;
+        assert_eq!(scope("monolog/monolog"), Scope::Prod);
+        assert_eq!(scope("psr/log"), Scope::Prod);
+        assert_eq!(scope("phpunit/phpunit"), Scope::Dev);
+    }
+
+    #[test]
+    fn dev_transitives_are_classified_without_propagation() {
+        // composer resolves the dev tree separately, so `packages-dev` already
+        // holds the transitive closure — this is the one ecosystem where the
+        // lockfile answers the question completely on its own.
+        let lock = tmp(
+            "composer.lock",
+            r#"{
+              "packages": [
+                { "name": "app/core", "version": "1.0.0", "require": {} }
+              ],
+              "packages-dev": [
+                { "name": "phpunit/phpunit", "version": "9.5.0",
+                  "require": { "sebastian/diff": "^4.0" } },
+                { "name": "sebastian/diff", "version": "4.0.0", "require": {} }
+              ]
+            }"#,
+        );
+        let deps = parse_lockfile(&lock, None).unwrap();
+        let scope = |n: &str| deps.iter().find(|d| d.name == n).unwrap().scope;
+        assert_eq!(scope("app/core"), Scope::Prod);
+        assert_eq!(scope("phpunit/phpunit"), Scope::Dev);
+        assert_eq!(scope("sebastian/diff"), Scope::Dev, "a transitive of a dev package");
     }
 }

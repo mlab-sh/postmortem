@@ -41,6 +41,7 @@ language coverage matrix.
 | `--no-deps` | Terminal only: omit the dependency table, show findings only. |
 | `--enrich` | Attach mlab.sh investigation links to IOC findings. |
 | `--config <FILE>` / `--no-config` | Point at a `postmortem.conf`, or disable its auto-loading. See [Configuration](Configuration). |
+| `--omit <dev\|optional>` | Drop a dependency set. Repeatable. A package reachable from production is always kept — see [Dependency scopes](Dependency-Scopes). |
 | `--no-progress` | Disable the animated progress UI. |
 
 ## Exit codes

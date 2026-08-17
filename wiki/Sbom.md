@@ -57,4 +57,5 @@ consumer:
 | Flag | Description |
 | --- | --- |
 | `-o`, `--output` | Output file (`-` for stdout). Defaults to a dated file in the cwd. |
+| `--omit <dev\|optional>` | Drop a dependency set. Repeatable. A package reachable from production is always kept — see [Dependency scopes](Dependency-Scopes). |
 | `--no-progress` | Disable the animated progress UI. |

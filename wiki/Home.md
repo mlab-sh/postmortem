@@ -33,6 +33,8 @@ locally.
   3 code hosts postmortem understands.
 - **[Online resolution](Online-Resolution)** - how `--online` turns a package
   into a `risk:dep` score, plus `--languages`.
+- **[Dependency scopes](Dependency-Scopes)** - what `--omit dev` removes, and why
+  a package your app also uses is never dropped.
 - **[System package managers](System)** - the Homebrew, [pacman](Pacman), [apt](Apt), [dnf](Dnf), [Nix](Nix), and [apk](Apk) backends in depth.
 - **[CI gate](CI-Gate)** - turn scores and vulns into a pass/fail build.
 - **[Configuration](Configuration)** - tokens, thresholds, and per-project policy.
@@ -63,6 +65,7 @@ brew install postmortem
 postmortem scan .                      # static scan of the current project
 postmortem tree . --depth 2            # offline dependency forest
 postmortem tree . --online --vulns     # + repo reputation + known CVEs
+postmortem tree . --omit dev           # only what actually ships
 postmortem system --online             # audit your installed OS packages
 ```
 

@@ -1,0 +1,8 @@
+{
+  "name": "scoped-app",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": { "prod-lib": "1.0.0" },
+  "devDependencies": { "dev-tool": "1.0.0" },
+  "optionalDependencies": { "opt-lib": "1.0.0" }
+}

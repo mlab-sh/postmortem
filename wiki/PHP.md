@@ -12,6 +12,13 @@ Part of the [ecosystems](Ecosystems-and-Hosts) matrix.
 Built from the lock; Composer vendors dependencies under `vendor/` when
 installed, so a committed vendor tree is also covered by [`scan`](Scan).
 
+## Dependency scopes
+
+The most complete of any ecosystem: composer resolves the dev tree separately
+into `packages-dev`, **transitives included**, and promotes anything also
+required in production into `packages`. No propagation needed.
+See [Dependency scopes](Dependency-Scopes).
+
 ## Online resolution
 
 - **Registry:** `packagist.org/packages/<vendor>/<package>.json` → the

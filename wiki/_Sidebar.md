@@ -30,6 +30,7 @@
 - [apk](Apk)
 
 **Concepts**
+- [Dependency scopes](Dependency-Scopes)
 - [Source-code scanning](Source-Code-Scanning)
 - [GitHub Actions](GitHub-Actions)
 - [Online resolution](Online-Resolution)

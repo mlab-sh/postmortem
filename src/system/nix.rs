@@ -98,6 +98,7 @@ pub fn nix_inventory(opts: Opts) -> Result<Inventory> {
         }
         deps.push(Dependency {
             direct: root_set.contains(path.as_str()),
+            scope: Scope::Prod,
             resolved_url: None,
             parents: parents.remove(&name).unwrap_or_default(),
             name,

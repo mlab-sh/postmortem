@@ -17,7 +17,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde_yaml::{Mapping, Value};
 
-use crate::model::{DepRef, Dependency, Ecosystem};
+use crate::model::{DepRef, Dependency, Ecosystem, Scope};
 
 pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
     let text =
@@ -75,8 +75,10 @@ pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
         }
     }
 
-    // 3. Direct deps: from `importers:` (v9) or the top-level maps (v5/v6).
-    let mut directs: Vec<(String, Option<String>)> = Vec::new();
+    // 3. Direct deps: from `importers:` (v9) or the top-level maps (v5/v6). The
+    // block each came from seeds its scope; the rest of the graph is inferred by
+    // `crate::scope::propagate`.
+    let mut directs: Vec<(String, Option<String>, Scope)> = Vec::new();
     if let Some(importers) = doc.get("importers").and_then(Value::as_mapping) {
         for (_, imp) in importers {
             if let Some(m) = imp.as_mapping() {
@@ -86,11 +88,23 @@ pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
     } else if let Some(root) = doc.as_mapping() {
         collect_directs(root, &mut directs);
     }
-    for (name, version) in directs {
-        for (key, dep) in acc.iter_mut() {
+    // Resolve precedence across declarations before assigning: nodes start as
+    // `Prod`, so folding a `Dev` seed in with `max` would never take effect. In a
+    // workspace the same package can be a dev dep of one importer and a prod dep
+    // of another — prod wins, which is the safe direction.
+    let mut seeds: BTreeMap<DepRef, Scope> = BTreeMap::new();
+    for (name, version, scope) in directs {
+        for key in acc.keys() {
             if key.0 == name && version.as_ref().is_none_or(|v| &key.1 == v) {
-                dep.direct = true;
+                let e = seeds.entry(key.clone()).or_insert(scope);
+                *e = (*e).max(scope);
             }
+        }
+    }
+    for (key, scope) in seeds {
+        if let Some(dep) = acc.get_mut(&key) {
+            dep.direct = true;
+            dep.scope = scope;
         }
     }
 
@@ -110,6 +124,7 @@ fn node(name: String, version: String) -> Dependency {
         version,
         ecosystem: Ecosystem::Node,
         direct: false,
+        scope: Scope::Prod,
         resolved_url: None,
         integrity: None,
         parents: Vec::new(),
@@ -119,8 +134,12 @@ fn node(name: String, version: String) -> Dependency {
 /// Pull direct deps out of a `dependencies`/`devDependencies`/`optionalDependencies`
 /// block, whose values are either a bare version string (v5) or a
 /// `{specifier, version}` map (v6/v9).
-fn collect_directs(map: &Mapping, out: &mut Vec<(String, Option<String>)>) {
-    for field in ["dependencies", "devDependencies", "optionalDependencies"] {
+fn collect_directs(map: &Mapping, out: &mut Vec<(String, Option<String>, Scope)>) {
+    for (field, scope) in [
+        ("dependencies", Scope::Prod),
+        ("optionalDependencies", Scope::Optional),
+        ("devDependencies", Scope::Dev),
+    ] {
         let Some(m) = map.get(field).and_then(Value::as_mapping) else {
             continue;
         };
@@ -134,7 +153,7 @@ fn collect_directs(map: &Mapping, out: &mut Vec<(String, Option<String>)>) {
                     .map(|s| strip_peer(s).to_string()),
                 _ => None,
             };
-            out.push((name.to_string(), version));
+            out.push((name.to_string(), version, scope));
         }
     }
 }
@@ -256,5 +275,73 @@ packages:
         assert!(deps.iter().find(|d| d.name == "express").unwrap().direct);
         let cookie = deps.iter().find(|d| d.name == "cookie").unwrap();
         assert!(cookie.parents.contains(&("express".into(), "4.18.2".into())));
+    }
+
+    #[test]
+    fn dev_and_optional_blocks_seed_direct_scopes() {
+        let lock = r#"
+lockfileVersion: '6.0'
+dependencies:
+  express:
+    specifier: ^4
+    version: 4.18.2
+devDependencies:
+  jest:
+    specifier: ^29
+    version: 29.0.0
+optionalDependencies:
+  fsevents:
+    specifier: ^2
+    version: 2.3.2
+packages:
+  /express@4.18.2:
+    resolution: {integrity: sha512-aaa}
+  /jest@29.0.0:
+    resolution: {integrity: sha512-bbb}
+  /fsevents@2.3.2:
+    resolution: {integrity: sha512-ccc}
+"#;
+        let dir = std::env::temp_dir().join(format!("pm-pnpm-scope-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("pnpm-lock.yaml");
+        std::fs::write(&p, lock).unwrap();
+        let deps = parse(&p).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let scope = |n: &str| deps.iter().find(|d| d.name == n).unwrap().scope;
+        assert_eq!(scope("express"), Scope::Prod);
+        assert_eq!(scope("jest"), Scope::Dev);
+        assert_eq!(scope("fsevents"), Scope::Optional);
+    }
+
+    #[test]
+    fn a_workspace_dev_dep_that_is_prod_elsewhere_stays_prod() {
+        // Two importers disagree: one uses `shared` as a dev tool, the other
+        // ships it. Production must win, or `--omit dev` would hide it.
+        let lock = r#"
+lockfileVersion: '6.0'
+importers:
+  packages/tools:
+    devDependencies:
+      shared:
+        specifier: ^1
+        version: 1.0.0
+  packages/app:
+    dependencies:
+      shared:
+        specifier: ^1
+        version: 1.0.0
+packages:
+  /shared@1.0.0:
+    resolution: {integrity: sha512-aaa}
+"#;
+        let dir = std::env::temp_dir().join(format!("pm-pnpm-ws-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("pnpm-lock.yaml");
+        std::fs::write(&p, lock).unwrap();
+        let deps = parse(&p).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(deps.iter().find(|d| d.name == "shared").unwrap().scope, Scope::Prod);
     }
 }

@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::model::{Dependency, Ecosystem};
+use crate::model::{Dependency, Ecosystem, Scope};
 
 pub fn parse(manifest: &Path, lockfile: Option<&Path>) -> Result<Vec<Dependency>> {
     let text = std::fs::read_to_string(manifest)
@@ -43,6 +43,10 @@ pub fn parse(manifest: &Path, lockfile: Option<&Path>) -> Result<Vec<Dependency>
             version: r.version,
             ecosystem: Ecosystem::Go,
             direct: !r.indirect,
+            // Go has no dev/test dependency concept: `go.mod` lists one module
+            // set, and test-only imports are recorded exactly like the rest. So
+            // everything stays production and `--omit dev` is a no-op here.
+            scope: Scope::Prod,
             resolved_url: None,
             parents: Vec::new(),
         })

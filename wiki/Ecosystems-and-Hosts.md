@@ -28,6 +28,17 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 > **diagnostic** when the graph is incomplete, so a small result is never
 > silently read as "clean".
 
+### Dev / production split
+
+How well each ecosystem supports [`--omit dev`](Dependency-Scopes) depends on
+what its lockfile records:
+
+| Support | Ecosystems | Source |
+| --- | --- | --- |
+| **Complete** (transitives included) | PHP, Python (pipenv), Java (Gradle) | The lockfile resolves the dev tree itself. |
+| **Seeded** (direct deps, then propagated) | Node, Rust, Python (poetry), Ruby, Java (Maven) | The manifest classifies direct deps; the graph does the rest. |
+| **None** | Go, Python (`requirements.txt`) | No distinction exists in the format. |
+
 ## Code hosts
 
 Reputation stats (stars, creation date, last activity, archived, primary

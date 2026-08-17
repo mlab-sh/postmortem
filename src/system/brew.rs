@@ -219,6 +219,7 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> 
             version: inst.version.clone(),
             ecosystem: Ecosystem::Brew,
             direct: inst.installed_on_request,
+            scope: Scope::Prod,
             resolved_url: tap.and_then(|t| tap_remote.get(t).cloned()),
             integrity: None,
             parents: parents.remove(&f.name).unwrap_or_default(),
@@ -244,6 +245,7 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> 
             version: c.installed.clone().or_else(|| c.version.clone()).unwrap_or_default(),
             ecosystem: Ecosystem::Brew,
             direct: true, // casks are always user-installed
+            scope: Scope::Prod,
             // The download URL is often a GitHub release → resolves to the repo.
             resolved_url: c.url.clone(),
             integrity: c.sha256.clone(),

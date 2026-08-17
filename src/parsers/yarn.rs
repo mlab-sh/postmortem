@@ -12,7 +12,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde_yaml::Value;
 
-use crate::model::{DepRef, Dependency, Ecosystem};
+use crate::model::{DepRef, Dependency, Ecosystem, Scope};
 
 pub fn parse(manifest: &Path, lockfile: &Path) -> Result<Vec<Dependency>> {
     let text = std::fs::read_to_string(lockfile)
@@ -58,6 +58,7 @@ fn assemble(entries: Vec<Entry>, manifest: &Path) -> Vec<Dependency> {
             version: e.version.clone(),
             ecosystem: Ecosystem::Node,
             direct: false,
+            scope: Scope::Prod,
             resolved_url: e.resolved.clone(),
             integrity: e.integrity.clone(),
             parents: Vec::new(),
@@ -79,25 +80,38 @@ fn assemble(entries: Vec<Entry>, manifest: &Path) -> Vec<Dependency> {
         dep.parents.dedup();
     }
 
-    // Direct deps: resolve each root descriptor from package.json.
-    for (name, range) in root_deps(manifest) {
+    // Direct deps: resolve each root descriptor from package.json. The field it
+    // came from is what seeds the scope; everything deeper is inferred later by
+    // `crate::scope::propagate`.
+    //
+    // Precedence is resolved across the root declarations *first*, then assigned:
+    // nodes were created as `Prod`, so folding a `Dev` seed into the node with
+    // `max` would always lose and no dev root would ever be marked.
+    let mut seeds: HashMap<DepRef, Scope> = HashMap::new();
+    for (name, range, scope) in root_deps(manifest) {
         let resolved = by_descriptor
             .get(&format!("{name}@{range}"))
             .cloned()
             // Fall back to marking every version of a root dep name direct.
             .or_else(|| acc.keys().find(|(n, _)| n == &name).cloned());
-        if let Some(k) = resolved
-            && let Some(d) = acc.get_mut(&k)
-        {
+        if let Some(k) = resolved {
+            let e = seeds.entry(k).or_insert(scope);
+            *e = (*e).max(scope);
+        }
+    }
+    for (k, scope) in seeds {
+        if let Some(d) = acc.get_mut(&k) {
             d.direct = true;
+            d.scope = scope;
         }
     }
 
     acc.into_values().collect()
 }
 
-/// Root direct deps `(name, range)` from `package.json`.
-fn root_deps(manifest: &Path) -> Vec<(String, String)> {
+/// Root direct deps `(name, range, scope)` from `package.json`, the scope being
+/// the field each was declared under.
+fn root_deps(manifest: &Path) -> Vec<(String, String, Scope)> {
     let Ok(text) = std::fs::read_to_string(manifest) else {
         return Vec::new();
     };
@@ -105,11 +119,15 @@ fn root_deps(manifest: &Path) -> Vec<(String, String)> {
         return Vec::new();
     };
     let mut out = Vec::new();
-    for field in ["dependencies", "devDependencies", "optionalDependencies"] {
+    for (field, scope) in [
+        ("dependencies", Scope::Prod),
+        ("optionalDependencies", Scope::Optional),
+        ("devDependencies", Scope::Dev),
+    ] {
         if let Some(m) = json.get(field).and_then(|v| v.as_object()) {
             for (n, r) in m {
                 if let Some(r) = r.as_str() {
-                    out.push((n.clone(), r.to_string()));
+                    out.push((n.clone(), r.to_string(), scope));
                 }
             }
         }
@@ -334,5 +352,65 @@ cookie@0.5.0:
         assert!(express.direct, "express should be direct");
         let cookie = deps.iter().find(|d| d.name == "cookie").unwrap();
         assert!(cookie.parents.contains(&("express".into(), "4.18.2".into())));
+    }
+
+    #[test]
+    fn package_json_fields_seed_direct_scopes() {
+        let lock = r#"# yarn lockfile v1
+
+express@^4.18.2:
+  version "4.18.2"
+  resolved "https://registry.yarnpkg.com/express/-/express-4.18.2.tgz"
+
+jest@^29.0.0:
+  version "29.0.0"
+  resolved "https://registry.yarnpkg.com/jest/-/jest-29.0.0.tgz"
+
+fsevents@^2.3.2:
+  version "2.3.2"
+  resolved "https://registry.yarnpkg.com/fsevents/-/fsevents-2.3.2.tgz"
+"#;
+        let d = write(
+            "scope",
+            &[
+                ("yarn.lock", lock),
+                (
+                    "package.json",
+                    r#"{"dependencies":{"express":"^4.18.2"},
+                        "devDependencies":{"jest":"^29.0.0"},
+                        "optionalDependencies":{"fsevents":"^2.3.2"}}"#,
+                ),
+            ],
+        );
+        let deps = parse(&d.join("package.json"), &d.join("yarn.lock")).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+
+        let scope = |n: &str| deps.iter().find(|x| x.name == n).unwrap().scope;
+        assert_eq!(scope("express"), Scope::Prod);
+        assert_eq!(scope("jest"), Scope::Dev);
+        assert_eq!(scope("fsevents"), Scope::Optional);
+    }
+
+    #[test]
+    fn a_package_in_two_manifest_fields_keeps_the_strongest_scope() {
+        let lock = r#"# yarn lockfile v1
+
+both@^1.0.0:
+  version "1.0.0"
+  resolved "https://registry.yarnpkg.com/both/-/both-1.0.0.tgz"
+"#;
+        let d = write(
+            "scope-dup",
+            &[
+                ("yarn.lock", lock),
+                (
+                    "package.json",
+                    r#"{"dependencies":{"both":"^1.0.0"},"devDependencies":{"both":"^1.0.0"}}"#,
+                ),
+            ],
+        );
+        let deps = parse(&d.join("package.json"), &d.join("yarn.lock")).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+        assert_eq!(deps.iter().find(|x| x.name == "both").unwrap().scope, Scope::Prod);
     }
 }

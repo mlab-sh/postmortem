@@ -15,6 +15,17 @@ Full graph from the lock's `dependencies` edges.
 **Exception:** workspace member crates have no `source` field - they're local,
 not dependencies, so they're skipped (the scan target isn't its own dependency).
 
+## Dependency scopes
+
+Read from `Cargo.toml` (`Cargo.lock` is a flat resolved set with no dev/prod
+split), including `[target.'cfg(...)'.dev-dependencies]`, then propagated
+through the lock's edges.
+
+**`[build-dependencies]` counts as production.** A build script's dependencies
+execute on the build machine with full privileges — omitting them would hide the
+most dangerous class of Rust dependency. Only `[dev-dependencies]` is `dev`.
+See [Dependency scopes](Dependency-Scopes).
+
 ## Online resolution
 
 - **Registry:** `crates.io/api/v1/crates/<name>` → the `crate.repository` field.

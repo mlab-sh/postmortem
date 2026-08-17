@@ -18,6 +18,13 @@ Scoped names (`@scope/pkg`) are handled throughout, including cache keys.
 Full transitive graph with real parent/child edges. Diamond deps and cycles are
 collapsed to `(*)` to keep output finite.
 
+## Dependency scopes
+
+Seeded from `dependencies` / `devDependencies` / `optionalDependencies` — the
+lockfile root entry (npm), `importers:` (pnpm), or `package.json` (yarn) — then
+propagated through the graph. A name listed under two fields keeps the strongest
+scope. See [Dependency scopes](Dependency-Scopes).
+
 ## Online resolution
 
 - **Registry:** `registry.npmjs.org/<pkg>/<version>` → the `repository` field

@@ -7,6 +7,14 @@ Part of the [ecosystems](Ecosystems-and-Hosts) matrix.
 `Gemfile.lock` - the `GEM` specs section (name + version), with the
 `DEPENDENCIES` section marking the direct set.
 
+## Dependency scopes
+
+`Gemfile.lock` records no groups — its `DEPENDENCIES` section is flat — so the
+scope comes from the `Gemfile` alongside it: `group :development, :test do ... end`
+blocks and inline `group:` / `groups:` options. Without a Gemfile, every gem
+stays production. A mixed group (`group :default, :test`) stays production.
+See [Dependency scopes](Dependency-Scopes).
+
 ## Online resolution
 
 - **Registry:** `rubygems.org/api/v1/gems/<name>.json`.

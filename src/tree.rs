@@ -506,6 +506,16 @@ pub fn render_diagnostics(diags: &[crate::model::Diagnostic]) {
     if diags.is_empty() {
         return;
     }
+    // A deliberate `--omit` is reported plainly; only incompleteness we did not
+    // ask for gets the warning treatment.
+    for d in diags.iter().filter(|d| !d.is_incompleteness()) {
+        println!("\n{}", format!("— {}", d.message).dimmed());
+    }
+    let diags: Vec<&crate::model::Diagnostic> =
+        diags.iter().filter(|d| d.is_incompleteness()).collect();
+    if diags.is_empty() {
+        return;
+    }
     println!(
         "\n{}",
         format!("⚠ {} graph diagnostic(s) — results may be incomplete", diags.len())

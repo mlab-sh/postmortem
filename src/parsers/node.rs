@@ -8,10 +8,10 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
-use crate::model::{DepRef, Dependency, Ecosystem};
+use crate::model::{DepRef, Dependency, Ecosystem, Scope};
 
 #[derive(Debug, Deserialize)]
 struct Lockfile {
@@ -54,13 +54,22 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
     }
 
     let root = lock.packages.get("").cloned().unwrap_or_default();
-    let root_direct: HashSet<String> = root
-        .dependencies
-        .keys()
-        .chain(root.dev_dependencies.keys())
-        .chain(root.optional_dependencies.keys())
-        .cloned()
-        .collect();
+    // The root entry is the only place package-lock states *intent*: which of
+    // its three fields lists a dependency is what makes it prod / dev / optional.
+    // Everything below is inferred from the graph by `crate::scope::propagate`.
+    // A name listed in several fields keeps the strongest scope (prod wins).
+    let mut root_direct: HashMap<String, Scope> = HashMap::new();
+    let declared_roots = [
+        (&root.dependencies, Scope::Prod),
+        (&root.optional_dependencies, Scope::Optional),
+        (&root.dev_dependencies, Scope::Dev),
+    ];
+    for (map, scope) in declared_roots {
+        for name in map.keys() {
+            let e = root_direct.entry(name.clone()).or_insert(scope);
+            *e = (*e).max(scope);
+        }
+    }
 
     // Index every installed package by path → (name, version, entry)
     let mut by_path: BTreeMap<String, (String, String)> = BTreeMap::new();
@@ -134,13 +143,18 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
                 version: rv.clone(),
                 ecosystem: Ecosystem::Node,
                 direct: false,
+                scope: Scope::Prod,
                 resolved_url: entry.resolved.clone(),
                 integrity: entry.integrity.clone(),
                 parents: Vec::new(),
             });
-            // Mark direct if root is the parent and root listed this dep.
-            if parent_key.is_empty() && root_direct.contains(&rn) {
+            // Mark direct if root is the parent and root listed this dep, and
+            // seed the scope the root declared it under.
+            if parent_key.is_empty()
+                && let Some(scope) = root_direct.get(&rn)
+            {
                 dep.direct = true;
+                dep.scope = *scope;
             }
             if let Some(pr) = parent_ref.clone() {
                 if !dep.parents.contains(&pr) {
@@ -163,14 +177,15 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
         let dep_key = (name.clone(), version.clone());
         if !acc.contains_key(&dep_key) {
             let entry = lock.packages.get(key).cloned().unwrap_or_default();
-            let direct = parent_is_root(key) && root_direct.contains(name);
+            let declared = parent_is_root(key).then(|| root_direct.get(name)).flatten();
             acc.insert(
                 dep_key,
                 Dependency {
                     name: name.clone(),
                     version: version.clone(),
                     ecosystem: Ecosystem::Node,
-                    direct,
+                    direct: declared.is_some(),
+                    scope: declared.copied().unwrap_or(Scope::Prod),
                     resolved_url: entry.resolved.clone(),
                     integrity: entry.integrity.clone(),
                     parents: Vec::new(),
@@ -231,5 +246,87 @@ mod tests {
             pkg_name_from_key("node_modules/@scope/pkg"),
             Some("@scope/pkg")
         );
+    }
+
+    fn tmp_lock(body: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "postmortem-node-scope-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("package-lock.json");
+        std::fs::write(&p, body).unwrap();
+        p
+    }
+
+    const SCOPED_LOCK: &str = r#"{
+      "lockfileVersion": 3,
+      "packages": {
+        "": {
+          "dependencies": { "prod-lib": "1.0.0" },
+          "devDependencies": { "dev-tool": "1.0.0" },
+          "optionalDependencies": { "opt-lib": "1.0.0" }
+        },
+        "node_modules/prod-lib": { "version": "1.0.0" },
+        "node_modules/dev-tool": { "version": "1.0.0" },
+        "node_modules/opt-lib": { "version": "1.0.0" }
+      }
+    }"#;
+
+    #[test]
+    fn root_fields_seed_the_scope_of_direct_deps() {
+        let deps = parse_lockfile(&tmp_lock(SCOPED_LOCK)).unwrap();
+        let scope = |n: &str| deps.iter().find(|d| d.name == n).unwrap().scope;
+        assert_eq!(scope("prod-lib"), Scope::Prod);
+        assert_eq!(scope("dev-tool"), Scope::Dev);
+        assert_eq!(scope("opt-lib"), Scope::Optional);
+        assert!(deps.iter().all(|d| d.direct), "all three are root-declared");
+    }
+
+    #[test]
+    fn a_package_in_two_root_fields_keeps_the_strongest_scope() {
+        // npm allows the same name under `dependencies` and `devDependencies`;
+        // it ships, so it must not be omittable.
+        let lock = tmp_lock(
+            r#"{
+              "lockfileVersion": 3,
+              "packages": {
+                "": {
+                  "dependencies": { "both": "1.0.0" },
+                  "devDependencies": { "both": "1.0.0" }
+                },
+                "node_modules/both": { "version": "1.0.0" }
+              }
+            }"#,
+        );
+        let deps = parse_lockfile(&lock).unwrap();
+        assert_eq!(deps.iter().find(|d| d.name == "both").unwrap().scope, Scope::Prod);
+    }
+
+    #[test]
+    fn transitive_packages_are_left_for_propagation() {
+        // The parser must not guess at depth — it seeds roots and leaves the
+        // rest at the safe default for `crate::scope::propagate` to resolve.
+        let lock = tmp_lock(
+            r#"{
+              "lockfileVersion": 3,
+              "packages": {
+                "": { "devDependencies": { "dev-tool": "1.0.0" } },
+                "node_modules/dev-tool": {
+                  "version": "1.0.0",
+                  "dependencies": { "deep": "1.0.0" }
+                },
+                "node_modules/deep": { "version": "1.0.0" }
+              }
+            }"#,
+        );
+        let deps = parse_lockfile(&lock).unwrap();
+        let deep = deps.iter().find(|d| d.name == "deep").unwrap();
+        assert!(!deep.direct);
+        assert_eq!(deep.scope, Scope::Prod, "unclassified until propagation runs");
+        assert!(deep.parents.iter().any(|(n, _)| n == "dev-tool"), "edge is present");
     }
 }

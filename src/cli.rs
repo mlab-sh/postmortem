@@ -2,7 +2,35 @@ use anyhow::Result;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 
-use crate::model::{Category, Severity};
+use crate::model::{Category, Scope, Severity};
+
+/// A dependency set `--omit` can drop.
+///
+/// Deliberately *not* [`Scope`] itself: production is not omittable, and letting
+/// `--omit prod` parse would offer a flag whose only effect is to hide the code
+/// that actually ships.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+#[clap(rename_all = "lowercase")]
+pub enum OmitSet {
+    /// Packages reachable only through a dev/test dependency edge.
+    Dev,
+    /// Packages reachable only through an optional dependency edge.
+    Optional,
+}
+
+impl OmitSet {
+    pub fn scope(self) -> Scope {
+        match self {
+            OmitSet::Dev => Scope::Dev,
+            OmitSet::Optional => Scope::Optional,
+        }
+    }
+
+    /// The scopes to drop for a given `--omit` selection.
+    pub fn scopes(sets: &[OmitSet]) -> Vec<Scope> {
+        sets.iter().map(|s| s.scope()).collect()
+    }
+}
 
 #[derive(Parser, Debug)]
 #[command(
@@ -186,6 +214,13 @@ pub struct DiffArgs {
     /// The project directory to compare against it (the "after" state).
     pub new: PathBuf,
 
+    /// Omit a dependency set from the analysis. Repeatable: `--omit dev --omit
+    /// optional`. A package is dropped only when *every* path to it from a root
+    /// goes through an omitted edge, so anything that also ships in production
+    /// stays. Ecosystems that do not record the distinction (Go) are unaffected.
+    #[arg(long, value_enum)]
+    pub omit: Vec<OmitSet>,
+
     /// Disable the animated progress UI.
     #[arg(long)]
     pub no_progress: bool,
@@ -202,6 +237,13 @@ pub struct SbomArgs {
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
+    /// Omit a dependency set from the analysis. Repeatable: `--omit dev --omit
+    /// optional`. A package is dropped only when *every* path to it from a root
+    /// goes through an omitted edge, so anything that also ships in production
+    /// stays. Ecosystems that do not record the distinction (Go) are unaffected.
+    #[arg(long, value_enum)]
+    pub omit: Vec<OmitSet>,
+
     /// Disable the animated progress UI.
     #[arg(long)]
     pub no_progress: bool,
@@ -215,6 +257,13 @@ pub struct WhyArgs {
 
     /// The project directory to resolve.
     pub path: PathBuf,
+
+    /// Omit a dependency set from the analysis. Repeatable: `--omit dev --omit
+    /// optional`. A package is dropped only when *every* path to it from a root
+    /// goes through an omitted edge, so anything that also ships in production
+    /// stays. Ecosystems that do not record the distinction (Go) are unaffected.
+    #[arg(long, value_enum)]
+    pub omit: Vec<OmitSet>,
 
     /// Disable the animated progress UI.
     #[arg(long)]
@@ -242,6 +291,13 @@ pub struct AuditArgs {
     /// Report IOC findings inside test/fixture directories too (off by default).
     #[arg(long)]
     pub allow_test_files: bool,
+
+    /// Omit a dependency set from the analysis. Repeatable: `--omit dev --omit
+    /// optional`. A package is dropped only when *every* path to it from a root
+    /// goes through an omitted edge, so anything that also ships in production
+    /// stays. Ecosystems that do not record the distinction (Go) are unaffected.
+    #[arg(long, value_enum)]
+    pub omit: Vec<OmitSet>,
 
     /// Disable the animated progress UI.
     #[arg(long)]
@@ -324,6 +380,13 @@ pub struct TreeArgs {
     /// reported per package. Independent of --online.
     #[arg(long)]
     pub vulns: bool,
+
+    /// Omit a dependency set from the analysis. Repeatable: `--omit dev --omit
+    /// optional`. A package is dropped only when *every* path to it from a root
+    /// goes through an omitted edge, so anything that also ships in production
+    /// stays. Ecosystems that do not record the distinction (Go) are unaffected.
+    #[arg(long, value_enum)]
+    pub omit: Vec<OmitSet>,
 
     /// Disable the animated progress UI (also auto-off when stderr isn't a TTY,
     /// or NO_COLOR / CI is set).
@@ -440,6 +503,13 @@ pub struct ScanArgs {
     /// test code routinely embeds fake IPs/URLs/domains (pure noise).
     #[arg(long)]
     pub allow_test_files: bool,
+
+    /// Omit a dependency set from the analysis. Repeatable: `--omit dev --omit
+    /// optional`. A package is dropped only when *every* path to it from a root
+    /// goes through an omitted edge, so anything that also ships in production
+    /// stays. Ecosystems that do not record the distinction (Go) are unaffected.
+    #[arg(long, value_enum)]
+    pub omit: Vec<OmitSet>,
 
     /// Disable the animated progress UI. Progress is also auto-disabled when
     /// stderr is not a TTY, or when NO_COLOR / CI is set.

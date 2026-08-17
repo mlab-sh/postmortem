@@ -32,4 +32,5 @@ If the package isn't in the graph, `why` says so and stops.
 
 | Flag | Description |
 | --- | --- |
+| `--omit <dev\|optional>` | Drop a dependency set. Repeatable. A package reachable from production is always kept — see [Dependency scopes](Dependency-Scopes). |
 | `--no-progress` | Disable the animated progress UI. |

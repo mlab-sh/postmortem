@@ -61,6 +61,7 @@ postmortem tree . --online --vulns      # reputation + CVEs together
 | `--json` / `--sarif` | Emit the resolved forest as JSON, or SARIF for Code Scanning. One target only, unless `--allow-multiple`. |
 | `--allow-multiple` | Allow `--json`/`--sarif` with several targets - **the output shape changes**, see [Several targets](#several-targets). |
 | `-o, --output <FILE>` | Output file (`-` = stdout). |
+| `--omit <dev\|optional>` | Drop a dependency set. Repeatable. A package reachable from production is always kept — see [Dependency scopes](Dependency-Scopes). |
 | `--no-progress` | Disable the animated progress UI. |
 | **Gate flags** | `--max-risk` `--max-dep` `--max-high` `--max-sus` `--max-vulns` `--fail-on-vuln` `--allow` `--baseline` `--config` - see [CI gate](CI-Gate). |
 

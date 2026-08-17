@@ -399,6 +399,7 @@ mod tests {
             name: name.into(),
             version: "1.0".into(),
             ecosystem: Ecosystem::Brew,
+            scope: crate::model::Scope::Prod,
             direct: parents.is_empty(),
             resolved_url: None,
             integrity: None,

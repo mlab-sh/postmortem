@@ -48,4 +48,5 @@ found, so it is usable as a CI guard on its own. (For fine-grained thresholds, t
 | `--languages` | With `--online`, also fetch each repo's language breakdown. |
 | `--vulns` | Add known-vulnerability intelligence (vuln.mlab.sh). |
 | `--allow-test-files` | Report IOC findings inside test/fixture directories too. |
+| `--omit <dev\|optional>` | Drop a dependency set. Repeatable. A package reachable from production is always kept — see [Dependency scopes](Dependency-Scopes). |
 | `--no-progress` | Disable the animated progress UI. |

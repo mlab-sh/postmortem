@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use crate::model::{Dependency, Ecosystem};
+use crate::model::{Dependency, Ecosystem, Scope};
 
 pub fn parse(manifest: Option<&Path>, lockfile: Option<&Path>) -> Result<Vec<Dependency>> {
     if let Some(lock) = lockfile {
@@ -62,12 +62,26 @@ fn parse_maven(path: &Path) -> Result<Vec<Dependency>> {
             version,
             ecosystem: Ecosystem::Java,
             direct: true, // pom.xml lists direct dependencies
+            scope: maven_scope(tag(block, "scope").as_deref()),
             resolved_url: None,
             integrity: None,
             parents: Vec::new(),
         });
     }
     Ok(out)
+}
+
+/// Map a Maven `<scope>` to ours.
+///
+/// Only `test` is development. `provided` and `system` are deliberately *not*:
+/// the artifact is absent from the package because the container or JDK supplies
+/// it at runtime, so the code still executes in production. `runtime` and
+/// `compile` (the default when the tag is absent) are production outright.
+fn maven_scope(scope: Option<&str>) -> Scope {
+    match scope.map(str::trim) {
+        Some("test") => Scope::Dev,
+        _ => Scope::Prod,
+    }
 }
 
 /// Extract the trimmed text of the first `<tag>...</tag>` inside `block`.
@@ -102,7 +116,10 @@ fn parse_gradle(lock: &Path, manifest: Option<&Path>) -> Result<Vec<Dependency>>
             continue;
         }
         // group:artifact:version=configurations
-        let coord = line.split('=').next().unwrap_or("");
+        let (coord, configurations) = match line.split_once('=') {
+            Some((c, cfg)) => (c, cfg),
+            None => (line, ""),
+        };
         let mut parts = coord.splitn(3, ':');
         let (Some(group), Some(artifact), Some(version)) =
             (parts.next(), parts.next(), parts.next())
@@ -116,12 +133,32 @@ fn parse_gradle(lock: &Path, manifest: Option<&Path>) -> Result<Vec<Dependency>>
             version: version.to_string(),
             ecosystem: Ecosystem::Java,
             direct: is_direct,
+            scope: gradle_scope(configurations),
             resolved_url: None,
             integrity: None,
             parents: Vec::new(),
         });
     }
     Ok(out)
+}
+
+/// The scope implied by a Gradle lockfile line's configuration list.
+///
+/// This is the one place Gradle is *more* informative than Maven: the lockfile
+/// records every configuration that resolved each coordinate, transitives
+/// included (`org.foo:bar:1.0=testCompileClasspath,testRuntimeClasspath`). A
+/// coordinate is development only when every configuration naming it is a test
+/// configuration; the moment one production configuration resolves it, it ships.
+/// An empty list (a malformed line) stays production.
+fn gradle_scope(configurations: &str) -> Scope {
+    let mut any = false;
+    for cfg in configurations.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+        any = true;
+        if !cfg.starts_with("test") && !cfg.starts_with("androidTest") {
+            return Scope::Prod;
+        }
+    }
+    if any { Scope::Dev } else { Scope::Prod }
 }
 
 fn gradle_coord_re() -> &'static Regex {
@@ -221,5 +258,69 @@ mod tests {
         assert!(guava.direct, "guava is declared in build.gradle");
         let lang3 = deps.iter().find(|d| d.name == "org.apache.commons:commons-lang3").unwrap();
         assert!(!lang3.direct, "commons-lang3 is only transitive");
+    }
+
+    #[test]
+    fn maven_scope_maps_only_test_to_dev() {
+        assert_eq!(maven_scope(Some("test")), Scope::Dev);
+        // `provided` and `system` still execute in production — the container
+        // supplies the jar, it is not a development-only dependency.
+        assert_eq!(maven_scope(Some("provided")), Scope::Prod);
+        assert_eq!(maven_scope(Some("system")), Scope::Prod);
+        assert_eq!(maven_scope(Some("runtime")), Scope::Prod);
+        assert_eq!(maven_scope(None), Scope::Prod, "absent <scope> means compile");
+    }
+
+    #[test]
+    fn maven_test_dependency_is_dev() {
+        let pom = tmp(
+            "pom.xml",
+            r#"<project><dependencies>
+              <dependency>
+                <groupId>junit</groupId><artifactId>junit</artifactId>
+                <version>4.13.2</version><scope>test</scope>
+              </dependency>
+              <dependency>
+                <groupId>com.google.guava</groupId><artifactId>guava</artifactId>
+                <version>31.1-jre</version>
+              </dependency>
+            </dependencies></project>"#,
+        );
+        let deps = parse_maven(&pom).unwrap();
+        assert_eq!(deps.iter().find(|d| d.name == "junit:junit").unwrap().scope, Scope::Dev);
+        assert_eq!(
+            deps.iter().find(|d| d.name == "com.google.guava:guava").unwrap().scope,
+            Scope::Prod
+        );
+    }
+
+    #[test]
+    fn gradle_scope_reads_the_configuration_list() {
+        assert_eq!(gradle_scope("testCompileClasspath,testRuntimeClasspath"), Scope::Dev);
+        assert_eq!(gradle_scope("androidTestRuntimeClasspath"), Scope::Dev);
+        // One production configuration is enough to make it ship.
+        assert_eq!(gradle_scope("testCompileClasspath,runtimeClasspath"), Scope::Prod);
+        assert_eq!(gradle_scope("compileClasspath"), Scope::Prod);
+        assert_eq!(gradle_scope(""), Scope::Prod, "a malformed line must not be omitted");
+    }
+
+    #[test]
+    fn gradle_lockfile_classifies_transitive_test_deps() {
+        // Unlike Maven, the Gradle lockfile carries scope for transitives too.
+        let lock = tmp(
+            "gradle.lockfile",
+            "com.google.guava:guava:31.1-jre=compileClasspath,runtimeClasspath\n\
+             org.junit:junit-api:5.9.0=testCompileClasspath,testRuntimeClasspath\n\
+             org.opentest4j:opentest4j:1.2.0=testRuntimeClasspath\n",
+        );
+        let deps = parse_gradle(&lock, None).unwrap();
+        let scope = |n: &str| deps.iter().find(|d| d.name == n).unwrap().scope;
+        assert_eq!(scope("com.google.guava:guava"), Scope::Prod);
+        assert_eq!(scope("org.junit:junit-api"), Scope::Dev);
+        assert_eq!(
+            scope("org.opentest4j:opentest4j"),
+            Scope::Dev,
+            "a transitive of a test dep, classified without any propagation"
+        );
     }
 }

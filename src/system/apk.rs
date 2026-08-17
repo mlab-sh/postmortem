@@ -122,6 +122,7 @@ fn apk_graph(db: &str, world: &std::collections::HashSet<String>) -> Vec<Depende
     pkgs.into_iter()
         .map(|p| Dependency {
             direct: world.contains(&p.name),
+            scope: Scope::Prod,
             resolved_url: (!p.url.is_empty()).then(|| p.url.clone()),
             parents: parents.remove(&p.name).unwrap_or_default(),
             name: p.name,

@@ -332,6 +332,7 @@ fn pacman_graph(text: &str) -> (Vec<Dependency>, HashMap<String, Vec<SysSignal>>
             version: p.version.clone(),
             ecosystem: Ecosystem::Pacman,
             direct: p.explicit,
+            scope: Scope::Prod,
             resolved_url: (!p.url.is_empty()).then(|| p.url.clone()),
             integrity: None,
             parents: parents.remove(&p.name).unwrap_or_default(),

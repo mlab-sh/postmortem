@@ -102,6 +102,7 @@ mod tests {
             name: name.into(),
             version: ver.into(),
             ecosystem: Ecosystem::Node,
+            scope: crate::model::Scope::Prod,
             direct,
             resolved_url: None,
             integrity: None,

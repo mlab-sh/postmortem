@@ -43,8 +43,13 @@ graph, and flags what real compromises look like.
   dependency's real source and runs the full detection suite over it.
 * **CI-ready.** JSON and SARIF (GitHub Code Scanning) output, plus a configurable
   gate that fails the build on risk.
+* **Ships-only view.** `--omit dev` drops your test and build tooling from every
+  count, score and CVE tally. Scope is computed by reachability, not by what a
+  manifest happens to list — so a package your application also uses is never
+  dropped, however deep the dev tree it also appears in.
 * **Honest.** A flat or unparseable graph raises a diagnostic, so `0 findings` is
-  never mistaken for "clean".
+  never mistaken for "clean" — and an `--omit` that removed packages says so, in
+  the terminal and in the JSON.
 
 ## Quick start
 
@@ -52,6 +57,7 @@ graph, and flags what real compromises look like.
 postmortem scan .                       # find malicious code in your dependencies
 postmortem tree . --online              # score dependencies by repo reputation
 postmortem tree . --online --vulns      # add known CVE / GHSA / OSV advisories
+postmortem tree . --omit dev            # only what actually ships
 postmortem audit . --online --vulns     # one graded verdict: malware + risk + CVEs
 postmortem why left-pad .               # why is this package installed?
 postmortem diff ./main ./pr-branch      # what dependencies did this change add?

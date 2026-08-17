@@ -15,6 +15,19 @@ the JVM is `groupId:artifactId`.
 Like Go, transitive edges aren't reconstructed offline; the graph is **flat**
 and a **diagnostic** is emitted.
 
+## Dependency scopes
+
+The two build systems differ sharply:
+
+- **Maven** - `<scope>test</scope>` on a direct dependency. `provided` and
+  `system` stay production: the container or JDK supplies the jar at runtime, so
+  the code still executes in production.
+- **Gradle** - the lockfile records every configuration that resolved each
+  coordinate (`...=testCompileClasspath,testRuntimeClasspath`), so scope is known
+  for **transitives too**, despite the graph itself being flat.
+
+See [Dependency scopes](Dependency-Scopes).
+
 ## Online resolution
 
 - **Registry:** **deps.dev** -

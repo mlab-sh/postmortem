@@ -16,6 +16,7 @@ mod parsers;
 mod report;
 mod resolve;
 mod sbom;
+mod scope;
 mod settings;
 mod system;
 mod tree;
@@ -80,11 +81,14 @@ fn run_cache(args: cli::CacheArgs) -> Result<()> {
 /// added / removed / version-changed dependencies.
 fn run_diff(args: cli::DiffArgs) -> Result<()> {
     let ui = ui::Ui::new(!args.no_progress);
+    // Both sides are filtered identically — a scope-filtered diff of an
+    // unfiltered baseline would report every dev package as "removed".
+    let omit = cli::OmitSet::scopes(&args.omit);
     let resolve_deps = |path: &Path| -> Result<Vec<model::Dependency>> {
         let root = path
             .canonicalize()
             .with_context(|| format!("cannot resolve path {}", path.display()))?;
-        match detect_and_parse(&root, &ui)? {
+        match detect_and_parse(&root, &ui, &omit)? {
             Some((_, deps, _)) => Ok(deps),
             None => anyhow::bail!("no supported ecosystem detected at {}", root.display()),
         }
@@ -103,7 +107,7 @@ fn run_sbom(args: cli::SbomArgs) -> Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
-    let Some((_, deps, _)) = detect_and_parse(&root, &ui)? else {
+    let Some((_, deps, _)) = detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))? else {
         anyhow::bail!("no supported ecosystem detected at {}", root.display());
     };
     let name = root.file_name().and_then(|s| s.to_str()).unwrap_or("project");
@@ -122,7 +126,7 @@ fn run_why(args: cli::WhyArgs) -> Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
-    let Some((_, deps, _)) = detect_and_parse(&root, &ui)? else {
+    let Some((_, deps, _)) = detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))? else {
         anyhow::bail!("no supported ecosystem detected at {}", root.display());
     };
     why::render(&deps, &args.package, &args.path.display().to_string());
@@ -137,7 +141,7 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
-    let Some((detected, deps, diags)) = detect_and_parse(&root, &ui)? else {
+    let Some((detected, deps, diags)) = detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))? else {
         std::process::exit(2);
     };
 
@@ -156,7 +160,9 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
         high_findings: count(model::Severity::High),
         medium: count(model::Severity::Medium),
         low: count(model::Severity::Low),
-        diagnostics: diags.len(),
+        // Only unintended incompleteness counts against the verdict; a
+        // deliberate `--omit` must not turn a clean project into a WARN.
+        diagnostics: diags.iter().filter(|d| d.is_incompleteness()).count(),
         ..Default::default()
     };
 
@@ -687,7 +693,7 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
             true => target.parent().unwrap_or(&target).to_path_buf(),
             false => target.clone(),
         };
-        let parsed = match detect_and_parse(&target, &ui) {
+        let parsed = match detect_and_parse(&target, &ui, &cli::OmitSet::scopes(&args.omit)) {
             Ok(Some(p)) => p,
             Ok(None) => {
                 ui.note(format!("no supported ecosystem detected at {}", target.display()));
@@ -919,11 +925,21 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
 
 /// Detect ecosystems and parse every lockfile at `target` — a project directory,
 /// or a manifest/lockfile pinning one ecosystem (see [`detect::detect_target`]).
-/// Shared by `scan` and `tree`. Returns `None` when no supported ecosystem is
-/// present, else the detected ecosystems, the parsed dependencies, and any
-/// diagnostics (parse failures / incomplete graphs) so a `0` result is never
-/// mistaken for "clean". Errors when an explicitly pinned file can't be used.
-fn detect_and_parse(target: &Path, ui: &ui::Ui) -> Result<Option<ParsedProject>> {
+/// Shared by every project-level command. Returns `None` when no supported
+/// ecosystem is present, else the detected ecosystems, the parsed dependencies,
+/// and any diagnostics (parse failures / incomplete graphs) so a `0` result is
+/// never mistaken for "clean". Errors when an explicitly pinned file can't be
+/// used.
+///
+/// `omit` drops whole dependency sets (`--omit dev`). It is applied here, at the
+/// single point every command funnels through, so the filter cannot drift
+/// between `scan`, `tree`, `audit`, `sbom`, `why` and `diff` — and so scope
+/// propagation runs exactly once, over the merged multi-ecosystem graph.
+fn detect_and_parse(
+    target: &Path,
+    ui: &ui::Ui,
+    omit: &[model::Scope],
+) -> Result<Option<ParsedProject>> {
     let detect_phase = ui.phase("detecting ecosystems");
     let detected = match detect::detect_target(target) {
         Ok(d) => d,
@@ -1026,7 +1042,35 @@ fn detect_and_parse(target: &Path, ui: &ui::Ui) -> Result<Option<ParsedProject>>
             }
         }
     }
-    parse_phase.done(format!("parsed {} dependencies", deps.len()));
+    // Parsers only classify the *direct* deps a manifest names; resolve the rest
+    // of the graph before any filtering, so `--omit dev` acts on real reachability
+    // rather than on what happened to be listed under devDependencies.
+    scope::propagate(&mut deps);
+
+    if omit.is_empty() {
+        parse_phase.done(format!("parsed {} dependencies", deps.len()));
+    } else {
+        let before = deps.len();
+        let dropped: Vec<String> = omit
+            .iter()
+            .map(|s| format!("{} {}", scope::count(&deps, *s), s.as_str()))
+            .collect();
+        deps = scope::apply_omit(deps, omit);
+        let removed = before - deps.len();
+        let detail = format!("{removed} of {before} dependencies omitted ({})", dropped.join(", "));
+        parse_phase.done(format!("parsed {} dependencies — {detail}", deps.len()));
+        // Also record it as a diagnostic. The progress UI is suppressed when
+        // stderr isn't a TTY, so in CI the summary above never prints — and a
+        // silently smaller dependency set is exactly what this project refuses
+        // to ship. As a diagnostic the fact reaches --json and --sarif too.
+        if removed > 0 {
+            diags.push(model::Diagnostic {
+                ecosystem: "*".into(),
+                kind: model::DIAG_SCOPE_OMITTED.into(),
+                message: detail,
+            });
+        }
+    }
 
     Ok(Some((detected, deps, diags)))
 }
@@ -1035,7 +1079,9 @@ fn detect_and_parse(target: &Path, ui: &ui::Ui) -> Result<Option<ParsedProject>>
 /// supported ecosystem is present, otherwise `Some(gate_tripped)` where
 /// `gate_tripped` is true if any finding meets or exceeds `--severity`.
 fn scan_path(target: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<bool>> {
-    let Some((detected, deps, diagnostics)) = detect_and_parse(target, ui)? else {
+    let Some((detected, deps, diagnostics)) =
+        detect_and_parse(target, ui, &cli::OmitSet::scopes(&args.omit))?
+    else {
         return Ok(None);
     };
     // A pinned manifest/lockfile target belongs to its parent project: that
@@ -1092,7 +1138,8 @@ fn scan_path(target: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<
     }
 
     let report = model::Report {
-        schema_version: 2,
+        // 3: every dependency carries a `scope` (prod / dev / optional).
+        schema_version: 3,
         root: root.display().to_string(),
         ecosystems: detected.iter().map(|e| e.name().to_string()).collect(),
         diagnostics,
