@@ -116,6 +116,7 @@ cd postmortem && cargo build --release
 | [`diff`](https://github.com/mlab-sh/postmortem/wiki/Diff) | Compare two project states — or a GitHub PR by URL — and assess what the change introduces. |
 | [`sbom`](https://github.com/mlab-sh/postmortem/wiki/Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |
 | [`system`](https://github.com/mlab-sh/postmortem/wiki/System) | Audit your machine's OS package managers, and deep-inspect any package's real source. |
+| [`allowlist`](https://github.com/mlab-sh/postmortem/wiki/Allowlist) | Every suppression the project declares, with how long each has left to run. |
 | [`cache`](https://github.com/mlab-sh/postmortem/wiki/Cache) | Manage the local cache used by the online paths. |
 
 **Ecosystems:** Node (npm / pnpm / yarn), Python, Rust, Ruby, PHP, Go, and

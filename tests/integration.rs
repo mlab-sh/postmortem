@@ -1808,3 +1808,125 @@ fn fix_rejects_a_project_it_cannot_parse() {
         .expect("postmortem binary did not run");
     assert_ne!(out.status.code(), Some(0));
 }
+
+// --- suppressions and their expiry ---------------------------------------------
+//
+// A suppression is technical debt with a due date. These pin the two properties
+// that make the date mean anything: a lapsed rule stops hiding, and the debt is
+// listable.
+
+/// A project with a `postmortem.conf`, returning its directory.
+fn conf_project(tag: &str, conf: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("pm-supp-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    for f in ["package.json", "package-lock.json"] {
+        std::fs::copy(fixture("malicious-node").join(f), dir.join(f)).unwrap();
+    }
+    std::fs::write(dir.join("postmortem.conf"), conf).unwrap();
+    dir
+}
+
+fn run(args: &[&str]) -> (i32, String) {
+    let out = Command::new(bin()).args(args).arg("--no-progress").output().expect("ran");
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.code().unwrap_or(-1), strip_ansi(&s))
+}
+
+#[test]
+fn a_live_ignore_rule_suppresses_and_a_lapsed_one_does_not() {
+    let live = conf_project(
+        "live",
+        "[[ignore]]\ncategory = \"ioc\"\nexpires = \"2099-01-01\"\n",
+    );
+    let (_, out) = run(&["scan", live.to_str().unwrap()]);
+    assert!(!out.contains("no longer applies"), "a live rule is not reported: {out}");
+
+    let lapsed = conf_project(
+        "lapsed",
+        "[[ignore]]\ncategory = \"ioc\"\nexpires = \"2020-01-01\"\n",
+    );
+    let (_, out) = run(&["scan", lapsed.to_str().unwrap()]);
+    assert!(out.contains("no longer applies"), "a lapsed rule must be reported: {out}");
+
+    let _ = std::fs::remove_dir_all(&live);
+    let _ = std::fs::remove_dir_all(&lapsed);
+}
+
+#[test]
+fn an_unparseable_expiry_stops_suppressing_rather_than_lasting_forever() {
+    // A typo must not grant a permanent exemption.
+    let dir = conf_project(
+        "typo",
+        "[[ignore]]\ncategory = \"ioc\"\nexpires = \"next tuesday\"\n",
+    );
+    let (_, out) = run(&["scan", dir.to_str().unwrap()]);
+    assert!(out.contains("invalid expires"), "got: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn audit_applies_the_projects_suppressions() {
+    // `audit` previously ignored `postmortem.conf` entirely, so a config that
+    // quieted `scan` had no effect on the one-shot verdict.
+    let dir = conf_project("audit", "skip_categories = [\"ioc\", \"obfuscation\", \"install_hook\", \"sensitive_api\"]\n");
+    let (_, out) = run(&["audit", dir.to_str().unwrap()]);
+    assert!(out.contains("none"), "every category suppressed → no malware row: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn allowlist_lists_every_table_with_its_status() {
+    let dir = conf_project(
+        "list",
+        "skip_dependencies = [\"left-pad\"]\n\n\
+         [[ignore]]\ndependency = \"a\"\nexpires = \"2099-01-01\"\n\n\
+         [[ignore]]\ndependency = \"b\"\nexpires = \"2020-01-01\"\n\n\
+         [[gate.allow]]\npackage = \"c\"\nexpires = \"2099-01-01\"\n",
+    );
+    let (exit, out) = run(&["allowlist", dir.to_str().unwrap()]);
+    assert_eq!(exit, 0, "a plain listing is a report, not a check");
+    for expected in ["skip_dependencies", "ignore", "gate.allow", "no expiry", "expired"] {
+        assert!(out.contains(expected), "missing {expected:?} in: {out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn allowlist_expired_exits_one_only_when_something_lapsed() {
+    let clean = conf_project("ok", "[[ignore]]\ndependency = \"a\"\nexpires = \"2099-01-01\"\n");
+    let (exit, _) = run(&["allowlist", clean.to_str().unwrap(), "--expired"]);
+    assert_eq!(exit, 0, "nothing lapsed → pass");
+
+    let debt = conf_project("debt", "[[ignore]]\ndependency = \"a\"\nexpires = \"2020-01-01\"\n");
+    let (exit, out) = run(&["allowlist", debt.to_str().unwrap(), "--expired"]);
+    assert_eq!(exit, 1, "lapsed debt must fail the check: {out}");
+
+    let _ = std::fs::remove_dir_all(&clean);
+    let _ = std::fs::remove_dir_all(&debt);
+}
+
+#[test]
+fn allowlist_json_reports_days_left_only_for_active_entries() {
+    let dir = conf_project(
+        "json",
+        "[[ignore]]\ndependency = \"a\"\nexpires = \"2099-01-01\"\n\n\
+         [[ignore]]\ndependency = \"b\"\nexpires = \"2020-01-01\"\n",
+    );
+    let v = json_of(&["allowlist", dir.to_str().unwrap()]);
+    assert_eq!(v["summary"]["lapsed"], 1);
+    let by = |st: &str| {
+        v["suppressions"].as_array().unwrap().iter().find(|s| s["status"] == st).unwrap().clone()
+    };
+    assert!(by("active")["days_left"].is_number());
+    assert!(by("expired")["days_left"].is_null(), "a lapsed entry has no time left");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn allowlist_on_a_project_without_a_config_is_empty_not_an_error() {
+    let (exit, out) = run(&["allowlist", fixture("clean-node").to_str().unwrap()]);
+    assert_eq!(exit, 0);
+    assert!(out.contains("no suppressions"), "got: {out}");
+}

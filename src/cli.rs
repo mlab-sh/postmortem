@@ -80,6 +80,10 @@ pub enum Command {
     /// minimum upgrade per package, and where to make it.
     Fix(FixArgs),
 
+    /// List every suppression the project declares — gate allowlist, ignore
+    /// rules, skips — with how long each has left to run.
+    Allowlist(AllowlistArgs),
+
     /// Manage the on-disk cache (~/.postmortem/cache) used by `tree --online`.
     Cache(CacheArgs),
 
@@ -91,6 +95,40 @@ pub enum Command {
 
     /// Show an overview of postmortem: what it does and the available commands.
     Help,
+}
+
+/// Arguments for `postmortem allowlist <path>`.
+#[derive(Args, Debug)]
+pub struct AllowlistArgs {
+    /// Project directory whose `postmortem.conf` to read.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+
+    /// Only show suppressions that have lapsed, and exit 1 if any have — so a
+    /// scheduled job can surface the debt nobody renewed.
+    #[arg(long)]
+    pub expired: bool,
+
+    /// Also flag entries lapsing within this many days.
+    #[arg(long, value_name = "DAYS")]
+    pub expiring_in: Option<i64>,
+
+    /// Emit the listing as JSON instead of the terminal view.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Write output to file. Pass `-` to force stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Path to a postmortem.conf. Defaults to the one in <PATH>.
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Accepted for symmetry with the other commands; this one reads a config
+    /// file and has nothing to animate.
+    #[arg(long)]
+    pub no_progress: bool,
 }
 
 /// Arguments for `postmortem fix <path>`.

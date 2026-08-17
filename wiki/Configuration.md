@@ -100,18 +100,28 @@ warned about and skipped rather than aborting the run.
 A per-project **TOML** file, auto-loaded from the scanned directory (disable with
 `--no-config`, or point elsewhere with `--config`). Two roles:
 
-**Suppress accepted findings** (`scan`):
+**Suppress accepted findings** (`scan` and `audit`):
 
 ```toml
 # postmortem.conf
-[[suppress]]
+[[ignore]]
 dependency = "some-pkg"
 category   = "install_hook"
 reason     = "known-good build script"
+expires    = "2026-12-31"   # past this date the rule stops suppressing
 ```
 
-**Gate policy** (`tree`): see [CI gate](CI-Gate) for the `[gate]` block and
-`[[gate.allow]]` entries.
+A rule matches when **all** its stated fields match; `path` accepts globs
+(`"**/test/**"`). The blunter forms are `skip_categories`, `skip_dependencies`
+and `min_severity`.
+
+`expires` turns a suppression into a dated decision rather than a permanent
+hole — past the date the finding comes back and the run says so. See
+[`allowlist`](Allowlist) for the whole picture, including
+`postmortem allowlist --expired` as a CI check.
+
+**Gate policy** (`tree`, `audit`, `system`): see [CI gate](CI-Gate) for the
+`[gate]` block and `[[gate.allow]]` entries, which take the same `expires`.
 
 ## License policy - `[license]`
 

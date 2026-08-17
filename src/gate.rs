@@ -212,16 +212,21 @@ fn spec_matches(pattern: &str, name: &str, version: &str) -> bool {
 /// injected so allowlist-expiry logic stays deterministic in tests.
 pub fn evaluate(policy: &Policy, tree: &Tree, today: NaiveDate, baseline: Option<&Baseline>) -> Outcome {
     // Partition the allowlist into still-effective patterns and expired ones.
+    // The date logic is `crate::config`'s, shared with the scan suppressions —
+    // a date that lapses in one place must lapse in the other.
     let mut effective: Vec<&str> = Vec::new();
     let mut expired: Vec<String> = Vec::new();
     for a in &policy.allow {
-        match &a.expires {
-            None => effective.push(&a.package),
-            Some(raw) => match NaiveDate::parse_from_str(raw, "%Y-%m-%d") {
-                Ok(d) if d >= today => effective.push(&a.package),
-                Ok(d) => expired.push(format!("{} (expired {d})", a.package)),
-                Err(_) => expired.push(format!("{} (invalid expires \"{raw}\")", a.package)),
-            },
+        match crate::config::expiry_status(a.expires.as_deref(), today) {
+            crate::config::Status::Permanent | crate::config::Status::Active(_) => {
+                effective.push(&a.package)
+            }
+            crate::config::Status::Expired(d) => {
+                expired.push(format!("{} (expired {d})", a.package))
+            }
+            crate::config::Status::Invalid(raw) => {
+                expired.push(format!("{} (invalid expires \"{raw}\")", a.package))
+            }
         }
     }
     let allowed = |name: &str, version: &str| -> bool {

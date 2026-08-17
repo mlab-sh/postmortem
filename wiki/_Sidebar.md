@@ -12,6 +12,7 @@
 - [diff](Diff)
 - [sbom](Sbom)
 - [system](System)
+- [allowlist](Allowlist)
 - [cache](Cache)
 
 **Ecosystems** ([overview](Ecosystems-and-Hosts))

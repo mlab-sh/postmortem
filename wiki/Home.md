@@ -27,6 +27,7 @@ locally.
 | [`diff`](Diff) | Compare two project states — or a GitHub PR by URL — and assess what the change introduces. |
 | [`sbom`](Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |
 | [`system`](System) | Audit the machine's OS package managers (Homebrew, pacman/AUR, apt/dpkg, dnf/rpm, Nix, and apk) with the same risk scoring. |
+| [`allowlist`](Allowlist) | Every suppression the project declares, with how long each has left to run. |
 | [`cache`](Cache) | Inspect (`info`, `path`) and clear (`prune`) the on-disk cache used by the online paths. |
 
 ## Key concepts
