@@ -213,11 +213,14 @@ pub struct InspectArgs {
 /// Arguments for `postmortem diff <old> <new>`.
 #[derive(Args, Debug)]
 pub struct DiffArgs {
-    /// The baseline project directory (the "before" state).
-    pub old: PathBuf,
+    /// The baseline project directory (the "before" state), **or** a GitHub
+    /// pull-request URL — `https://github.com/owner/repo/pull/42` — in which
+    /// case both sides come from the PR and `<NEW>` is omitted.
+    pub old: String,
 
-    /// The project directory to compare against it (the "after" state).
-    pub new: PathBuf,
+    /// The project directory to compare against it (the "after" state). Omit
+    /// when `<OLD>` is a pull-request URL.
+    pub new: Option<String>,
 
     /// Go ONLINE and assess what the change *introduces*: source-repo
     /// reputation and provenance signals for the added and version-changed

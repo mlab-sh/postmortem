@@ -14,6 +14,7 @@ mod license;
 mod model;
 mod osv;
 mod parsers;
+mod pr;
 mod report;
 mod resolve;
 mod sbom;
@@ -26,7 +27,7 @@ mod why;
 mod ui;
 mod vuln;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -179,10 +180,59 @@ fn age_label(secs: u64) -> String {
     }
 }
 
+/// An abbreviated commit SHA, for labelling the two sides of a PR diff.
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(8)]
+}
+
 /// `postmortem diff <old> <new>` — resolve both projects offline and report the
 /// added / removed / version-changed dependencies.
+///
+/// `<old>` may instead be a GitHub pull-request URL, in which case both sides
+/// are fetched from it and `<new>` is omitted.
 fn run_diff(args: cli::DiffArgs) -> Result<()> {
     let ui = ui::Ui::new(!args.no_progress);
+
+    // A PR URL supplies both sides; two paths supply one each. `_sides` is held
+    // to the end of the function because dropping it deletes the fetched files.
+    let mut settings = settings::Settings::load_or_warn();
+    let (old_path, new_path, old_label, new_label, _sides) = match pr::parse_url(&args.old) {
+        Some(reference) => {
+            if args.new.is_some() {
+                anyhow::bail!(
+                    "a pull-request URL already names both sides — drop the second argument"
+                );
+            }
+            let sides = pr::materialize(&reference, &mut settings, &ui)?;
+            if sides.files == 0 {
+                anyhow::bail!(
+                    "no manifests or lockfiles found in {}/{} at either side of PR #{}",
+                    reference.owner,
+                    reference.repo,
+                    reference.number
+                );
+            }
+            let m = &sides.meta;
+            let fork = m.head_repo.as_deref().map(|r| format!(" [{r}]")).unwrap_or_default();
+            let (ol, nl) = (
+                format!("{} ({})", m.base_ref, short(&m.base_sha)),
+                format!("{}{fork} ({})", m.head_ref, short(&m.head_sha)),
+            );
+            (sides.base.clone(), sides.head.clone(), ol, nl, Some(sides))
+        }
+        None => {
+            let Some(new) = args.new.clone() else {
+                anyhow::bail!(
+                    "expected two paths, or one GitHub pull-request URL \
+                     (https://github.com/owner/repo/pull/42)"
+                );
+            };
+            let (o, n) = (PathBuf::from(&args.old), PathBuf::from(&new));
+            let (ol, nl) = (args.old.clone(), new);
+            (o, n, ol, nl, None)
+        }
+    };
+
     // Both sides are filtered identically — a scope-filtered diff of an
     // unfiltered baseline would report every dev package as "removed".
     let omit = cli::OmitSet::scopes(&args.omit);
@@ -191,12 +241,18 @@ fn run_diff(args: cli::DiffArgs) -> Result<()> {
             .canonicalize()
             .with_context(|| format!("cannot resolve path {}", path.display()))?;
         match detect_and_parse(&root, &ui, &omit)? {
+            // A PR side legitimately has no dependencies (the base predates the
+            // lockfile, say), and that is a diff of "everything added", not an
+            // error — so only a *path* the user typed is worth failing on.
+            None => Ok(Vec::new()),
             Some((_, deps, _)) => Ok(deps),
-            None => anyhow::bail!("no supported ecosystem detected at {}", root.display()),
         }
     };
-    let old = resolve_deps(&args.old)?;
-    let new = resolve_deps(&args.new)?;
+    let old = resolve_deps(&old_path)?;
+    let new = resolve_deps(&new_path)?;
+    if old.is_empty() && new.is_empty() {
+        anyhow::bail!("no supported ecosystem detected on either side");
+    }
     let mut report = diff::diff(&old, &new);
 
     // Assess only what the change introduces. The added/changed packages are
@@ -234,7 +290,7 @@ fn run_diff(args: cli::DiffArgs) -> Result<()> {
             let (agent, cache, token) =
                 (vuln::agent(&net), cache::Cache::open(), settings.vuln_token());
             let scan_url = vuln::scan_url(&net);
-            let new_root = args.new.canonicalize().unwrap_or_else(|_| args.new.clone());
+            let new_root = new_path.canonicalize().unwrap_or_else(|_| new_path.clone());
             if let Ok(detected) = detect::detect_target(&new_root) {
                 for d in &detected {
                     if let Some((lock, fmt)) = mlab_target(d)
@@ -249,7 +305,7 @@ fn run_diff(args: cli::DiffArgs) -> Result<()> {
         diff::assess(&mut report, &resolutions, &vulns);
     }
 
-    let (ol, nl) = (args.old.display().to_string(), args.new.display().to_string());
+    let (ol, nl) = (old_label, new_label);
     if args.json {
         let doc = diff::to_json(&report, &ol, &nl);
         let out = serde_json::to_string_pretty(&doc)?;

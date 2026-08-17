@@ -6,12 +6,14 @@ a reviewer actually has on a lockfile change ("what did this PR pull in?"), and 
 the companion to the CI [gate](CI-Gate)'s `--baseline` mode.
 
 ```bash
+postmortem diff <pr-url>                # both sides from a GitHub PR
 postmortem diff <old> <new>
 ```
 
-Both arguments are project directories (for example two branches or commits
-checked out side by side). Each is resolved with the same offline parsers as
-[`tree`](Tree), then the two dependency sets are compared by ecosystem + name.
+Either give it two project directories (for example two branches checked out
+side by side), or a single GitHub pull-request URL and it works out both sides
+itself. Each side is resolved with the same offline parsers as [`tree`](Tree),
+then the two dependency sets are compared by ecosystem + name.
 
 ## Output
 
@@ -44,6 +46,58 @@ changes* and nothing else.
 deltas on top (does this change *raise* the risk score, add an unsigned package,
 or introduce a known CVE) is the intended next step, and already has a foothold in
 the gate's [`--baseline`](CI-Gate) flow.
+
+## From a GitHub pull request
+
+Give it the URL and it works out both sides itself:
+
+```bash
+postmortem diff https://github.com/owner/repo/pull/42
+postmortem diff https://github.com/owner/repo/pull/42 --online --vulns
+```
+
+```
+dependency diff  master (949f18e2)  →  dependabot/cargo/execute-0.3.0 (e6ac6ce0)
+
+~ 4 changed
+  ~ execute 0.2.15 → 0.3.0 (rust)
+  ~ execute-command-macro 0.1.11 → 0.3.0 (rust)
+  ...
+```
+
+The URL forms from the review UI all work — with or without a scheme, with a
+trailing `/files`, with a `#discussion_r…` anchor.
+
+**Only the manifests and lockfiles are fetched, never the repository.** A
+dependency diff needs nothing else, and cloning a large repo twice to read two
+JSON files would dominate the runtime. Each side costs one tree listing plus one
+download per manifest, so a typical project is a handful of requests and a few
+seconds.
+
+**Forks are handled transparently.** GitHub keeps a PR's head commit reachable
+from the *base* repository, so both sides are read from there — the fork's name
+is never needed, and a deleted fork does not break the lookup. When the head does
+come from a fork it is labelled, so you know whose code you are reading:
+
+```
+master (b671e53c)  →  fix-terminal-format-controls [contributor/bat] (42276c13)
+```
+
+Uses the `github_token` from [configuration](Configuration) when present. Without
+one the anonymous GitHub limit is 60 requests/hour, which a few PRs will exhaust;
+the error says so. The `github` and `github_raw` [endpoints](Configuration#corporate-networks---network)
+are overridable, so this works against GitHub Enterprise.
+
+Two caveats worth knowing:
+
+- The comparison is the **base branch tip vs the PR head**, which is what the API
+  reports — not a three-dot merge-base diff. On a PR whose base has moved a long
+  way, some of the difference belongs to the base branch rather than to the PR.
+- A repository whose tree is too large for one listing gets a warning saying that
+  manifests below the cut are missing, rather than a silently partial diff.
+
+Only GitHub is supported. A GitLab merge-request URL is not recognised and falls
+through to being treated as a path.
 
 ## `--online` / `--vulns` — assess what the change introduces
 
