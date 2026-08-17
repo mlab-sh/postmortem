@@ -23,9 +23,10 @@ pub enum Command {
     /// Scan one or more project directories for malicious dependencies.
     Scan(ScanArgs),
 
-    /// Resolve the dependency tree from the lockfiles. Offline today; `--online`
-    /// (coming soon) will walk each node out to its source repository and pull
-    /// reputation stats to flag suspicious supply-chain updates.
+    /// Resolve the dependency tree from the lockfiles. Offline by default;
+    /// `--online` walks each node out to its source repository and pulls
+    /// reputation and provenance stats to flag suspicious supply-chain updates,
+    /// and `--vulns` adds known advisories.
     Tree(TreeArgs),
 
     /// Compare two project states and report added / removed / version-changed

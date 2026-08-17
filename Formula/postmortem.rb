@@ -1,5 +1,5 @@
 class Postmortem < Formula
-  desc "Static dependency scanner for Node, Python and Rust projects"
+  desc "Supply-chain scanner. Flags malicious install code, typosquats, and shady provenance across your dependencies and your OS packages. Repo-reputation scoring, known-CVE intel, no telemetry."
   homepage "https://github.com/mlab-sh/postmortem"
   version "2.1.2"
   license "Apache-2.0"
