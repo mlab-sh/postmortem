@@ -22,7 +22,11 @@ const INFO_URI: &str = "https://github.com/mlab-sh/postmortem";
 pub fn render(report: &Report) -> Result<String, serde_json::Error> {
     let used_categories = collect_used_categories(&report.findings);
     let rules: Vec<Value> = used_categories.iter().map(|c| rule_for(*c)).collect();
-    let results: Vec<Value> = report.findings.iter().map(|f| result_for(f, &report.root)).collect();
+    let results: Vec<Value> = report
+        .findings
+        .iter()
+        .map(|f| result_for(f, &report.root))
+        .collect();
 
     let doc = json!({
         "$schema": SCHEMA_URI,
@@ -296,11 +300,17 @@ fn result_for(f: &Finding, root: &str) -> Value {
     let (uri, start_line) = split_location(f.location.as_deref(), root);
 
     let mut artifact_location = serde_json::Map::new();
-    artifact_location.insert("uri".into(), Value::String(uri.unwrap_or_else(|| ".".into())));
+    artifact_location.insert(
+        "uri".into(),
+        Value::String(uri.unwrap_or_else(|| ".".into())),
+    );
     artifact_location.insert("uriBaseId".into(), Value::String("SRCROOT".into()));
 
     let mut region = serde_json::Map::new();
-    region.insert("startLine".into(), Value::Number(start_line.unwrap_or(1).into()));
+    region.insert(
+        "startLine".into(),
+        Value::Number(start_line.unwrap_or(1).into()),
+    );
 
     let mut physical = serde_json::Map::new();
     physical.insert("artifactLocation".into(), Value::Object(artifact_location));
@@ -405,7 +415,8 @@ mod tests {
         let s = render(&rep(vec![
             finding(Category::Ioc, Severity::Medium, "x", "/tmp/repo/a.js"),
             finding(Category::Ioc, Severity::High, "y", "/tmp/repo/b.js"),
-        ])).unwrap();
+        ]))
+        .unwrap();
         let v: Value = serde_json::from_str(&s).unwrap();
         let rules = v["runs"][0]["tool"]["driver"]["rules"].as_array().unwrap();
         assert_eq!(rules.len(), 1);
@@ -415,12 +426,28 @@ mod tests {
     #[test]
     fn severity_maps_to_sarif_level() {
         let s = render(&rep(vec![
-            finding(Category::Obfuscation, Severity::Critical, "x", "/tmp/repo/a.js:10"),
+            finding(
+                Category::Obfuscation,
+                Severity::Critical,
+                "x",
+                "/tmp/repo/a.js:10",
+            ),
             finding(Category::Ioc, Severity::High, "x", "/tmp/repo/a.js:11"),
             finding(Category::Ioc, Severity::Medium, "x", "/tmp/repo/a.js:12"),
-            finding(Category::SensitiveApi, Severity::Low, "x", "/tmp/repo/a.js:13"),
-            finding(Category::SensitiveApi, Severity::Info, "x", "/tmp/repo/a.js:14"),
-        ])).unwrap();
+            finding(
+                Category::SensitiveApi,
+                Severity::Low,
+                "x",
+                "/tmp/repo/a.js:13",
+            ),
+            finding(
+                Category::SensitiveApi,
+                Severity::Info,
+                "x",
+                "/tmp/repo/a.js:14",
+            ),
+        ]))
+        .unwrap();
         let v: Value = serde_json::from_str(&s).unwrap();
         let results = v["runs"][0]["results"].as_array().unwrap();
         assert_eq!(results[0]["level"], "error");
@@ -432,7 +459,13 @@ mod tests {
 
     #[test]
     fn paths_made_relative_to_root() {
-        let s = render(&rep(vec![finding(Category::Ioc, Severity::Medium, "x", "/tmp/repo/sub/a.js:42")])).unwrap();
+        let s = render(&rep(vec![finding(
+            Category::Ioc,
+            Severity::Medium,
+            "x",
+            "/tmp/repo/sub/a.js:42",
+        )]))
+        .unwrap();
         let v: Value = serde_json::from_str(&s).unwrap();
         let loc = &v["runs"][0]["results"][0]["locations"][0]["physicalLocation"];
         assert_eq!(loc["artifactLocation"]["uri"], "sub/a.js");
@@ -460,7 +493,13 @@ mod tests {
 
     #[test]
     fn location_without_line_defaults_to_one() {
-        let s = render(&rep(vec![finding(Category::SensitiveApi, Severity::Low, "x", "/tmp/repo/a.js")])).unwrap();
+        let s = render(&rep(vec![finding(
+            Category::SensitiveApi,
+            Severity::Low,
+            "x",
+            "/tmp/repo/a.js",
+        )]))
+        .unwrap();
         let v: Value = serde_json::from_str(&s).unwrap();
         let loc = &v["runs"][0]["results"][0]["locations"][0]["physicalLocation"];
         assert_eq!(loc["region"]["startLine"], 1);
@@ -495,7 +534,13 @@ mod tests {
         Tree {
             root: "/tmp/repo".into(),
             ecosystems: vec!["node".into()],
-            stats: Stats { total: 0, direct: 0, transitive: 0, max_depth: 0, deduped: 0 },
+            stats: Stats {
+                total: 0,
+                direct: 0,
+                transitive: 0,
+                max_depth: 0,
+                deduped: 0,
+            },
             diagnostics: vec![],
             vulnerabilities: vulns,
             scored: true,
@@ -511,7 +556,12 @@ mod tests {
                 name: "lodash".into(),
                 version: "4.17.11".into(),
                 ecosystem: "node".into(),
-                vulns: vec![Vuln { id: "GHSA-x".into(), severity: Severity::Medium, summary: "proto".into(), fixed: None }],
+                vulns: vec![Vuln {
+                    id: "GHSA-x".into(),
+                    severity: Severity::Medium,
+                    summary: "proto".into(),
+                    fixed: None,
+                }],
             }],
         );
         let v: Value = serde_json::from_str(&render_tree(&t).unwrap()).unwrap();
@@ -523,9 +573,17 @@ mod tests {
 
         let results = v["runs"][0]["results"].as_array().unwrap();
         assert_eq!(results.len(), 2);
-        let risk = results.iter().find(|r| r["ruleId"] == "postmortem.dependency-risk").unwrap();
+        let risk = results
+            .iter()
+            .find(|r| r["ruleId"] == "postmortem.dependency-risk")
+            .unwrap();
         assert_eq!(risk["level"], "error");
-        assert!(risk["message"]["text"].as_str().unwrap().contains("typosquat"));
+        assert!(
+            risk["message"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("typosquat")
+        );
         assert_eq!(risk["properties"]["security-severity"], "7.5");
     }
 
@@ -545,6 +603,11 @@ mod tests {
         let t = ttree(vec![tnode("clean", None, &[])], vec![]);
         let v: Value = serde_json::from_str(&render_tree(&t).unwrap()).unwrap();
         assert!(v["runs"][0]["results"].as_array().unwrap().is_empty());
-        assert!(v["runs"][0]["tool"]["driver"]["rules"].as_array().unwrap().is_empty());
+        assert!(
+            v["runs"][0]["tool"]["driver"]["rules"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
 }

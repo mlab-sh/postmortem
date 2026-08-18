@@ -159,14 +159,19 @@ impl CacheStats {
 
 /// Seconds since the unix epoch, saturating to 0 before it.
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 impl Cache {
     /// The real cache at `$HOME/.postmortem/cache/`. A `None` root (no `$HOME`)
     /// degrades to a no-op cache: every `get` misses and every `put` is dropped.
     pub fn open() -> Self {
-        Cache { root: crate::settings::base_dir().map(|d| d.join("cache")) }
+        Cache {
+            root: crate::settings::base_dir().map(|d| d.join("cache")),
+        }
     }
 
     /// A cache rooted at an explicit directory (used in tests).
@@ -209,7 +214,11 @@ impl Cache {
         if let Some(parent) = p.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let env = EnvelopeRef { v: FORMAT_VERSION, fetched_at: now_secs(), data: value };
+        let env = EnvelopeRef {
+            v: FORMAT_VERSION,
+            fetched_at: now_secs(),
+            data: value,
+        };
         if let Ok(json) = serde_json::to_string(&env) {
             let _ = std::fs::write(p, json);
         }
@@ -220,7 +229,10 @@ impl Cache {
     pub fn stats(&self) -> CacheStats {
         let mut by_ns: BTreeMap<String, NamespaceStats> = BTreeMap::new();
         let Some(root) = self.root.as_ref().filter(|r| r.is_dir()) else {
-            return CacheStats { root: self.root.clone(), namespaces: Vec::new() };
+            return CacheStats {
+                root: self.root.clone(),
+                namespaces: Vec::new(),
+            };
         };
 
         for entry in walkdir::WalkDir::new(root).into_iter().flatten() {
@@ -263,7 +275,10 @@ impl Cache {
                 Some(_) => {}
             }
         }
-        CacheStats { root: self.root.clone(), namespaces: by_ns.into_values().collect() }
+        CacheStats {
+            root: self.root.clone(),
+            namespaces: by_ns.into_values().collect(),
+        }
     }
 
     /// The cache root directory, if `$HOME` is known.
@@ -357,7 +372,10 @@ mod tests {
         let cache = Cache::at(dir.clone());
         assert!(cache.get::<Blob>("npm", "left-pad@1.0.0").is_none());
 
-        let v = Blob { a: 7, b: "hi".into() };
+        let v = Blob {
+            a: 7,
+            b: "hi".into(),
+        };
         cache.put("npm", "left-pad@1.0.0", &v);
         assert_eq!(cache.get::<Blob>("npm", "left-pad@1.0.0"), Some(v));
 
@@ -367,12 +385,25 @@ mod tests {
     #[test]
     fn entries_are_written_inside_a_versioned_envelope() {
         let (cache, dir) = tmp_cache("envelope");
-        cache.put("npm", "a@1.0.0", &Blob { a: 1, b: "x".into() });
+        cache.put(
+            "npm",
+            "a@1.0.0",
+            &Blob {
+                a: 1,
+                b: "x".into(),
+            },
+        );
 
         let raw = std::fs::read_to_string(dir.join("npm").join("a@1.0.0.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(v["v"], FORMAT_VERSION, "the record carries its format version");
-        assert!(v["fetched_at"].as_u64().unwrap() > 0, "and when it was fetched");
+        assert_eq!(
+            v["v"], FORMAT_VERSION,
+            "the record carries its format version"
+        );
+        assert!(
+            v["fetched_at"].as_u64().unwrap() > 0,
+            "and when it was fetched"
+        );
         assert_eq!(v["data"]["a"], 1, "the payload lives under `data`");
 
         let _ = std::fs::remove_dir_all(dir);
@@ -386,12 +417,21 @@ mod tests {
         let f = p.join("a@1.0.0.json");
         std::fs::write(
             &f,
-            format!(r#"{{"v":{},"fetched_at":1,"data":{{"a":1,"b":"x"}}}}"#, FORMAT_VERSION + 1),
+            format!(
+                r#"{{"v":{},"fetched_at":1,"data":{{"a":1,"b":"x"}}}}"#,
+                FORMAT_VERSION + 1
+            ),
         )
         .unwrap();
 
-        assert!(cache.get::<Blob>("npm", "a@1.0.0").is_none(), "wrong version must not be read");
-        assert!(!f.exists(), "and the file must be dropped so the next put replaces it");
+        assert!(
+            cache.get::<Blob>("npm", "a@1.0.0").is_none(),
+            "wrong version must not be read"
+        );
+        assert!(
+            !f.exists(),
+            "and the file must be dropped so the next put replaces it"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -428,14 +468,23 @@ mod tests {
         }
 
         let (cache, dir) = tmp_cache("shape");
-        cache.put("registry", "a@1.0.0", &Old { repo: Some("github.com/o/r".into()) });
+        cache.put(
+            "registry",
+            "a@1.0.0",
+            &Old {
+                repo: Some("github.com/o/r".into()),
+            },
+        );
 
         // Same FORMAT_VERSION, so the entry IS returned — with `license: None`,
         // which is exactly the silent-wrong-answer case.
         let got: Option<New> = cache.get("registry", "a@1.0.0");
         assert_eq!(
             got,
-            Some(New { repo: Some("github.com/o/r".into()), license: None }),
+            Some(New {
+                repo: Some("github.com/o/r".into()),
+                license: None
+            }),
             "serde does not reject the missing field — hence FORMAT_VERSION must be bumped"
         );
 
@@ -445,13 +494,37 @@ mod tests {
     #[test]
     fn stats_group_by_namespace_and_count_stale() {
         let (cache, dir) = tmp_cache("stats");
-        cache.put("npm", "a@1.0.0", &Blob { a: 1, b: "x".into() });
-        cache.put("npm", "b@1.0.0", &Blob { a: 2, b: "y".into() });
-        cache.put("github", "o/r", &Blob { a: 3, b: "z".into() });
+        cache.put(
+            "npm",
+            "a@1.0.0",
+            &Blob {
+                a: 1,
+                b: "x".into(),
+            },
+        );
+        cache.put(
+            "npm",
+            "b@1.0.0",
+            &Blob {
+                a: 2,
+                b: "y".into(),
+            },
+        );
+        cache.put(
+            "github",
+            "o/r",
+            &Blob {
+                a: 3,
+                b: "z".into(),
+            },
+        );
         // One hand-written entry from a future version.
         std::fs::write(
             dir.join("npm").join("old@1.0.0.json"),
-            format!(r#"{{"v":{},"fetched_at":1,"data":{{"a":9,"b":"q"}}}}"#, FORMAT_VERSION + 1),
+            format!(
+                r#"{{"v":{},"fetched_at":1,"data":{{"a":9,"b":"q"}}}}"#,
+                FORMAT_VERSION + 1
+            ),
         )
         .unwrap();
 
@@ -482,17 +555,33 @@ mod tests {
     #[test]
     fn prune_stale_only_removes_wrong_version_entries() {
         let (cache, dir) = tmp_cache("prune-stale");
-        cache.put("npm", "keep@1.0.0", &Blob { a: 1, b: "x".into() });
+        cache.put(
+            "npm",
+            "keep@1.0.0",
+            &Blob {
+                a: 1,
+                b: "x".into(),
+            },
+        );
         std::fs::write(
             dir.join("npm").join("drop@1.0.0.json"),
-            format!(r#"{{"v":{},"fetched_at":1,"data":{{"a":9,"b":"q"}}}}"#, FORMAT_VERSION + 1),
+            format!(
+                r#"{{"v":{},"fetched_at":1,"data":{{"a":9,"b":"q"}}}}"#,
+                FORMAT_VERSION + 1
+            ),
         )
         .unwrap();
 
-        let r = cache.prune(PruneOpts { stale_only: true, ..Default::default() });
+        let r = cache.prune(PruneOpts {
+            stale_only: true,
+            ..Default::default()
+        });
         assert_eq!(r.removed, 1, "only the stale entry");
         assert_eq!(r.kept, 1);
-        assert!(cache.get::<Blob>("npm", "keep@1.0.0").is_some(), "the current entry survives");
+        assert!(
+            cache.get::<Blob>("npm", "keep@1.0.0").is_some(),
+            "the current entry survives"
+        );
 
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -508,11 +597,28 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pm-prune-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cache = Cache::at(dir.clone());
-        cache.put("npm", "a@1.0.0", &Blob { a: 1, b: "x".into() });
-        cache.put("github", "o/r", &Blob { a: 2, b: "y".into() });
+        cache.put(
+            "npm",
+            "a@1.0.0",
+            &Blob {
+                a: 1,
+                b: "x".into(),
+            },
+        );
+        cache.put(
+            "github",
+            "o/r",
+            &Blob {
+                a: 2,
+                b: "y".into(),
+            },
+        );
 
         // Dry run: reports 2 but deletes nothing.
-        let r = cache.prune(PruneOpts { dry_run: true, ..Default::default() });
+        let r = cache.prune(PruneOpts {
+            dry_run: true,
+            ..Default::default()
+        });
         assert_eq!(r.removed, 2);
         assert!(r.freed > 0);
         assert!(cache.get::<Blob>("npm", "a@1.0.0").is_some());
@@ -530,10 +636,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("pm-prune-age-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let cache = Cache::at(dir.clone());
-        cache.put("npm", "fresh@1.0.0", &Blob { a: 1, b: "x".into() });
+        cache.put(
+            "npm",
+            "fresh@1.0.0",
+            &Blob {
+                a: 1,
+                b: "x".into(),
+            },
+        );
 
         // Just-written entry is younger than 30 days → kept.
-        let r = cache.prune(PruneOpts { older_than_days: Some(30), ..Default::default() });
+        let r = cache.prune(PruneOpts {
+            older_than_days: Some(30),
+            ..Default::default()
+        });
         assert_eq!(r.removed, 0);
         assert_eq!(r.kept, 1);
         assert!(cache.get::<Blob>("npm", "fresh@1.0.0").is_some());

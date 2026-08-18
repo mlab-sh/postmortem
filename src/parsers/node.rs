@@ -48,8 +48,7 @@ struct PkgEntry {
 }
 
 pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let lock: Lockfile = serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing {} as package-lock", path.display()))?;
 
@@ -143,7 +142,11 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
             let Some((rn, rv)) = by_path.get(&resolved_key).cloned() else {
                 continue;
             };
-            let entry = lock.packages.get(&resolved_key).cloned().unwrap_or_default();
+            let entry = lock
+                .packages
+                .get(&resolved_key)
+                .cloned()
+                .unwrap_or_default();
             let (lics, lsrc) = entry_licenses_sourced(&entry);
             let dep_key = (rn.clone(), rv.clone());
             let dep = acc.entry(dep_key.clone()).or_insert_with(|| Dependency {
@@ -189,20 +192,18 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
             let entry = lock.packages.get(key).cloned().unwrap_or_default();
             let (lics, lsrc) = entry_licenses_sourced(&entry);
             let declared = parent_is_root(key).then(|| root_direct.get(name)).flatten();
-            slot.insert(
-                Dependency {
-                    name: name.clone(),
-                    version: version.clone(),
-                    ecosystem: Ecosystem::Node,
-                    direct: declared.is_some(),
-                    scope: declared.copied().unwrap_or(Scope::Prod),
-                    licenses: lics,
-                    license_source: lsrc,
-                    resolved_url: entry.resolved.clone(),
-                    integrity: entry.integrity.clone(),
-                    parents: Vec::new(),
-                },
-            );
+            slot.insert(Dependency {
+                name: name.clone(),
+                version: version.clone(),
+                ecosystem: Ecosystem::Node,
+                direct: declared.is_some(),
+                scope: declared.copied().unwrap_or(Scope::Prod),
+                licenses: lics,
+                license_source: lsrc,
+                resolved_url: entry.resolved.clone(),
+                integrity: entry.integrity.clone(),
+                parents: Vec::new(),
+            });
         }
     }
 
@@ -214,7 +215,11 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
 /// from it not telling us anything.
 fn entry_licenses_sourced(entry: &PkgEntry) -> (Vec<License>, LicenseSource) {
     let l = entry_licenses(entry);
-    let src = if l.is_empty() { LicenseSource::Unknown } else { LicenseSource::Lockfile };
+    let src = if l.is_empty() {
+        LicenseSource::Unknown
+    } else {
+        LicenseSource::Lockfile
+    };
     (l, src)
 }
 
@@ -361,7 +366,10 @@ mod tests {
             }"#,
         );
         let deps = parse_lockfile(&lock).unwrap();
-        assert_eq!(deps.iter().find(|d| d.name == "both").unwrap().scope, Scope::Prod);
+        assert_eq!(
+            deps.iter().find(|d| d.name == "both").unwrap().scope,
+            Scope::Prod
+        );
     }
 
     #[test]
@@ -384,8 +392,15 @@ mod tests {
         let deps = parse_lockfile(&lock).unwrap();
         let deep = deps.iter().find(|d| d.name == "deep").unwrap();
         assert!(!deep.direct);
-        assert_eq!(deep.scope, Scope::Prod, "unclassified until propagation runs");
-        assert!(deep.parents.iter().any(|(n, _)| n == "dev-tool"), "edge is present");
+        assert_eq!(
+            deep.scope,
+            Scope::Prod,
+            "unclassified until propagation runs"
+        );
+        assert!(
+            deep.parents.iter().any(|(n, _)| n == "dev-tool"),
+            "edge is present"
+        );
     }
 
     #[test]
@@ -405,11 +420,18 @@ mod tests {
         );
         let deps = parse_lockfile(&lock).unwrap();
         let get = |n: &str| deps.iter().find(|d| d.name == n).unwrap();
-        assert_eq!(get("a").licenses, vec![License::Id { value: "MIT".into() }]);
+        assert_eq!(
+            get("a").licenses,
+            vec![License::Id {
+                value: "MIT".into()
+            }]
+        );
         assert_eq!(get("a").license_source, LicenseSource::Lockfile);
         assert_eq!(
             get("b").licenses,
-            vec![License::Expression { value: "MIT OR Apache-2.0".into() }]
+            vec![License::Expression {
+                value: "MIT OR Apache-2.0".into()
+            }]
         );
         // No license declared: stays empty AND unsourced — claiming the lockfile
         // told us nothing differs from it not telling us anything.
@@ -435,10 +457,17 @@ mod tests {
         );
         let deps = parse_lockfile(&lock).unwrap();
         let get = |n: &str| deps.iter().find(|d| d.name == n).unwrap();
-        assert_eq!(get("old").licenses, vec![License::Id { value: "ISC".into() }]);
+        assert_eq!(
+            get("old").licenses,
+            vec![License::Id {
+                value: "ISC".into()
+            }]
+        );
         assert_eq!(
             get("older").licenses,
-            vec![License::Expression { value: "MIT OR Apache-2.0".into() }],
+            vec![License::Expression {
+                value: "MIT OR Apache-2.0".into()
+            }],
             "an array of alternatives collapses into one OR expression"
         );
     }

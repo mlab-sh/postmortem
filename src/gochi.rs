@@ -38,13 +38,15 @@ pub const CURIOUS: &str = "(?_?)";
 
 /// "At work" loop for a network/resolve wait: calm eyes darting, an occasional
 /// blink. Every frame is 5 columns.
-pub const WORKING: &[&str] =
-    &["(o_o)", "(-_o)", "(o_o)", "(o_-)", "(o_o)", "(-_-)", "(o_o)", "(._.)", "(o_o)"];
+pub const WORKING: &[&str] = &[
+    "(o_o)", "(-_o)", "(o_o)", "(o_-)", "(o_o)", "(-_-)", "(o_o)", "(._.)", "(o_o)",
+];
 
 /// "Hunting" loop for the static malware scan: wide, focused eyes sweeping the
 /// code. Distinct from [`WORKING`] so the two waits read differently.
-pub const SCANNING: &[&str] =
-    &["(O_O)", "(O_o)", "(o_O)", "(O_O)", "(-_-)", "(o_o)", "(O_O)"];
+pub const SCANNING: &[&str] = &[
+    "(O_O)", "(O_o)", "(o_O)", "(O_O)", "(-_-)", "(o_o)", "(O_O)",
+];
 
 // ─── Mood ───────────────────────────────────────────────────────────────────
 
@@ -198,7 +200,10 @@ impl Loader {
                     let lbl = label.lock().unwrap().clone();
                     let counter = match total {
                         Some(len) => {
-                            format!("  {}", format!("{}/{len}", pos.load(Ordering::Relaxed)).dimmed())
+                            format!(
+                                "  {}",
+                                format!("{}/{len}", pos.load(Ordering::Relaxed)).dimmed()
+                            )
                         }
                         None => String::new(),
                     };
@@ -210,7 +215,14 @@ impl Loader {
             })
         });
 
-        Loader { stop, pos, label, handle, enabled, start: Instant::now() }
+        Loader {
+            stop,
+            pos,
+            label,
+            handle,
+            enabled,
+            start: Instant::now(),
+        }
     }
 
     /// Set the label for the item currently being processed.
@@ -236,7 +248,13 @@ impl Loader {
             let human = human_elapsed(self.start.elapsed());
             // Clear the animated line, then commit the summary.
             eprint!("\r\x1b[2K");
-            eprintln!("{} {} {} {}", "✓".green(), mood.paint(), msg.as_ref(), format!("({human})").dimmed());
+            eprintln!(
+                "{} {} {} {}",
+                "✓".green(),
+                mood.paint(),
+                msg.as_ref(),
+                format!("({human})").dimmed()
+            );
         }
     }
 }
@@ -268,7 +286,13 @@ mod tests {
 
     #[test]
     fn mood_face_and_paint_agree() {
-        for m in [Mood::Idle, Mood::Happy, Mood::Alert, Mood::Bad, Mood::Curious] {
+        for m in [
+            Mood::Idle,
+            Mood::Happy,
+            Mood::Alert,
+            Mood::Bad,
+            Mood::Curious,
+        ] {
             assert_eq!(m.face().chars().count(), 5);
             assert!(m.paint().contains(m.face()));
         }
@@ -279,7 +303,11 @@ mod tests {
         assert_eq!(Mood::from_risk(0, 0, 0), Mood::Happy);
         assert_eq!(Mood::from_risk(45, 0, 0), Mood::Alert);
         assert_eq!(Mood::from_risk(80, 0, 0), Mood::Bad);
-        assert_eq!(Mood::from_risk(10, 1, 0), Mood::Bad, "any high-risk dep → bad");
+        assert_eq!(
+            Mood::from_risk(10, 1, 0),
+            Mood::Bad,
+            "any high-risk dep → bad"
+        );
         assert_eq!(Mood::from_risk(10, 0, 3), Mood::Bad, "any known vuln → bad");
     }
 

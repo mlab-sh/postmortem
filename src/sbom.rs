@@ -99,8 +99,10 @@ pub fn cyclonedx(root: &str, deps: &[Dependency], timestamp: &str) -> Value {
     }
 
     // dependency edges: rebuild parent → child adjacency from the `parents` field.
-    let purl_by_key: std::collections::HashMap<(&str, &str), String> =
-        deps.iter().map(|d| ((d.name.as_str(), d.version.as_str()), ref_of(d))).collect();
+    let purl_by_key: std::collections::HashMap<(&str, &str), String> = deps
+        .iter()
+        .map(|d| ((d.name.as_str(), d.version.as_str()), ref_of(d)))
+        .collect();
     let mut depends_on: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
         std::collections::BTreeMap::new();
     let mut direct: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -111,7 +113,10 @@ pub fn cyclonedx(root: &str, deps: &[Dependency], timestamp: &str) -> Value {
         }
         for (pn, pv) in &d.parents {
             if let Some(parent) = purl_by_key.get(&(pn.as_str(), pv.as_str())) {
-                depends_on.entry(parent.clone()).or_default().insert(child.clone());
+                depends_on
+                    .entry(parent.clone())
+                    .or_default()
+                    .insert(child.clone());
             }
         }
     }
@@ -122,8 +127,10 @@ pub fn cyclonedx(root: &str, deps: &[Dependency], timestamp: &str) -> Value {
         "dependsOn": direct.into_iter().collect::<Vec<_>>(),
     })];
     for comp_ref in seen.iter() {
-        let kids: Vec<String> =
-            depends_on.get(comp_ref).map(|s| s.iter().cloned().collect()).unwrap_or_default();
+        let kids: Vec<String> = depends_on
+            .get(comp_ref)
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
         dependencies.push(json!({ "ref": comp_ref, "dependsOn": kids }));
     }
     // Stable order for reproducible output.
@@ -167,13 +174,19 @@ mod tests {
             direct,
             resolved_url: None,
             integrity: None,
-            parents: parents.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect(),
+            parents: parents
+                .iter()
+                .map(|(n, v)| (n.to_string(), v.to_string()))
+                .collect(),
         }
     }
 
     #[test]
     fn purl_encodes_type_and_version() {
-        assert_eq!(purl(&dep("left-pad", "1.3.0", true, &[])), "pkg:npm/left-pad@1.3.0");
+        assert_eq!(
+            purl(&dep("left-pad", "1.3.0", true, &[])),
+            "pkg:npm/left-pad@1.3.0"
+        );
         let mut d = dep("hello", "", true, &[]);
         d.ecosystem = Ecosystem::Nix;
         assert_eq!(purl(&d), "pkg:nix/hello"); // empty version → no @
@@ -210,19 +223,27 @@ mod tests {
     #[test]
     fn licenses_use_the_right_cyclonedx_shape_per_variant() {
         // Getting these three shapes wrong is what gets a BOM rejected.
-        let id = licenses_field(&[License::Id { value: "MIT".into() }]).unwrap();
+        let id = licenses_field(&[License::Id {
+            value: "MIT".into(),
+        }])
+        .unwrap();
         assert_eq!(id[0]["license"]["id"], "MIT");
         assert!(id[0]["license"].get("name").is_none());
 
-        let name = licenses_field(&[License::Name { value: "see LICENSE".into() }]).unwrap();
+        let name = licenses_field(&[License::Name {
+            value: "see LICENSE".into(),
+        }])
+        .unwrap();
         assert_eq!(name[0]["license"]["name"], "see LICENSE");
         assert!(
             name[0]["license"].get("id").is_none(),
             "an unverified value must never be emitted as an SPDX id"
         );
 
-        let expr =
-            licenses_field(&[License::Expression { value: "MIT OR Apache-2.0".into() }]).unwrap();
+        let expr = licenses_field(&[License::Expression {
+            value: "MIT OR Apache-2.0".into(),
+        }])
+        .unwrap();
         assert_eq!(expr[0]["expression"], "MIT OR Apache-2.0");
         assert!(
             expr[0].get("license").is_none(),
@@ -241,8 +262,13 @@ mod tests {
     #[test]
     fn components_carry_their_licenses() {
         let mut d = dep("a", "1.0.0", true, &[]);
-        d.licenses = vec![License::Id { value: "Apache-2.0".into() }];
+        d.licenses = vec![License::Id {
+            value: "Apache-2.0".into(),
+        }];
         let bom = cyclonedx("p", &[d], "2026-01-01T00:00:00Z");
-        assert_eq!(bom["components"][0]["licenses"][0]["license"]["id"], "Apache-2.0");
+        assert_eq!(
+            bom["components"][0]["licenses"][0]["license"]["id"],
+            "Apache-2.0"
+        );
     }
 }

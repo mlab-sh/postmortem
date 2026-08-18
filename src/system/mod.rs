@@ -36,7 +36,7 @@ use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use serde::Deserialize;
 
-use crate::model::{DepRef, Dependency, Ecosystem, Scope, Severity, LicenseSource};
+use crate::model::{DepRef, Dependency, Ecosystem, LicenseSource, Scope, Severity};
 use crate::tree::{Node, Tree};
 
 mod apk;
@@ -100,7 +100,11 @@ pub struct SysSignal {
 
 impl SysSignal {
     fn new(label: impl Into<String>, severity: Severity, points: u8) -> Self {
-        SysSignal { label: label.into(), severity, points }
+        SysSignal {
+            label: label.into(),
+            severity,
+            points,
+        }
     }
 }
 
@@ -158,7 +162,11 @@ pub fn inventory(manager: &str, opts: Opts) -> Result<Inventory> {
 /// An installed version behind the current one — running old code means missing
 /// upstream (including security) fixes. Mild on its own.
 fn outdated_signal(installed: &str, current: &str) -> SysSignal {
-    SysSignal::new(format!("outdated ({installed} → {current})"), Severity::Low, 10)
+    SysSignal::new(
+        format!("outdated ({installed} → {current})"),
+        Severity::Low,
+        10,
+    )
 }
 
 fn push_signal(map: &mut HashMap<String, Vec<SysSignal>>, name: &str, sig: SysSignal) {
@@ -212,13 +220,21 @@ pub fn render_detected(managers: &[Manager]) {
     eprintln!(
         "{} {}",
         "detected package managers:".bold(),
-        if names.is_empty() { "none".dimmed().to_string() } else { names.join(", ") }
+        if names.is_empty() {
+            "none".dimmed().to_string()
+        } else {
+            names.join(", ")
+        }
     );
 }
 
 /// The `--repos` view: configured source repos, official first.
 pub fn render_repos(inv: &Inventory) {
-    println!("{} {}", "source repos".bold(), format!("({})", inv.manager).dimmed());
+    println!(
+        "{} {}",
+        "source repos".bold(),
+        format!("({})", inv.manager).dimmed()
+    );
     if inv.repos.is_empty() {
         println!("  {}", "none configured".dimmed());
         return;
@@ -228,7 +244,11 @@ pub fn render_repos(inv: &Inventory) {
         println!("  {}", r.name.green());
     }
     for r in &third {
-        let url = if r.url.is_empty() { String::new() } else { format!("[{}]  ", r.url).dimmed().to_string() };
+        let url = if r.url.is_empty() {
+            String::new()
+        } else {
+            format!("[{}]  ", r.url).dimmed().to_string()
+        };
         println!(
             "  {}  {}{}",
             r.name.truecolor(255, 165, 0),
@@ -239,8 +259,11 @@ pub fn render_repos(inv: &Inventory) {
     if !third.is_empty() {
         println!(
             "\n{}",
-            format!("⚠ {} third-party source(s) outside the official repos", third.len())
-                .truecolor(255, 165, 0)
+            format!(
+                "⚠ {} third-party source(s) outside the official repos",
+                third.len()
+            )
+            .truecolor(255, 165, 0)
         );
     }
 }

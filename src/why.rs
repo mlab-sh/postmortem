@@ -14,8 +14,10 @@ type Key = (String, String);
 /// versions yields a path set per version; cycles are broken (a node is not
 /// revisited within one path).
 pub fn paths(deps: &[Dependency], target: &str) -> Vec<Vec<Key>> {
-    let index: std::collections::HashMap<Key, &Dependency> =
-        deps.iter().map(|d| ((d.name.clone(), d.version.clone()), d)).collect();
+    let index: std::collections::HashMap<Key, &Dependency> = deps
+        .iter()
+        .map(|d| ((d.name.clone(), d.version.clone()), d))
+        .collect();
 
     let mut out = Vec::new();
     for d in deps.iter().filter(|d| d.name == target) {
@@ -100,7 +102,12 @@ pub fn to_json(deps: &[Dependency], target: &str, root: &str) -> serde_json::Val
 
 /// Render the reverse-dependency paths for `target` to stdout.
 pub fn render(deps: &[Dependency], target: &str, root_label: &str) {
-    println!("{}  {}  {}", "why".bold(), target.cyan(), format!("(in {root_label})").dimmed());
+    println!(
+        "{}  {}  {}",
+        "why".bold(),
+        target.cyan(),
+        format!("(in {root_label})").dimmed()
+    );
 
     let installed: Vec<&Dependency> = deps.iter().filter(|d| d.name == target).collect();
     if installed.is_empty() {
@@ -116,15 +123,35 @@ pub fn render(deps: &[Dependency], target: &str, root_label: &str) {
     let direct = installed.iter().any(|d| d.direct);
     for d in &installed {
         let v = &d.version;
-        let paths_for: Vec<&Vec<Key>> =
-            paths.iter().filter(|p| p.first().is_some_and(|(_, pv)| pv == v)).collect();
-        println!("\n{}{}", format!("{target}@{v}").bold(), if d.direct { "  [direct]".green().to_string() } else { String::new() });
+        let paths_for: Vec<&Vec<Key>> = paths
+            .iter()
+            .filter(|p| p.first().is_some_and(|(_, pv)| pv == v))
+            .collect();
+        println!(
+            "\n{}{}",
+            format!("{target}@{v}").bold(),
+            if d.direct {
+                "  [direct]".green().to_string()
+            } else {
+                String::new()
+            }
+        );
         // Each path is target → … → root; print the chain after the target.
         for path in paths_for {
             for (depth, (name, ver)) in path.iter().enumerate().skip(1) {
                 let is_root = depth == path.len() - 1;
-                let tag = if is_root { "  [direct]".green().to_string() } else { String::new() };
-                println!("{}{} required by {}{}", "  ".repeat(depth), "└─".dimmed(), format!("{name}@{ver}").yellow(), tag);
+                let tag = if is_root {
+                    "  [direct]".green().to_string()
+                } else {
+                    String::new()
+                };
+                println!(
+                    "{}{} required by {}{}",
+                    "  ".repeat(depth),
+                    "└─".dimmed(),
+                    format!("{name}@{ver}").yellow(),
+                    tag
+                );
             }
         }
     }
@@ -153,7 +180,10 @@ mod tests {
             direct,
             resolved_url: None,
             integrity: None,
-            parents: parents.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect(),
+            parents: parents
+                .iter()
+                .map(|(n, v)| (n.to_string(), v.to_string()))
+                .collect(),
         }
     }
 
@@ -169,7 +199,10 @@ mod tests {
         ps.sort();
         assert_eq!(ps.len(), 2);
         // Both paths end at the direct root `app`.
-        assert!(ps.iter().all(|p| p.last() == Some(&("app".to_string(), "1.0".to_string()))));
+        assert!(
+            ps.iter()
+                .all(|p| p.last() == Some(&("app".to_string(), "1.0".to_string())))
+        );
         assert!(ps.contains(&vec![
             ("leaf".into(), "3.0".into()),
             ("mid".into(), "2.0".into()),
@@ -180,7 +213,10 @@ mod tests {
     #[test]
     fn direct_package_is_its_own_path() {
         let deps = vec![dep("app", "1.0", true, &[])];
-        assert_eq!(paths(&deps, "app"), vec![vec![("app".into(), "1.0".into())]]);
+        assert_eq!(
+            paths(&deps, "app"),
+            vec![vec![("app".into(), "1.0".into())]]
+        );
         assert!(paths(&deps, "missing").is_empty());
     }
 
@@ -193,6 +229,9 @@ mod tests {
             dep("b", "1", true, &[("a", "1")]),
         ];
         let ps = paths(&deps, "a");
-        assert_eq!(ps, vec![vec![("a".into(), "1".into()), ("b".into(), "1".into())]]);
+        assert_eq!(
+            ps,
+            vec![vec![("a".into(), "1".into()), ("b".into(), "1".into())]]
+        );
     }
 }

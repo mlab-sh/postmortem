@@ -21,8 +21,9 @@ use crate::analyze::util;
 use crate::model::{Category, Finding, Severity};
 
 /// Source extensions worth scanning — the behaviours span languages.
-const SRC_EXTS: &[&str] =
-    &["js", "mjs", "cjs", "ts", "py", "rb", "php", "go", "sh", "bash", "pl", "pm", "lua"];
+const SRC_EXTS: &[&str] = &[
+    "js", "mjs", "cjs", "ts", "py", "rb", "php", "go", "sh", "bash", "pl", "pm", "lua",
+];
 
 struct Group {
     label: &'static str,
@@ -35,8 +36,8 @@ const GROUPS: &[Group] = &[
         label: "credential/secret harvesting",
         severity: Severity::High,
         needles: &[
-            "169.254.169.254",        // AWS/GCP/Azure instance metadata
-            "169.254.170.2",          // ECS task metadata
+            "169.254.169.254", // AWS/GCP/Azure instance metadata
+            "169.254.170.2",   // ECS task metadata
             "metadata.google.internal",
             "/.aws/credentials",
             ".aws/credentials",
@@ -56,7 +57,11 @@ const GROUPS: &[Group] = &[
     Group {
         label: "self-propagation / worm behaviour",
         severity: Severity::High,
-        needles: &[".github/workflows/", "api.github.com/user/repos", "npm publish"],
+        needles: &[
+            ".github/workflows/",
+            "api.github.com/user/repos",
+            "npm publish",
+        ],
     },
     Group {
         label: "persistence mechanism",
@@ -80,9 +85,16 @@ const GROUPS: &[Group] = &[
 
 pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
     for path in util::walk_files(root, SRC_EXTS) {
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         for g in GROUPS {
-            let hits: Vec<&str> = g.needles.iter().copied().filter(|&n| text.contains(n)).collect();
+            let hits: Vec<&str> = g
+                .needles
+                .iter()
+                .copied()
+                .filter(|&n| text.contains(n))
+                .collect();
             if hits.is_empty() {
                 continue;
             }
@@ -112,15 +124,30 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("pm-behav-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
-        fs::write(tmp.join("stealer.js"), "fetch('http://169.254.169.254/latest/meta-data/')").unwrap();
-        fs::write(tmp.join("worm.js"), "fs.writeFileSync('.github/workflows/x.yml', payload)").unwrap();
+        fs::write(
+            tmp.join("stealer.js"),
+            "fetch('http://169.254.169.254/latest/meta-data/')",
+        )
+        .unwrap();
+        fs::write(
+            tmp.join("worm.js"),
+            "fs.writeFileSync('.github/workflows/x.yml', payload)",
+        )
+        .unwrap();
         fs::write(tmp.join("clean.js"), "export const add = (a,b) => a+b;").unwrap();
 
         let mut out = Vec::new();
         scan_dir(&tmp, &mut out);
-        assert!(out.iter().any(|f| f.detail.contains("credential/secret") && f.severity == Severity::High));
+        assert!(
+            out.iter()
+                .any(|f| f.detail.contains("credential/secret") && f.severity == Severity::High)
+        );
         assert!(out.iter().any(|f| f.detail.contains("self-propagation")));
-        assert!(!out.iter().any(|f| f.location.as_deref().is_some_and(|l| l.ends_with("clean.js"))));
+        assert!(!out.iter().any(|f| {
+            f.location
+                .as_deref()
+                .is_some_and(|l| l.ends_with("clean.js"))
+        }));
         let _ = fs::remove_dir_all(&tmp);
     }
 }

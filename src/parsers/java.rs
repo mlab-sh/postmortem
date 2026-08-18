@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use crate::model::{Dependency, Ecosystem, Scope, LicenseSource};
+use crate::model::{Dependency, Ecosystem, LicenseSource, Scope};
 
 pub fn parse(manifest: Option<&Path>, lockfile: Option<&Path>) -> Result<Vec<Dependency>> {
     if let Some(lock) = lockfile
@@ -45,8 +45,8 @@ fn dep_mgmt_re() -> &'static Regex {
 }
 
 fn parse_maven(path: &Path) -> Result<Vec<Dependency>> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     // `<dependencyManagement>` holds version pins, not actual dependencies; drop
     // it so we only report the real `<dependencies>` (direct) entries.
     let body = dep_mgmt_re().replace_all(&text, "");
@@ -54,8 +54,12 @@ fn parse_maven(path: &Path) -> Result<Vec<Dependency>> {
     let mut out = Vec::new();
     for cap in dep_block_re().captures_iter(&body) {
         let block = &cap[1];
-        let Some(group) = tag(block, "groupId") else { continue };
-        let Some(artifact) = tag(block, "artifactId") else { continue };
+        let Some(group) = tag(block, "groupId") else {
+            continue;
+        };
+        let Some(artifact) = tag(block, "artifactId") else {
+            continue;
+        };
         let version = tag(block, "version").unwrap_or_else(|| "managed".to_string());
         out.push(Dependency {
             name: format!("{group}:{artifact}"),
@@ -103,8 +107,8 @@ fn tag(block: &str, name: &str) -> Option<String> {
 // ---------- Gradle ----------
 
 fn parse_gradle(lock: &Path, manifest: Option<&Path>) -> Result<Vec<Dependency>> {
-    let text = std::fs::read_to_string(lock)
-        .with_context(|| format!("reading {}", lock.display()))?;
+    let text =
+        std::fs::read_to_string(lock).with_context(|| format!("reading {}", lock.display()))?;
 
     let direct = manifest
         .and_then(|m| std::fs::read_to_string(m).ok())
@@ -156,7 +160,11 @@ fn parse_gradle(lock: &Path, manifest: Option<&Path>) -> Result<Vec<Dependency>>
 /// An empty list (a malformed line) stays production.
 fn gradle_scope(configurations: &str) -> Scope {
     let mut any = false;
-    for cfg in configurations.split(',').map(str::trim).filter(|c| !c.is_empty()) {
+    for cfg in configurations
+        .split(',')
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+    {
         any = true;
         if !cfg.starts_with("test") && !cfg.starts_with("androidTest") {
             return Scope::Prod;
@@ -168,9 +176,7 @@ fn gradle_scope(configurations: &str) -> Scope {
 fn gradle_coord_re() -> &'static Regex {
     // "group:artifact:version" inside a Groovy/Kotlin DSL string literal.
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| {
-        Regex::new(r#"["']([A-Za-z0-9_.\-]+:[A-Za-z0-9_.\-]+):[^"'\s]+["']"#).unwrap()
-    })
+    R.get_or_init(|| Regex::new(r#"["']([A-Za-z0-9_.\-]+:[A-Za-z0-9_.\-]+):[^"'\s]+["']"#).unwrap())
 }
 
 /// Best-effort direct set from a build.gradle(.kts): every `group:artifact`
@@ -199,7 +205,10 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(name);
-        std::fs::File::create(&p).unwrap().write_all(body.as_bytes()).unwrap();
+        std::fs::File::create(&p)
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
         p
     }
 
@@ -235,13 +244,23 @@ mod tests {
     fn maven_reads_direct_and_skips_dependency_management() {
         let pom = tmp("pom.xml", POM);
         let deps = parse_maven(&pom).unwrap();
-        assert_eq!(deps.len(), 2, "dependencyManagement must be excluded: {deps:#?}");
-        let lang3 = deps.iter().find(|d| d.name == "org.apache.commons:commons-lang3").unwrap();
+        assert_eq!(
+            deps.len(),
+            2,
+            "dependencyManagement must be excluded: {deps:#?}"
+        );
+        let lang3 = deps
+            .iter()
+            .find(|d| d.name == "org.apache.commons:commons-lang3")
+            .unwrap();
         assert_eq!(lang3.version, "3.12.0");
         assert!(lang3.direct);
         assert_eq!(lang3.ecosystem, Ecosystem::Java);
         // absent version falls back to "managed"
-        let guava = deps.iter().find(|d| d.name == "com.google.guava:guava").unwrap();
+        let guava = deps
+            .iter()
+            .find(|d| d.name == "com.google.guava:guava")
+            .unwrap();
         assert_eq!(guava.version, "managed");
         assert!(!deps.iter().any(|d| d.name == "org.managed:bom-only"));
     }
@@ -257,10 +276,16 @@ mod tests {
         );
         let deps = parse_gradle(&lock, Some(&build)).unwrap();
         assert_eq!(deps.len(), 2);
-        let guava = deps.iter().find(|d| d.name == "com.google.guava:guava").unwrap();
+        let guava = deps
+            .iter()
+            .find(|d| d.name == "com.google.guava:guava")
+            .unwrap();
         assert_eq!(guava.version, "31.1-jre");
         assert!(guava.direct, "guava is declared in build.gradle");
-        let lang3 = deps.iter().find(|d| d.name == "org.apache.commons:commons-lang3").unwrap();
+        let lang3 = deps
+            .iter()
+            .find(|d| d.name == "org.apache.commons:commons-lang3")
+            .unwrap();
         assert!(!lang3.direct, "commons-lang3 is only transitive");
     }
 
@@ -272,7 +297,11 @@ mod tests {
         assert_eq!(maven_scope(Some("provided")), Scope::Prod);
         assert_eq!(maven_scope(Some("system")), Scope::Prod);
         assert_eq!(maven_scope(Some("runtime")), Scope::Prod);
-        assert_eq!(maven_scope(None), Scope::Prod, "absent <scope> means compile");
+        assert_eq!(
+            maven_scope(None),
+            Scope::Prod,
+            "absent <scope> means compile"
+        );
     }
 
     #[test]
@@ -291,21 +320,37 @@ mod tests {
             </dependencies></project>"#,
         );
         let deps = parse_maven(&pom).unwrap();
-        assert_eq!(deps.iter().find(|d| d.name == "junit:junit").unwrap().scope, Scope::Dev);
         assert_eq!(
-            deps.iter().find(|d| d.name == "com.google.guava:guava").unwrap().scope,
+            deps.iter().find(|d| d.name == "junit:junit").unwrap().scope,
+            Scope::Dev
+        );
+        assert_eq!(
+            deps.iter()
+                .find(|d| d.name == "com.google.guava:guava")
+                .unwrap()
+                .scope,
             Scope::Prod
         );
     }
 
     #[test]
     fn gradle_scope_reads_the_configuration_list() {
-        assert_eq!(gradle_scope("testCompileClasspath,testRuntimeClasspath"), Scope::Dev);
+        assert_eq!(
+            gradle_scope("testCompileClasspath,testRuntimeClasspath"),
+            Scope::Dev
+        );
         assert_eq!(gradle_scope("androidTestRuntimeClasspath"), Scope::Dev);
         // One production configuration is enough to make it ship.
-        assert_eq!(gradle_scope("testCompileClasspath,runtimeClasspath"), Scope::Prod);
+        assert_eq!(
+            gradle_scope("testCompileClasspath,runtimeClasspath"),
+            Scope::Prod
+        );
         assert_eq!(gradle_scope("compileClasspath"), Scope::Prod);
-        assert_eq!(gradle_scope(""), Scope::Prod, "a malformed line must not be omitted");
+        assert_eq!(
+            gradle_scope(""),
+            Scope::Prod,
+            "a malformed line must not be omitted"
+        );
     }
 
     #[test]

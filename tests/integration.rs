@@ -37,12 +37,13 @@ fn scan_json(fixture_name: &str, extra_args: &[&str]) -> (i32, Value) {
         .stderr(Stdio::piped());
     let out = cmd.output().expect("postmortem binary did not run");
     let exit = out.status.code().unwrap_or(-1);
-    let parsed: Value = serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!(
+    let parsed: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
             "json parse failed (exit {exit}): {e}\nstdout: {}\nstderr: {}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr),
-        ));
+        )
+    });
     (exit, parsed)
 }
 
@@ -55,13 +56,18 @@ fn deps(report: &Value) -> &Vec<Value> {
 }
 
 fn dep_present(report: &Value, name: &str, version: &str) -> bool {
-    deps(report).iter().any(|d| d["name"] == name && d["version"] == version)
+    deps(report)
+        .iter()
+        .any(|d| d["name"] == name && d["version"] == version)
 }
 
 fn has_finding(report: &Value, dep_substr: &str, category: &str) -> bool {
     findings(report).iter().any(|f| {
         f["category"] == category
-            && f["dependency"].as_str().map(|s| s.contains(dep_substr)).unwrap_or(false)
+            && f["dependency"]
+                .as_str()
+                .map(|s| s.contains(dep_substr))
+                .unwrap_or(false)
     })
 }
 
@@ -116,8 +122,13 @@ fn malicious_node_detects_iocs() {
     let (_, report) = scan_json("malicious-node", &[]);
     let ioc_findings: Vec<&Value> = findings(&report)
         .iter()
-        .filter(|f| f["category"] == "ioc"
-            && f["dependency"].as_str().unwrap_or("").contains("flatmap-stream"))
+        .filter(|f| {
+            f["category"] == "ioc"
+                && f["dependency"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("flatmap-stream")
+        })
         .collect();
     assert!(
         ioc_findings.len() >= 5,
@@ -139,7 +150,10 @@ fn malicious_node_detects_bare_domain() {
         findings(&report).iter().any(|f| {
             f["category"] == "ioc"
                 && f["detail"] == "embedded domain name"
-                && f["evidence"].as_str().map(|s| s.contains("track.evil.tk")).unwrap_or(false)
+                && f["evidence"]
+                    .as_str()
+                    .map(|s| s.contains("track.evil.tk"))
+                    .unwrap_or(false)
         }),
         "expected bare-domain finding for track.evil.tk"
     );
@@ -152,7 +166,10 @@ fn malicious_node_detects_ipv6() {
         findings(&report).iter().any(|f| {
             f["category"] == "ioc"
                 && f["detail"] == "embedded IPv6 address"
-                && f["evidence"].as_str().map(|s| s.contains("2606:4700:1c1c::dead:beef")).unwrap_or(false)
+                && f["evidence"]
+                    .as_str()
+                    .map(|s| s.contains("2606:4700:1c1c::dead:beef"))
+                    .unwrap_or(false)
         }),
         "expected IPv6 finding for 2606:4700:1c1c::dead:beef"
     );
@@ -175,7 +192,9 @@ fn malicious_python_detects_setup_py_payload() {
     assert_eq!(exit, 1);
     // setup.py uses subprocess + os.system + base64 + urllib → install_hook category
     assert!(
-        findings(&report).iter().any(|f| f["category"] == "install_hook"),
+        findings(&report)
+            .iter()
+            .any(|f| f["category"] == "install_hook"),
         "expected install_hook finding on setup.py: {}",
         serde_json::to_string_pretty(&report["findings"]).unwrap()
     );
@@ -245,7 +264,10 @@ fn malicious_ruby_resolves_typosquat_and_graph() {
         .iter()
         .map(|p| p[0].as_str().unwrap().to_string())
         .collect();
-    assert!(parents.iter().any(|p| p == "rest-cliient"), "got {parents:?}");
+    assert!(
+        parents.iter().any(|p| p == "rest-cliient"),
+        "got {parents:?}"
+    );
 }
 
 #[test]
@@ -256,7 +278,9 @@ fn malicious_ruby_detects_sensitive_api_and_obfuscation() {
         "expected sensitive_api (system/Net::HTTP/socket) in lib/exfil.rb"
     );
     assert!(
-        findings(&report).iter().any(|f| f["category"] == "obfuscation"),
+        findings(&report)
+            .iter()
+            .any(|f| f["category"] == "obfuscation"),
         "expected obfuscation (eval + Base64.decode64) in lib/exfil.rb"
     );
 }
@@ -269,11 +293,13 @@ fn malicious_ruby_detects_exfil_iocs() {
         .filter(|f| f["category"] == "ioc")
         .collect();
     assert!(
-        iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("URL")),
+        iocs.iter()
+            .any(|f| f["detail"].as_str().unwrap_or("").contains("URL")),
         "expected an exfil URL finding"
     );
     assert!(
-        iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("domain")),
+        iocs.iter()
+            .any(|f| f["detail"].as_str().unwrap_or("").contains("domain")),
         "expected the exfil.evil.tk domain finding"
     );
 }
@@ -304,7 +330,10 @@ fn malicious_php_resolves_typosquat_and_graph() {
         .iter()
         .map(|p| p[0].as_str().unwrap().to_string())
         .collect();
-    assert!(parents.iter().any(|p| p == "guzzlehttp/guzzel"), "got {parents:?}");
+    assert!(
+        parents.iter().any(|p| p == "guzzlehttp/guzzel"),
+        "got {parents:?}"
+    );
 }
 
 #[test]
@@ -312,8 +341,10 @@ fn malicious_php_detects_obfuscation_chain() {
     let (_, report) = scan_json("malicious-php", &[]);
     // eval + base64_decode + gzinflate is the classic PHP webshell chain → High.
     assert!(
-        findings(&report).iter().any(|f| f["category"] == "obfuscation"
-            && (f["severity"] == "high" || f["severity"] == "critical")),
+        findings(&report)
+            .iter()
+            .any(|f| f["category"] == "obfuscation"
+                && (f["severity"] == "high" || f["severity"] == "critical")),
         "expected a high-severity obfuscation finding: {}",
         serde_json::to_string_pretty(&report["findings"]).unwrap()
     );
@@ -330,8 +361,14 @@ fn malicious_php_detects_exfil_iocs() {
         .iter()
         .filter(|f| f["category"] == "ioc")
         .collect();
-    assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("URL")));
-    assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("domain")));
+    assert!(
+        iocs.iter()
+            .any(|f| f["detail"].as_str().unwrap_or("").contains("URL"))
+    );
+    assert!(
+        iocs.iter()
+            .any(|f| f["detail"].as_str().unwrap_or("").contains("domain"))
+    );
 }
 
 // ---------- malicious-go (module typosquat shape) ----------
@@ -340,7 +377,11 @@ fn malicious_php_detects_exfil_iocs() {
 fn malicious_go_resolves_typosquat_and_classifies_indirect() {
     let (_, report) = scan_json("malicious-go", &["--skip-analyze"]);
     assert_eq!(report["ecosystems"][0], "go");
-    assert!(dep_present(&report, "github.com/sirupsen/logrous", "v1.9.3"));
+    assert!(dep_present(
+        &report,
+        "github.com/sirupsen/logrous",
+        "v1.9.3"
+    ));
 
     let root = deps(&report)
         .iter()
@@ -366,7 +407,9 @@ fn malicious_go_detects_sensitive_api_and_obfuscation() {
         "expected sensitive_api (exec.Command / net.Dial) in main.go"
     );
     assert!(
-        findings(&report).iter().any(|f| f["category"] == "obfuscation"),
+        findings(&report)
+            .iter()
+            .any(|f| f["category"] == "obfuscation"),
         "expected obfuscation (base64 decode + blob) in main.go"
     );
 }
@@ -378,8 +421,14 @@ fn malicious_go_detects_exfil_iocs() {
         .iter()
         .filter(|f| f["category"] == "ioc")
         .collect();
-    assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("URL")));
-    assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("domain")));
+    assert!(
+        iocs.iter()
+            .any(|f| f["detail"].as_str().unwrap_or("").contains("URL"))
+    );
+    assert!(
+        iocs.iter()
+            .any(|f| f["detail"].as_str().unwrap_or("").contains("domain"))
+    );
 }
 
 // ---------- malicious-java (Maven artifact typosquat shape) ----------
@@ -388,7 +437,11 @@ fn malicious_go_detects_exfil_iocs() {
 fn malicious_java_reads_pom_direct_deps_and_skips_bom() {
     let (_, report) = scan_json("malicious-java", &["--skip-analyze"]);
     assert_eq!(report["ecosystems"][0], "java");
-    assert!(dep_present(&report, "org.apache.commons:commons-colletions", "3.2.1"));
+    assert!(dep_present(
+        &report,
+        "org.apache.commons:commons-colletions",
+        "3.2.1"
+    ));
 
     let typo = deps(&report)
         .iter()
@@ -399,7 +452,9 @@ fn malicious_java_reads_pom_direct_deps_and_skips_bom() {
 
     // dependencyManagement (BOM) entries are not real dependencies.
     assert!(
-        !deps(&report).iter().any(|d| d["name"] == "org.springframework:spring-bom"),
+        !deps(&report)
+            .iter()
+            .any(|d| d["name"] == "org.springframework:spring-bom"),
         "dependencyManagement must be excluded from the SBOM"
     );
 }
@@ -412,7 +467,9 @@ fn malicious_java_detects_sensitive_api_and_obfuscation() {
         "expected sensitive_api (Runtime.exec / Socket) in Payload.java"
     );
     assert!(
-        findings(&report).iter().any(|f| f["category"] == "obfuscation"),
+        findings(&report)
+            .iter()
+            .any(|f| f["category"] == "obfuscation"),
         "expected obfuscation (base64 decode + blob) in Payload.java"
     );
 }
@@ -424,8 +481,14 @@ fn malicious_java_detects_exfil_iocs() {
         .iter()
         .filter(|f| f["category"] == "ioc")
         .collect();
-    assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("URL")));
-    assert!(iocs.iter().any(|f| f["detail"].as_str().unwrap_or("").contains("domain")));
+    assert!(
+        iocs.iter()
+            .any(|f| f["detail"].as_str().unwrap_or("").contains("URL"))
+    );
+    assert!(
+        iocs.iter()
+            .any(|f| f["detail"].as_str().unwrap_or("").contains("domain"))
+    );
 }
 
 // ---------- clean baseline ----------
@@ -438,7 +501,10 @@ fn clean_node_emits_no_high_findings_and_exits_zero() {
         .iter()
         .filter(|f| f["severity"] == "high" || f["severity"] == "critical")
         .collect();
-    assert!(highs.is_empty(), "clean fixture leaked high findings: {highs:#?}");
+    assert!(
+        highs.is_empty(),
+        "clean fixture leaked high findings: {highs:#?}"
+    );
 }
 
 // ---------- CLI flag behavior ----------
@@ -457,12 +523,25 @@ fn skip_category_flag_drops_findings() {
     let (_, all) = scan_json("malicious-node", &[]);
     let (_, no_ioc) = scan_json("malicious-node", &["--skip-category", "ioc"]);
 
-    let ioc_in_all = findings(&all).iter().filter(|f| f["category"] == "ioc").count();
-    let ioc_in_filtered = findings(&no_ioc).iter().filter(|f| f["category"] == "ioc").count();
+    let ioc_in_all = findings(&all)
+        .iter()
+        .filter(|f| f["category"] == "ioc")
+        .count();
+    let ioc_in_filtered = findings(&no_ioc)
+        .iter()
+        .filter(|f| f["category"] == "ioc")
+        .count();
     assert!(ioc_in_all > 0, "fixture should produce ioc findings");
-    assert_eq!(ioc_in_filtered, 0, "--skip-category ioc must drop all ioc findings");
+    assert_eq!(
+        ioc_in_filtered, 0,
+        "--skip-category ioc must drop all ioc findings"
+    );
     // other categories remain
-    assert!(findings(&no_ioc).iter().any(|f| f["category"] == "install_hook"));
+    assert!(
+        findings(&no_ioc)
+            .iter()
+            .any(|f| f["category"] == "install_hook")
+    );
 }
 
 #[test]
@@ -483,11 +562,8 @@ fn skip_category_flag_accepts_comma_separated() {
 fn postmortem_conf_autoload_suppresses_findings() {
     // Copy the malicious-node fixture into a temp dir, drop a postmortem.conf alongside.
     let src = fixture("malicious-node");
-    let dst = std::env::temp_dir().join(format!(
-        "postmortem-it-{}-{}",
-        std::process::id(),
-        line!()
-    ));
+    let dst =
+        std::env::temp_dir().join(format!("postmortem-it-{}-{}", std::process::id(), line!()));
     let _ = std::fs::remove_dir_all(&dst);
     copy_tree(&src, &dst).unwrap();
     std::fs::write(
@@ -517,7 +593,10 @@ reason = "test suppression"
         .map(|f| f["category"].as_str().unwrap())
         .collect();
     assert!(!cats.contains(&"ioc"), "ioc should be suppressed");
-    assert!(!cats.contains(&"sensitive_api"), "sensitive_api should be suppressed");
+    assert!(
+        !cats.contains(&"sensitive_api"),
+        "sensitive_api should be suppressed"
+    );
     assert!(
         !cats.contains(&"obfuscation"),
         "obfuscation on flatmap-stream should be suppressed by ignore rule"
@@ -533,11 +612,8 @@ reason = "test suppression"
 #[test]
 fn no_config_flag_disables_autoload() {
     let src = fixture("malicious-node");
-    let dst = std::env::temp_dir().join(format!(
-        "postmortem-it-{}-{}",
-        std::process::id(),
-        line!()
-    ));
+    let dst =
+        std::env::temp_dir().join(format!("postmortem-it-{}-{}", std::process::id(), line!()));
     let _ = std::fs::remove_dir_all(&dst);
     copy_tree(&src, &dst).unwrap();
     std::fs::write(
@@ -593,20 +669,27 @@ fn enrich_flag_attaches_mlab_links_to_iocs() {
             .copied()
     };
     let url_f = by_detail("embedded URL").expect("URL finding present");
-    assert_eq!(url_f["enrich_url"], "https://mlab.sh/domain/drop.malicious.invalid");
+    assert_eq!(
+        url_f["enrich_url"],
+        "https://mlab.sh/domain/drop.malicious.invalid"
+    );
 
     let dom_f = by_detail("embedded domain name").expect("domain finding present");
     assert_eq!(dom_f["enrich_url"], "https://mlab.sh/domain/track.evil.tk");
 
     let ip6_f = by_detail("embedded IPv6 address").expect("IPv6 finding present");
-    assert_eq!(ip6_f["enrich_url"], "https://mlab.sh/ip/2606:4700:1c1c::dead:beef");
+    assert_eq!(
+        ip6_f["enrich_url"],
+        "https://mlab.sh/ip/2606:4700:1c1c::dead:beef"
+    );
 
     let btc_f = iocs
         .iter()
         .find(|f| f["detail"].as_str().unwrap_or("").contains("Bitcoin"))
         .expect("BTC finding present");
     assert_eq!(
-        btc_f["enrich_url"], "https://mlab.sh/crypto/1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
+        btc_f["enrich_url"],
+        "https://mlab.sh/crypto/1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"
     );
 
     let eth_f = iocs
@@ -614,7 +697,8 @@ fn enrich_flag_attaches_mlab_links_to_iocs() {
         .find(|f| f["detail"].as_str().unwrap_or("").contains("Ethereum"))
         .expect("ETH finding present");
     assert_eq!(
-        eth_f["enrich_url"], "https://mlab.sh/crypto/0xdeadbeefcafebabe0011223344556677889900aa"
+        eth_f["enrich_url"],
+        "https://mlab.sh/crypto/0xdeadbeefcafebabe0011223344556677889900aa"
     );
 }
 
@@ -622,7 +706,9 @@ fn enrich_flag_attaches_mlab_links_to_iocs() {
 fn enrich_flag_off_by_default() {
     let (_, report) = scan_json("malicious-node", &[]);
     assert!(
-        findings(&report).iter().all(|f| f.get("enrich_url").is_none() || f["enrich_url"].is_null()),
+        findings(&report)
+            .iter()
+            .all(|f| f.get("enrich_url").is_none() || f["enrich_url"].is_null()),
         "without --enrich, no enrich_url should be emitted"
     );
 }
@@ -662,7 +748,10 @@ fn sarif_output_is_well_formed() {
         let level = r["level"].as_str().unwrap();
         assert!(["error", "warning", "note", "none"].contains(&level));
         let loc = &r["locations"][0]["physicalLocation"]["artifactLocation"]["uri"];
-        assert!(!loc.as_str().unwrap().starts_with('/'), "path should be SRCROOT-relative, got {loc}");
+        assert!(
+            !loc.as_str().unwrap().starts_with('/'),
+            "path should be SRCROOT-relative, got {loc}"
+        );
         assert!(r["partialFingerprints"]["postmortem/finding-fingerprint"].is_string());
     }
 }
@@ -678,10 +767,16 @@ fn sarif_includes_enrich_url_when_flag_set() {
         .unwrap();
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     let results = v["runs"][0]["results"].as_array().unwrap();
-    let has_enrich = results
-        .iter()
-        .any(|r| r["properties"]["enrichUrl"].as_str().map(|s| s.starts_with("https://mlab.sh/")).unwrap_or(false));
-    assert!(has_enrich, "expected at least one result with properties.enrichUrl");
+    let has_enrich = results.iter().any(|r| {
+        r["properties"]["enrichUrl"]
+            .as_str()
+            .map(|s| s.starts_with("https://mlab.sh/"))
+            .unwrap_or(false)
+    });
+    assert!(
+        has_enrich,
+        "expected at least one result with properties.enrichUrl"
+    );
 }
 
 #[test]
@@ -697,10 +792,17 @@ fn default_output_filename_when_no_dash_o() {
         .current_dir(&tmp)
         .output()
         .unwrap();
-    assert!(out.status.success(), "stderr: {}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     // stdout must be empty — JSON should have gone to a file.
-    assert!(out.stdout.is_empty(), "stdout should be empty when defaulting to file");
+    assert!(
+        out.stdout.is_empty(),
+        "stdout should be empty when defaulting to file"
+    );
 
     // Stderr advertises the file path.
     let stderr = String::from_utf8_lossy(&out.stderr);
@@ -816,9 +918,15 @@ fn tree_online_is_wired_without_touching_the_network() {
         .stdin(Stdio::null()) // non-interactive → no token prompt
         .output()
         .unwrap();
-    assert!(out.status.success(), "tree --online should succeed on a node-free project");
+    assert!(
+        out.status.success(),
+        "tree --online should succeed on a node-free project"
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("rustdecimal"), "expected the tree to still render");
+    assert!(
+        stdout.contains("rustdecimal"),
+        "expected the tree to still render"
+    );
 }
 
 // ---------- multi-target trees (--allow-multiple) & pinned lockfiles ----------
@@ -845,7 +953,10 @@ fn tree_multi(targets: &[PathBuf], extra_args: &[&str]) -> (i32, String, String)
 fn machine_format_rejects_several_targets_without_the_flag() {
     let targets = [fixture("malicious-node"), fixture("clean-node")];
     let (exit, _, stderr) = tree_multi(&targets, &["--json", "-o", "-"]);
-    assert_ne!(exit, 0, "several targets in --json must not silently succeed");
+    assert_ne!(
+        exit, 0,
+        "several targets in --json must not silently succeed"
+    );
     assert!(
         stderr.contains("--allow-multiple"),
         "the error should point at the opt-in flag, got: {stderr}"
@@ -855,11 +966,12 @@ fn machine_format_rejects_several_targets_without_the_flag() {
 #[test]
 fn allow_multiple_emits_one_json_tree_per_target() {
     let targets = [fixture("malicious-node"), fixture("clean-node")];
-    let (exit, stdout, stderr) =
-        tree_multi(&targets, &["--json", "--allow-multiple", "-o", "-"]);
+    let (exit, stdout, stderr) = tree_multi(&targets, &["--json", "--allow-multiple", "-o", "-"]);
     assert_eq!(exit, 0, "stderr: {stderr}");
     let v: Value = serde_json::from_str(&stdout).expect("stdout should be valid json");
-    let arr = v.as_array().expect("--allow-multiple emits an ARRAY of trees");
+    let arr = v
+        .as_array()
+        .expect("--allow-multiple emits an ARRAY of trees");
     assert_eq!(arr.len(), 2);
     assert!(arr[0]["root"].as_str().unwrap().ends_with("malicious-node"));
     assert!(arr[1]["root"].as_str().unwrap().ends_with("clean-node"));
@@ -874,22 +986,29 @@ fn a_single_target_keeps_the_bare_object_shape() {
     let (exit, stdout, _) = tree_multi(&targets, &["--json", "--allow-multiple", "-o", "-"]);
     assert_eq!(exit, 0);
     let v: Value = serde_json::from_str(&stdout).unwrap();
-    assert!(v.is_array(), "with the flag the shape is an array even for one target");
+    assert!(
+        v.is_array(),
+        "with the flag the shape is an array even for one target"
+    );
 }
 
 #[test]
 fn allow_multiple_emits_one_sarif_run_per_target() {
     let targets = [fixture("malicious-node"), fixture("clean-node")];
-    let (exit, stdout, stderr) =
-        tree_multi(&targets, &["--sarif", "--allow-multiple", "-o", "-"]);
+    let (exit, stdout, stderr) = tree_multi(&targets, &["--sarif", "--allow-multiple", "-o", "-"]);
     assert_eq!(exit, 0, "stderr: {stderr}");
     let v: Value = serde_json::from_str(&stdout).expect("stdout should be valid sarif");
     let runs = v["runs"].as_array().expect("sarif runs[]");
     assert_eq!(runs.len(), 2, "one run per target");
     for run in runs {
         // Each run keeps its own SRCROOT so alerts stay attributed.
-        let uri = run["originalUriBaseIds"]["SRCROOT"]["uri"].as_str().unwrap();
-        assert!(uri.starts_with("file://") && uri.ends_with('/'), "got {uri}");
+        let uri = run["originalUriBaseIds"]["SRCROOT"]["uri"]
+            .as_str()
+            .unwrap();
+        assert!(
+            uri.starts_with("file://") && uri.ends_with('/'),
+            "got {uri}"
+        );
     }
 }
 
@@ -900,8 +1019,15 @@ fn a_pinned_lockfile_resolves_its_parent_project() {
     assert_eq!(exit, 0, "stderr: {stderr}");
     let t: Value = serde_json::from_str(&stdout).unwrap();
     // The tree root is the project directory, not the lockfile itself.
-    assert!(t["root"].as_str().unwrap().ends_with("malicious-node"), "root: {}", t["root"]);
-    assert_eq!(t["roots"][0]["name"], "event-stream", "the graph still resolves");
+    assert!(
+        t["root"].as_str().unwrap().ends_with("malicious-node"),
+        "root: {}",
+        t["root"]
+    );
+    assert_eq!(
+        t["roots"][0]["name"], "event-stream",
+        "the graph still resolves"
+    );
 }
 
 #[test]
@@ -913,7 +1039,10 @@ fn an_unusable_target_is_a_configuration_error_not_a_clean_run() {
         fixture("clean-node"),
     ];
     let (exit, _, stderr) = tree_multi(&targets, &[]);
-    assert_eq!(exit, 2, "unusable target must exit 2 (misconfig), stderr: {stderr}");
+    assert_eq!(
+        exit, 2,
+        "unusable target must exit 2 (misconfig), stderr: {stderr}"
+    );
 
     let targets = [fixture("README.md")];
     let (exit, _, stderr) = tree_multi(&targets, &[]);
@@ -941,8 +1070,12 @@ fn tree_names(extra_args: &[&str]) -> Vec<String> {
         .stderr(Stdio::piped())
         .output()
         .expect("postmortem binary did not run");
-    let v: Value = serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{}", String::from_utf8_lossy(&out.stderr)));
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "invalid JSON: {e}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+    });
     fn walk(n: &Value, acc: &mut Vec<String>) {
         acc.push(n["name"].as_str().unwrap().to_string());
         for c in n["children"].as_array().into_iter().flatten() {
@@ -962,13 +1095,22 @@ fn tree_names(extra_args: &[&str]) -> Vec<String> {
 fn without_omit_every_scope_is_present() {
     assert_eq!(
         tree_names(&[]),
-        ["dev-only-lib", "dev-tool", "opt-lib", "prod-lib", "shared-lib"]
+        [
+            "dev-only-lib",
+            "dev-tool",
+            "opt-lib",
+            "prod-lib",
+            "shared-lib"
+        ]
     );
 }
 
 #[test]
 fn omit_dev_drops_the_dev_subtree() {
-    assert_eq!(tree_names(&["--omit", "dev"]), ["opt-lib", "prod-lib", "shared-lib"]);
+    assert_eq!(
+        tree_names(&["--omit", "dev"]),
+        ["opt-lib", "prod-lib", "shared-lib"]
+    );
 }
 
 #[test]
@@ -976,8 +1118,14 @@ fn omit_dev_keeps_a_package_that_also_ships() {
     // The whole point: `shared-lib` is a child of the dev tool AND of a prod
     // dependency. A naive "listed under devDependencies" filter would drop it.
     let names = tree_names(&["--omit", "dev"]);
-    assert!(names.contains(&"shared-lib".to_string()), "shared-lib ships and must survive");
-    assert!(!names.contains(&"dev-only-lib".to_string()), "dev-only-lib must be dropped");
+    assert!(
+        names.contains(&"shared-lib".to_string()),
+        "shared-lib ships and must survive"
+    );
+    assert!(
+        !names.contains(&"dev-only-lib".to_string()),
+        "dev-only-lib must be dropped"
+    );
 }
 
 #[test]
@@ -1004,9 +1152,16 @@ fn omit_rejects_production() {
         .arg(fixture("scoped-node"))
         .output()
         .expect("postmortem binary did not run");
-    assert_eq!(out.status.code(), Some(2), "invalid value should be a usage error");
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "invalid value should be a usage error"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("dev") && stderr.contains("optional"), "usage should list the valid values, got: {stderr}");
+    assert!(
+        stderr.contains("dev") && stderr.contains("optional"),
+        "usage should list the valid values, got: {stderr}"
+    );
 }
 
 #[test]
@@ -1026,8 +1181,16 @@ fn scan_reports_the_scope_of_each_dependency() {
     assert_eq!(by_name("prod-lib"), "prod");
     assert_eq!(by_name("dev-tool"), "dev");
     assert_eq!(by_name("opt-lib"), "optional");
-    assert_eq!(by_name("dev-only-lib"), "dev", "a transitive of the dev tool");
-    assert_eq!(by_name("shared-lib"), "prod", "reachable from prod, so it ships");
+    assert_eq!(
+        by_name("dev-only-lib"),
+        "dev",
+        "a transitive of the dev tool"
+    );
+    assert_eq!(
+        by_name("shared-lib"),
+        "prod",
+        "reachable from prod, so it ships"
+    );
 }
 
 #[test]
@@ -1042,7 +1205,10 @@ fn omitting_is_disclosed_as_a_diagnostic() {
         .find(|d| d["kind"] == "scope_omitted")
         .expect("an omit must be recorded as a diagnostic");
     let msg = omitted["message"].as_str().unwrap();
-    assert!(msg.contains("2 of 5"), "message should quantify the omission, got: {msg}");
+    assert!(
+        msg.contains("2 of 5"),
+        "message should quantify the omission, got: {msg}"
+    );
 }
 
 #[test]
@@ -1086,10 +1252,17 @@ fn sbom_honours_omit() {
         .output()
         .expect("postmortem binary did not run");
     let v: Value = serde_json::from_slice(&out.stdout).expect("valid CycloneDX JSON");
-    let names: Vec<&str> =
-        v["components"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap()).collect();
+    let names: Vec<&str> = v["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
     assert!(names.contains(&"shared-lib"));
-    assert!(!names.contains(&"dev-tool"), "an omitted package must not reach the SBOM");
+    assert!(
+        !names.contains(&"dev-tool"),
+        "an omitted package must not reach the SBOM"
+    );
 }
 
 // --- `cache` -------------------------------------------------------------------
@@ -1138,9 +1311,11 @@ fn current_format_version(home: &std::path::Path) -> u32 {
 
 /// A current-format entry wrapping `payload`.
 fn current_entry(home: &std::path::Path, payload: &str) -> String {
-    format!(r#"{{"v":{},"fetched_at":1786000000,"data":{payload}}}"#, current_format_version(home))
+    format!(
+        r#"{{"v":{},"fetched_at":1786000000,"data":{payload}}}"#,
+        current_format_version(home)
+    )
 }
-
 
 /// Run `postmortem cache <args>` against a private `$HOME`.
 fn cache_cmd(home: &std::path::Path, args: &[&str]) -> (i32, String) {
@@ -1214,8 +1389,14 @@ fn cache_info_counts_entries_per_namespace() {
     assert_eq!(exit, 0);
     assert!(out.contains("registry"), "got: {out}");
     assert!(out.contains("repo"), "got: {out}");
-    assert!(out.contains("3 entries"), "totals should be reported, got: {out}");
-    assert!(!out.contains("predate record format"), "nothing is stale here, got: {out}");
+    assert!(
+        out.contains("3 entries"),
+        "totals should be reported, got: {out}"
+    );
+    assert!(
+        !out.contains("predate record format"),
+        "nothing is stale here, got: {out}"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -1232,9 +1413,18 @@ fn cache_info_flags_entries_from_an_older_record_format() {
 
     let (exit, out) = cache_cmd(&home, &["info"]);
     assert_eq!(exit, 0);
-    assert!(out.contains("predate record format"), "stale entries must be surfaced, got: {out}");
-    assert!(out.contains("2 entries predate"), "both legacy shapes count, got: {out}");
-    assert!(out.contains("prune --stale"), "and the fix should be suggested, got: {out}");
+    assert!(
+        out.contains("predate record format"),
+        "stale entries must be surfaced, got: {out}"
+    );
+    assert!(
+        out.contains("2 entries predate"),
+        "both legacy shapes count, got: {out}"
+    );
+    assert!(
+        out.contains("prune --stale"),
+        "and the fix should be suggested, got: {out}"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -1248,9 +1438,22 @@ fn cache_prune_stale_spares_current_entries() {
     let (exit, out) = cache_cmd(&home, &["prune", "--stale"]);
     assert_eq!(exit, 0);
     assert!(out.contains("removed 1"), "got: {out}");
-    assert!(out.contains("stale format"), "the filter should be named, got: {out}");
-    assert!(cache_dir(&home).join("registry").join("current.json").exists());
-    assert!(!cache_dir(&home).join("registry").join("legacy.json").exists());
+    assert!(
+        out.contains("stale format"),
+        "the filter should be named, got: {out}"
+    );
+    assert!(
+        cache_dir(&home)
+            .join("registry")
+            .join("current.json")
+            .exists()
+    );
+    assert!(
+        !cache_dir(&home)
+            .join("registry")
+            .join("legacy.json")
+            .exists()
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -1263,7 +1466,10 @@ fn cache_prune_dry_run_deletes_nothing() {
     let (exit, out) = cache_cmd(&home, &["prune", "--dry-run"]);
     assert_eq!(exit, 0);
     assert!(out.contains("would remove 1"), "got: {out}");
-    assert!(cache_dir(&home).join("registry").join("a.json").exists(), "dry run must not delete");
+    assert!(
+        cache_dir(&home).join("registry").join("a.json").exists(),
+        "dry run must not delete"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -1273,9 +1479,17 @@ fn a_stale_entry_is_not_served_as_data() {
     // miss, not a plausible-looking answer. Planting one and re-reading it
     // through `info` proves it was dropped rather than trusted.
     let home = tmp_home("no-serve");
-    seed_entry(&home, "registry", "legacy", r#"{"repo":{"host":"github.com","owner":"o","name":"r"}}"#);
+    seed_entry(
+        &home,
+        "registry",
+        "legacy",
+        r#"{"repo":{"host":"github.com","owner":"o","name":"r"}}"#,
+    );
     let (_, before) = cache_cmd(&home, &["info"]);
-    assert!(before.contains("1 entries predate") || before.contains("1 entry predate"), "got: {before}");
+    assert!(
+        before.contains("1 entries predate") || before.contains("1 entry predate"),
+        "got: {before}"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -1309,8 +1523,12 @@ fn licenses_json(args: &[&str]) -> Value {
         .stderr(Stdio::piped())
         .output()
         .expect("postmortem binary did not run");
-    serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{}", String::from_utf8_lossy(&out.stderr)))
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "invalid JSON: {e}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+    })
 }
 
 #[test]
@@ -1319,7 +1537,10 @@ fn licenses_are_read_from_the_lockfile_without_network() {
     assert_eq!(exit, 0, "no policy means no failure");
     assert!(out.contains("MIT"), "got: {out}");
     assert!(out.contains("AGPL-3.0"), "got: {out}");
-    assert!(out.contains("(unknown)"), "the undeclared package must be surfaced");
+    assert!(
+        out.contains("(unknown)"),
+        "the undeclared package must be surfaced"
+    );
 }
 
 #[test]
@@ -1360,16 +1581,28 @@ fn a_dual_licensed_package_escapes_the_denylist() {
     // `dual` offers `MIT OR AGPL-3.0`: denying AGPL leaves MIT available, so it
     // must not be flagged. Only `copyleft`, which offers no alternative, fails.
     let v = licenses_json(&["--deny", "AGPL-3.0"]);
-    let flagged: Vec<&str> =
-        v["violations"].as_array().unwrap().iter().map(|x| x["package"].as_str().unwrap()).collect();
-    assert_eq!(flagged, vec!["copyleft"], "dual-licensed packages keep their other option");
+    let flagged: Vec<&str> = v["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["package"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        flagged,
+        vec!["copyleft"],
+        "dual-licensed packages keep their other option"
+    );
 }
 
 #[test]
 fn an_allowlist_rejects_everything_absent_from_it() {
     let v = licenses_json(&["--allow", "MIT"]);
-    let flagged: Vec<&str> =
-        v["violations"].as_array().unwrap().iter().map(|x| x["package"].as_str().unwrap()).collect();
+    let flagged: Vec<&str> = v["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["package"].as_str().unwrap())
+        .collect();
     // `dual` offers MIT, so it passes; the rest do not.
     assert!(flagged.contains(&"copyleft"), "got: {flagged:?}");
     assert!(flagged.contains(&"bespoke"), "got: {flagged:?}");
@@ -1391,13 +1624,23 @@ fn omit_dev_narrows_the_licence_inventory() {
     // `devtool` is GPL-3.0-only and never ships, so `--omit dev` must drop it —
     // this is the combination that answers "what copyleft do I distribute".
     let v = licenses_json(&["--omit", "dev"]);
-    let labels: Vec<&str> =
-        v["licenses"].as_array().unwrap().iter().map(|b| b["license"].as_str().unwrap()).collect();
-    assert!(!labels.contains(&"GPL-3.0-only"), "the dev tool's licence must be gone: {labels:?}");
+    let labels: Vec<&str> = v["licenses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["license"].as_str().unwrap())
+        .collect();
+    assert!(
+        !labels.contains(&"GPL-3.0-only"),
+        "the dev tool's licence must be gone: {labels:?}"
+    );
     assert!(labels.contains(&"MIT"));
 
     let (exit, _) = licenses_cmd(&["--omit", "dev", "--deny", "GPL-3.0-only"]);
-    assert_eq!(exit, 0, "denying a licence only present in dev deps must not fail a prod run");
+    assert_eq!(
+        exit, 0,
+        "denying a licence only present in dev deps must not fail a prod run"
+    );
 }
 
 #[test]
@@ -1405,7 +1648,10 @@ fn unknown_only_narrows_the_view() {
     let (exit, out) = licenses_cmd(&["--unknown-only"]);
     assert_eq!(exit, 0);
     assert!(out.contains("silent@1.0.0"), "got: {out}");
-    assert!(!out.contains("  MIT "), "other buckets should be hidden, got: {out}");
+    assert!(
+        !out.contains("  MIT "),
+        "other buckets should be hidden, got: {out}"
+    );
 }
 
 #[test]
@@ -1419,18 +1665,34 @@ fn sbom_emits_valid_cyclonedx_license_shapes() {
         .expect("postmortem binary did not run");
     let v: Value = serde_json::from_slice(&out.stdout).expect("valid JSON");
     let by_name = |n: &str| {
-        v["components"].as_array().unwrap().iter().find(|c| c["name"] == n).unwrap().clone()
+        v["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == n)
+            .unwrap()
+            .clone()
     };
 
     // A recognised identifier goes in `license.id`.
     assert_eq!(by_name("permissive")["licenses"][0]["license"]["id"], "MIT");
     // A compound value goes in `expression`, as a sibling of `license`.
-    assert_eq!(by_name("dual")["licenses"][0]["expression"], "MIT OR AGPL-3.0");
+    assert_eq!(
+        by_name("dual")["licenses"][0]["expression"],
+        "MIT OR AGPL-3.0"
+    );
     assert!(by_name("dual")["licenses"][0].get("license").is_none());
     // Free text goes in `license.name` — never `id`, which consumers validate
     // against the SPDX list and reject the whole document over.
-    assert_eq!(by_name("bespoke")["licenses"][0]["license"]["name"], "see the LICENSE file");
-    assert!(by_name("bespoke")["licenses"][0]["license"].get("id").is_none());
+    assert_eq!(
+        by_name("bespoke")["licenses"][0]["license"]["name"],
+        "see the LICENSE file"
+    );
+    assert!(
+        by_name("bespoke")["licenses"][0]["license"]
+            .get("id")
+            .is_none()
+    );
     // Nothing declared: the field is absent rather than an empty array.
     assert!(by_name("silent").get("licenses").is_none());
 }
@@ -1458,8 +1720,14 @@ fn audit_cmd(fixture_name: &str, args: &[&str]) -> (i32, String) {
 #[test]
 fn audit_without_a_gate_is_unchanged() {
     let (exit, out) = audit_cmd("clean-node", &[]);
-    assert_eq!(exit, 0, "a clean project with no policy still passes: {out}");
-    assert!(!out.contains("gate"), "no gate output when no policy is set: {out}");
+    assert_eq!(
+        exit, 0,
+        "a clean project with no policy still passes: {out}"
+    );
+    assert!(
+        !out.contains("gate"),
+        "no gate output when no policy is set: {out}"
+    );
 }
 
 #[test]
@@ -1476,7 +1744,10 @@ fn audit_risk_thresholds_require_online() {
     // misconfiguration (exit 2), never a silent pass.
     let (exit, out) = audit_cmd("clean-node", &["--max-high", "0"]);
     assert_eq!(exit, 2, "got: {out}");
-    assert!(out.contains("require --online"), "the error should say why: {out}");
+    assert!(
+        out.contains("require --online"),
+        "the error should say why: {out}"
+    );
 }
 
 #[test]
@@ -1489,7 +1760,10 @@ fn audit_vuln_thresholds_require_vulns() {
 #[test]
 fn audit_rejects_an_unreadable_baseline() {
     let (exit, out) = audit_cmd("clean-node", &["--baseline", "/nonexistent-baseline.json"]);
-    assert_eq!(exit, 2, "a baseline that cannot be read must not pass silently: {out}");
+    assert_eq!(
+        exit, 2,
+        "a baseline that cannot be read must not pass silently: {out}"
+    );
 }
 
 #[test]
@@ -1511,7 +1785,10 @@ fn audit_reads_the_gate_table_from_a_config() {
         .expect("postmortem binary did not run");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(2), "stderr: {stderr}");
-    assert!(stderr.contains("require --online"), "the [gate] table must be honoured: {stderr}");
+    assert!(
+        stderr.contains("require --online"),
+        "the [gate] table must be honoured: {stderr}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1522,7 +1799,10 @@ fn audit_gate_flags_are_accepted_alongside_the_data_they_need() {
     // the clean fixture scores 0, so nothing trips and the run passes.
     let (exit, out) = audit_cmd("clean-node", &["--online", "--max-high", "0"]);
     assert_eq!(exit, 0, "got: {out}");
-    assert!(out.contains("gate PASS"), "the gate result should be reported: {out}");
+    assert!(
+        out.contains("gate PASS"),
+        "the gate result should be reported: {out}"
+    );
 }
 
 // --- machine output for audit / why / diff, and tree --html ---------------------
@@ -1539,8 +1819,12 @@ fn json_of(cmd_args: &[&str]) -> Value {
         .stderr(Stdio::piped())
         .output()
         .expect("postmortem binary did not run");
-    serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{}", String::from_utf8_lossy(&out.stderr)))
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "invalid JSON: {e}\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        )
+    })
 }
 
 #[test]
@@ -1548,7 +1832,10 @@ fn audit_json_carries_the_verdict_and_its_reason() {
     let v = json_of(&["audit", fixture("malicious-node").to_str().unwrap()]);
     assert_eq!(v["schema_version"], 1);
     assert_eq!(v["verdict"], "critical");
-    assert_eq!(v["reason"], "malicious code detected", "the grade must explain itself");
+    assert_eq!(
+        v["reason"], "malicious code detected",
+        "the grade must explain itself"
+    );
     assert_eq!(v["findings"]["critical"], 1);
     assert_eq!(v["dependencies"]["total"], 2);
 }
@@ -1558,7 +1845,10 @@ fn audit_json_distinguishes_unchecked_layers_from_clean_ones() {
     // `null` means "not checked"; a zeroed object would claim we looked.
     let v = json_of(&["audit", fixture("clean-node").to_str().unwrap()]);
     assert!(v["reputation"].is_null(), "no --online means not assessed");
-    assert!(v["vulnerabilities"].is_null(), "no --vulns means not assessed");
+    assert!(
+        v["vulnerabilities"].is_null(),
+        "no --vulns means not assessed"
+    );
     assert!(v["gate_tripped"].is_null(), "no policy configured");
 }
 
@@ -1568,7 +1858,15 @@ fn audit_json_reports_whether_the_gate_ran() {
     // between "checked and fine" and "never checked".
     let out = Command::new(bin())
         .args(["audit", fixture("clean-node").to_str().unwrap()])
-        .args(["--online", "--max-high", "0", "--json", "-o", "-", "--no-progress"])
+        .args([
+            "--online",
+            "--max-high",
+            "0",
+            "--json",
+            "-o",
+            "-",
+            "--no-progress",
+        ])
         .stdout(Stdio::piped())
         .output()
         .expect("postmortem binary did not run");
@@ -1606,7 +1904,11 @@ fn why_json_groups_paths_per_installed_version() {
 #[test]
 fn why_json_on_an_absent_package_is_an_empty_list_not_an_error() {
     let out = Command::new(bin())
-        .args(["why", "not-a-real-package", fixture("clean-node").to_str().unwrap()])
+        .args([
+            "why",
+            "not-a-real-package",
+            fixture("clean-node").to_str().unwrap(),
+        ])
         .args(["--json", "-o", "-", "--no-progress"])
         .stdout(Stdio::piped())
         .output()
@@ -1625,9 +1927,16 @@ fn diff_json_honours_omit_on_both_sides() {
         "--omit",
         "dev",
     ]);
-    let added: Vec<&str> =
-        v["added"].as_array().unwrap().iter().map(|x| x["name"].as_str().unwrap()).collect();
-    assert!(!added.contains(&"dev-tool"), "dev packages must be filtered: {added:?}");
+    let added: Vec<&str> = v["added"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        !added.contains(&"dev-tool"),
+        "dev packages must be filtered: {added:?}"
+    );
     assert!(added.contains(&"prod-lib"));
 }
 
@@ -1640,7 +1949,11 @@ fn tree_html_is_a_self_contained_document() {
         .output()
         .expect("postmortem binary did not run");
     let html = String::from_utf8_lossy(&out.stdout);
-    assert!(html.starts_with("<!doctype html>"), "got: {}", &html[..60.min(html.len())]);
+    assert!(
+        html.starts_with("<!doctype html>"),
+        "got: {}",
+        &html[..60.min(html.len())]
+    );
     assert!(html.contains("<style>"), "the stylesheet must be inlined");
     assert!(
         !html.contains("src=\"http") && !html.contains("href=\"http"),
@@ -1662,7 +1975,10 @@ fn tree_html_says_what_it_could_not_assess() {
         .expect("postmortem binary did not run");
     let html = String::from_utf8_lossy(&out.stdout);
     assert!(html.contains("Not assessed"), "got: {html}");
-    assert!(html.contains("--online"), "and it should say which flag fixes it");
+    assert!(
+        html.contains("--online"),
+        "and it should say which flag fixes it"
+    );
     assert!(html.contains("--vulns"));
 }
 
@@ -1688,9 +2004,18 @@ fn tree_html_escapes_package_names() {
 fn tree_html_rejects_several_targets_without_the_flag() {
     let targets = [fixture("malicious-node"), fixture("clean-node")];
     let (exit, _, stderr) = tree_multi(&targets, &["--html", "-o", "-"]);
-    assert_ne!(exit, 0, "several targets in --html must not silently succeed");
-    assert!(stderr.contains("--html"), "the error should name the format: {stderr}");
-    assert!(stderr.contains("--allow-multiple"), "and point at the opt-in: {stderr}");
+    assert_ne!(
+        exit, 0,
+        "several targets in --html must not silently succeed"
+    );
+    assert!(
+        stderr.contains("--html"),
+        "the error should name the format: {stderr}"
+    );
+    assert!(
+        stderr.contains("--allow-multiple"),
+        "and point at the opt-in: {stderr}"
+    );
 }
 
 // --- `diff` assessment ---------------------------------------------------------
@@ -1710,7 +2035,10 @@ fn diff_without_assessment_reports_no_risk_at_all() {
     ]);
     assert_eq!(v["schema_version"], 2);
     for a in v["added"].as_array().unwrap() {
-        assert!(a["assessment"].is_null(), "offline diff must not claim an assessment: {a}");
+        assert!(
+            a["assessment"].is_null(),
+            "offline diff must not claim an assessment: {a}"
+        );
     }
 }
 
@@ -1775,15 +2103,29 @@ fn fix_never_writes_to_the_project() {
     let before: Vec<(String, u64)> = std::fs::read_dir(&dir)
         .unwrap()
         .flatten()
-        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.metadata().unwrap().len()))
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                e.metadata().unwrap().len(),
+            )
+        })
         .collect();
 
-    let _ = Command::new(bin()).arg("fix").arg(&dir).arg("--no-progress").output();
+    let _ = Command::new(bin())
+        .arg("fix")
+        .arg(&dir)
+        .arg("--no-progress")
+        .output();
 
     let after: Vec<(String, u64)> = std::fs::read_dir(&dir)
         .unwrap()
         .flatten()
-        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.metadata().unwrap().len()))
+        .map(|e| {
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                e.metadata().unwrap().len(),
+            )
+        })
         .collect();
     assert_eq!(before, after, "fix must not touch the project");
     let _ = std::fs::remove_dir_all(&dir);
@@ -1828,7 +2170,11 @@ fn conf_project(tag: &str, conf: &str) -> PathBuf {
 }
 
 fn run(args: &[&str]) -> (i32, String) {
-    let out = Command::new(bin()).args(args).arg("--no-progress").output().expect("ran");
+    let out = Command::new(bin())
+        .args(args)
+        .arg("--no-progress")
+        .output()
+        .expect("ran");
     let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
     s.push_str(&String::from_utf8_lossy(&out.stderr));
     (out.status.code().unwrap_or(-1), strip_ansi(&s))
@@ -1841,14 +2187,20 @@ fn a_live_ignore_rule_suppresses_and_a_lapsed_one_does_not() {
         "[[ignore]]\ncategory = \"ioc\"\nexpires = \"2099-01-01\"\n",
     );
     let (_, out) = run(&["scan", live.to_str().unwrap()]);
-    assert!(!out.contains("no longer applies"), "a live rule is not reported: {out}");
+    assert!(
+        !out.contains("no longer applies"),
+        "a live rule is not reported: {out}"
+    );
 
     let lapsed = conf_project(
         "lapsed",
         "[[ignore]]\ncategory = \"ioc\"\nexpires = \"2020-01-01\"\n",
     );
     let (_, out) = run(&["scan", lapsed.to_str().unwrap()]);
-    assert!(out.contains("no longer applies"), "a lapsed rule must be reported: {out}");
+    assert!(
+        out.contains("no longer applies"),
+        "a lapsed rule must be reported: {out}"
+    );
 
     let _ = std::fs::remove_dir_all(&live);
     let _ = std::fs::remove_dir_all(&lapsed);
@@ -1870,9 +2222,15 @@ fn an_unparseable_expiry_stops_suppressing_rather_than_lasting_forever() {
 fn audit_applies_the_projects_suppressions() {
     // `audit` previously ignored `postmortem.conf` entirely, so a config that
     // quieted `scan` had no effect on the one-shot verdict.
-    let dir = conf_project("audit", "skip_categories = [\"ioc\", \"obfuscation\", \"install_hook\", \"sensitive_api\"]\n");
+    let dir = conf_project(
+        "audit",
+        "skip_categories = [\"ioc\", \"obfuscation\", \"install_hook\", \"sensitive_api\"]\n",
+    );
     let (_, out) = run(&["audit", dir.to_str().unwrap()]);
-    assert!(out.contains("none"), "every category suppressed → no malware row: {out}");
+    assert!(
+        out.contains("none"),
+        "every category suppressed → no malware row: {out}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1887,7 +2245,13 @@ fn allowlist_lists_every_table_with_its_status() {
     );
     let (exit, out) = run(&["allowlist", dir.to_str().unwrap()]);
     assert_eq!(exit, 0, "a plain listing is a report, not a check");
-    for expected in ["skip_dependencies", "ignore", "gate.allow", "no expiry", "expired"] {
+    for expected in [
+        "skip_dependencies",
+        "ignore",
+        "gate.allow",
+        "no expiry",
+        "expired",
+    ] {
         assert!(out.contains(expected), "missing {expected:?} in: {out}");
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -1895,11 +2259,17 @@ fn allowlist_lists_every_table_with_its_status() {
 
 #[test]
 fn allowlist_expired_exits_one_only_when_something_lapsed() {
-    let clean = conf_project("ok", "[[ignore]]\ndependency = \"a\"\nexpires = \"2099-01-01\"\n");
+    let clean = conf_project(
+        "ok",
+        "[[ignore]]\ndependency = \"a\"\nexpires = \"2099-01-01\"\n",
+    );
     let (exit, _) = run(&["allowlist", clean.to_str().unwrap(), "--expired"]);
     assert_eq!(exit, 0, "nothing lapsed → pass");
 
-    let debt = conf_project("debt", "[[ignore]]\ndependency = \"a\"\nexpires = \"2020-01-01\"\n");
+    let debt = conf_project(
+        "debt",
+        "[[ignore]]\ndependency = \"a\"\nexpires = \"2020-01-01\"\n",
+    );
     let (exit, out) = run(&["allowlist", debt.to_str().unwrap(), "--expired"]);
     assert_eq!(exit, 1, "lapsed debt must fail the check: {out}");
 
@@ -1917,10 +2287,19 @@ fn allowlist_json_reports_days_left_only_for_active_entries() {
     let v = json_of(&["allowlist", dir.to_str().unwrap()]);
     assert_eq!(v["summary"]["lapsed"], 1);
     let by = |st: &str| {
-        v["suppressions"].as_array().unwrap().iter().find(|s| s["status"] == st).unwrap().clone()
+        v["suppressions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["status"] == st)
+            .unwrap()
+            .clone()
     };
     assert!(by("active")["days_left"].is_number());
-    assert!(by("expired")["days_left"].is_null(), "a lapsed entry has no time left");
+    assert!(
+        by("expired")["days_left"].is_null(),
+        "a lapsed entry has no time left"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1935,7 +2314,12 @@ fn allowlist_on_a_project_without_a_config_is_empty_not_an_error() {
 
 #[test]
 fn blast_reports_reach_and_entry_points() {
-    let (exit, out) = run(&["why", "shared-lib", fixture("scoped-node").to_str().unwrap(), "--blast"]);
+    let (exit, out) = run(&[
+        "why",
+        "shared-lib",
+        fixture("scoped-node").to_str().unwrap(),
+        "--blast",
+    ]);
     assert_eq!(exit, 0, "got: {out}");
     assert!(out.contains("blast radius"), "got: {out}");
     // shared-lib is pulled by both prod-lib and the dev tool.
@@ -1945,8 +2329,16 @@ fn blast_reports_reach_and_entry_points() {
 
 #[test]
 fn blast_on_an_absent_package_is_an_error_not_an_empty_report() {
-    let (exit, _) = run(&["why", "nope", fixture("clean-node").to_str().unwrap(), "--blast"]);
-    assert_ne!(exit, 0, "a package that is not there has no blast radius to report");
+    let (exit, _) = run(&[
+        "why",
+        "nope",
+        fixture("clean-node").to_str().unwrap(),
+        "--blast",
+    ]);
+    assert_ne!(
+        exit, 0,
+        "a package that is not there has no blast radius to report"
+    );
 }
 
 #[test]
@@ -1983,8 +2375,15 @@ fn blast_json_separates_the_ceiling_from_current_behaviour() {
 
 #[test]
 fn blast_does_not_change_the_default_why_output() {
-    let (_, plain) = run(&["why", "flatmap-stream", fixture("malicious-node").to_str().unwrap()]);
-    assert!(plain.contains("required by"), "the path view is unchanged: {plain}");
+    let (_, plain) = run(&[
+        "why",
+        "flatmap-stream",
+        fixture("malicious-node").to_str().unwrap(),
+    ]);
+    assert!(
+        plain.contains("required by"),
+        "the path view is unchanged: {plain}"
+    );
     assert!(!plain.contains("blast radius"));
 }
 
@@ -2000,5 +2399,189 @@ fn human_requires_online_and_says_why() {
     let (exit, out) = run(&["tree", fixture("clean-node").to_str().unwrap(), "--human"]);
     assert_ne!(exit, 0);
     assert!(out.contains("--online"), "got: {out}");
-    assert!(out.contains("who can publish"), "the error should explain: {out}");
+    assert!(
+        out.contains("who can publish"),
+        "the error should explain: {out}"
+    );
+}
+
+// --- install-time execution: `scripts`, `hook`, `watch` -------------------------
+
+#[test]
+fn scripts_finds_install_scripts_from_the_lockfile_alone() {
+    // npm records `hasInstallScript`, so the decision list works uninstalled.
+    let (exit, out) = run(&["scripts", "tests/realrepo/Capsule"]);
+    assert_eq!(exit, 0, "pending alone does not fail: {out}");
+    assert!(out.contains("bcrypt"), "got: {out}");
+    assert!(out.contains("pending"), "got: {out}");
+    assert!(
+        out.contains("not on disk"),
+        "an unread script must say so: {out}"
+    );
+}
+
+#[test]
+fn scripts_fails_on_a_hostile_script_but_not_on_mere_pending() {
+    let (exit, out) = run(&["scripts", fixture("malicious-node").to_str().unwrap()]);
+    assert_eq!(exit, 1, "a flagged script fails: {out}");
+
+    let (exit, _) = run(&["scripts", "tests/realrepo/Capsule"]);
+    assert_eq!(exit, 0);
+    let (exit, _) = run(&["scripts", "tests/realrepo/Capsule", "--fail-on-pending"]);
+    assert_eq!(exit, 1, "pending fails only when asked");
+}
+
+#[test]
+fn scripts_reports_an_approved_package_whose_script_turned_hostile() {
+    // The case npm's own mechanism cannot catch: `allowScripts` records a name,
+    // not a version, so an approval carries across a release.
+    let dir = std::env::temp_dir().join(format!("pm-appr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let src = fixture("malicious-node");
+    std::fs::create_dir_all(dir.join("node_modules")).unwrap();
+    for f in ["package.json", "package-lock.json"] {
+        std::fs::copy(src.join(f), dir.join(f)).unwrap();
+    }
+    let out = Command::new("cp")
+        .arg("-r")
+        .arg(src.join("node_modules"))
+        .arg(&dir)
+        .output();
+    assert!(out.is_ok());
+    let pkg = dir.join("package.json");
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&pkg).unwrap()).unwrap();
+    v["allowScripts"] = serde_json::json!({ "flatmap-stream": true });
+    std::fs::write(&pkg, v.to_string()).unwrap();
+
+    let (_, out) = run(&["scripts", dir.to_str().unwrap()]);
+    assert!(out.contains("approved"), "got: {out}");
+    assert!(
+        out.contains("looks hostile now"),
+        "the rot must be called out: {out}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn allowlist_lists_npm_script_approvals_too() {
+    // They live in package.json rather than postmortem.conf, but they suppress
+    // the same way — omitting them would understate what was waved through.
+    let dir = std::env::temp_dir().join(format!("pm-appr-list-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("package.json"),
+        r#"{"name":"x","allowScripts":{"bcrypt":true}}"#,
+    )
+    .unwrap();
+    let (exit, out) = run(&["allowlist", dir.to_str().unwrap()]);
+    assert_eq!(exit, 0);
+    assert!(out.contains("allowScripts"), "got: {out}");
+    assert!(out.contains("bcrypt"), "got: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A throwaway git repository.
+fn git_repo(tag: &str) -> PathBuf {
+    let d = std::env::temp_dir().join(format!("pm-git-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let _ = Command::new("git")
+        .arg("init")
+        .arg("-q")
+        .current_dir(&d)
+        .output();
+    d
+}
+
+#[test]
+fn hook_install_status_and_uninstall_round_trip() {
+    let d = git_repo("roundtrip");
+    let (exit, out) = run(&["hook", "install", "--path", d.to_str().unwrap()]);
+    assert_eq!(exit, 0, "got: {out}");
+    assert!(d.join(".git/hooks/pre-commit").exists());
+    // The expectation is set at install time, not buried in docs.
+    assert!(
+        out.contains("does not stop a malicious install script"),
+        "got: {out}"
+    );
+
+    let (_, out) = run(&["hook", "status", "--path", d.to_str().unwrap()]);
+    assert!(out.contains("installed by postmortem"), "got: {out}");
+    assert!(
+        out.contains("no-verify"),
+        "it must not claim to be a control: {out}"
+    );
+
+    let (exit, _) = run(&["hook", "uninstall", "--path", d.to_str().unwrap()]);
+    assert_eq!(exit, 0);
+    assert!(!d.join(".git/hooks/pre-commit").exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn hook_refuses_to_clobber_or_delete_a_foreign_hook() {
+    let d = git_repo("foreign");
+    let p = d.join(".git/hooks/pre-commit");
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    std::fs::write(&p, "#!/bin/sh\necho mine\n").unwrap();
+
+    let (exit, out) = run(&["hook", "install", "--path", d.to_str().unwrap()]);
+    assert_ne!(exit, 0, "an existing hook is somebody's work: {out}");
+    assert_eq!(
+        std::fs::read_to_string(&p).unwrap(),
+        "#!/bin/sh\necho mine\n"
+    );
+
+    let (exit, _) = run(&["hook", "uninstall", "--path", d.to_str().unwrap()]);
+    assert_ne!(exit, 0, "uninstall must not delete a file we did not write");
+    assert!(p.exists());
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn watch_rejects_a_path_it_cannot_resolve() {
+    // The loop itself only ends on a change, so it is covered by unit tests in
+    // `src/watch.rs`; what is worth pinning here is that the command validates
+    // before entering a loop the user would have to interrupt.
+    let out = Command::new(bin())
+        .args(["watch", "/nonexistent-watch-dir-xyz", "--interval", "1"])
+        .output()
+        .expect("postmortem binary did not run");
+    assert_ne!(out.status.code(), Some(0));
+}
+
+#[test]
+fn the_overview_lists_every_command() {
+    // A help text that drifts behind the CLI is worse than none: it tells people
+    // a capability does not exist. Pin it against clap's own command list.
+    let (exit, overview) = run_bare(&["help"]);
+    assert_eq!(exit, 0);
+    for c in [
+        "scan", "tree", "audit", "system", "why", "timeline", "diff", "scripts", "fix",
+        "licenses", "allowlist", "sbom", "hook", "watch", "cache",
+    ] {
+        assert!(overview.contains(c), "`{c}` missing from the overview");
+    }
+    // And every command clap knows about is in there.
+    let (_, usage) = run_bare(&["--help"]);
+    let listed: Vec<&str> = usage
+        .lines()
+        .skip_while(|l| !l.starts_with("Commands:"))
+        .skip(1)
+        .take_while(|l| l.starts_with("  ") && !l.trim_start().starts_with('-'))
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    assert!(listed.len() >= 15, "expected clap to list the commands, got {listed:?}");
+    for c in &listed {
+        assert!(overview.contains(c), "`{c}` is a real command but absent from `help`");
+    }
+}
+
+/// Run without the `--no-progress` the other helper appends.
+fn run_bare(args: &[&str]) -> (i32, String) {
+    let out = Command::new(bin()).args(args).output().expect("ran");
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    (out.status.code().unwrap_or(-1), strip_ansi(&s))
 }

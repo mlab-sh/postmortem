@@ -12,6 +12,9 @@
 - [diff](Diff)
 - [sbom](Sbom)
 - [system](System)
+- [scripts](Install-Time)
+- [hook](Install-Time)
+- [watch](Install-Time)
 - [timeline](Timeline)
 - [allowlist](Allowlist)
 - [cache](Cache)
@@ -34,6 +37,7 @@
 - [apk](Apk)
 
 **Concepts**
+- [Install-time execution](Install-Time)
 - [Typosquatting](Typosquatting)
 - [Dependency scopes](Dependency-Scopes)
 - [Source-code scanning](Source-Code-Scanning)

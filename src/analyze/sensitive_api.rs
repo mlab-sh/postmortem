@@ -222,7 +222,9 @@ impl Lang {
 
 pub fn scan_dir(root: &Path, out: &mut Vec<Finding>, lang: Lang) {
     for path in util::walk_files(root, lang.exts()) {
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         let mut hit: HashSet<&'static str> = HashSet::new();
         for api in lang.apis() {
             if text.contains(api) {
@@ -290,7 +292,11 @@ mod tests {
         assert!(d.contains("chmod +x"), "{d}");
         assert!(d.contains("eval "), "{d}");
 
-        let lua = scan_one("s.lua", "os.execute('id')\nlocal f = loadstring(payload)\n", Lang::Lua);
+        let lua = scan_one(
+            "s.lua",
+            "os.execute('id')\nlocal f = loadstring(payload)\n",
+            Lang::Lua,
+        );
         let d = &lua[0].detail;
         assert!(d.contains("os.execute"), "{d}");
         assert!(d.contains("loadstring"), "{d}");

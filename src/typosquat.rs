@@ -59,7 +59,12 @@ impl Corpus {
         let stripped = names.iter().map(|n| strip_sep(n)).collect();
         let folded = names.iter().map(|n| homoglyph(n)).collect();
         let set = names.iter().copied().collect();
-        Corpus { names, stripped, folded, set }
+        Corpus {
+            names,
+            stripped,
+            folded,
+            set,
+        }
     }
 }
 
@@ -147,7 +152,11 @@ fn check_flat(name: &str, c: &Corpus) -> Option<Match> {
     // never legitimate; flag it, naming the popular package it mimics when the
     // ASCII skeleton matches one.
     if let Some(skel) = confusable_of(n) {
-        let target = c.set.get(skel.as_str()).map(|s| s.to_string()).unwrap_or(skel);
+        let target = c
+            .set
+            .get(skel.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or(skel);
         return Some(hit(&target, "unicode confusable"));
     }
 
@@ -199,7 +208,11 @@ fn check_two_part(p: &str, c: &Corpus) -> Option<Match> {
         return None;
     }
     if let Some(skel) = confusable_of(p) {
-        let target = c.set.get(skel.as_str()).map(|s| s.to_string()).unwrap_or(skel);
+        let target = c
+            .set
+            .get(skel.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or(skel);
         return Some(hit(&target, "unicode confusable"));
     }
 
@@ -216,7 +229,9 @@ fn check_two_part(p: &str, c: &Corpus) -> Option<Match> {
         if p_homo == c.folded[i] {
             return Some(hit(t, "homoglyph"));
         }
-        let Some((tv, tn)) = t.split_once('/') else { continue };
+        let Some((tv, tn)) = t.split_once('/') else {
+            continue;
+        };
         // Same package name, impostor vendor — the squat that matters here.
         if tn == pn && tv != pv {
             return Some(hit(t, "vendor variant"));
@@ -235,12 +250,17 @@ fn check_two_part(p: &str, c: &Corpus) -> Option<Match> {
 }
 
 fn hit(target: &str, kind: &'static str) -> Match {
-    Match { target: target.to_string(), kind }
+    Match {
+        target: target.to_string(),
+        kind,
+    }
 }
 
 /// Remove `-`, `_`, `.` so `cross-env`, `cross_env`, `crossenv` collapse.
 fn strip_sep(s: &str) -> String {
-    s.chars().filter(|c| !matches!(c, '-' | '_' | '.')).collect()
+    s.chars()
+        .filter(|c| !matches!(c, '-' | '_' | '.'))
+        .collect()
 }
 
 /// Map common digit/letter look-alikes to a canonical letter.
@@ -268,12 +288,36 @@ fn fold_glyph(c: char) -> char {
 fn deconfuse(c: char) -> char {
     match c {
         // Cyrillic → Latin.
-        'а' => 'a', 'е' => 'e', 'о' => 'o', 'р' => 'p', 'с' => 'c', 'у' => 'y',
-        'х' => 'x', 'ѕ' => 's', 'і' | 'ї' => 'i', 'ј' => 'j', 'ԁ' => 'd', 'һ' => 'h',
-        'ӏ' => 'l', 'ո' => 'n', 'ԛ' => 'q', 'ѡ' => 'w', 'ъ' => 'b', 'м' => 'm', 'т' => 't',
+        'а' => 'a',
+        'е' => 'e',
+        'о' => 'o',
+        'р' => 'p',
+        'с' => 'c',
+        'у' => 'y',
+        'х' => 'x',
+        'ѕ' => 's',
+        'і' | 'ї' => 'i',
+        'ј' => 'j',
+        'ԁ' => 'd',
+        'һ' => 'h',
+        'ӏ' => 'l',
+        'ո' => 'n',
+        'ԛ' => 'q',
+        'ѡ' => 'w',
+        'ъ' => 'b',
+        'м' => 'm',
+        'т' => 't',
         // Greek → Latin.
-        'ο' => 'o', 'α' => 'a', 'ν' => 'v', 'ρ' => 'p', 'τ' => 't', 'ι' => 'i',
-        'κ' => 'k', 'μ' => 'u', 'χ' => 'x', 'ε' => 'e',
+        'ο' => 'o',
+        'α' => 'a',
+        'ν' => 'v',
+        'ρ' => 'p',
+        'τ' => 't',
+        'ι' => 'i',
+        'κ' => 'k',
+        'μ' => 'u',
+        'χ' => 'x',
+        'ε' => 'e',
         other => other,
     }
 }
@@ -368,14 +412,19 @@ pub fn check_module_path(path: &str) -> Option<Match> {
 
 /// A trailing path element that's a Go major-version marker (`v2`, `v10`).
 fn is_major(seg: &str) -> bool {
-    seg.strip_prefix('v').is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    seg.strip_prefix('v')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Split a module path into `(host, owner, repo)` (repo empty when the path has
 /// only two segments, e.g. `k8s.io/client-go`).
 fn split_path(p: &str) -> (&str, &str, &str) {
     let mut it = p.splitn(3, '/');
-    (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""))
+    (
+        it.next().unwrap_or(""),
+        it.next().unwrap_or(""),
+        it.next().unwrap_or(""),
+    )
 }
 
 /// Is `candidate` a squat of popular owner `pop`? A short added suffix
@@ -456,7 +505,10 @@ mod tests {
     #[test]
     fn flags_unicode_confusable() {
         // Cyrillic 'е' (U+0435) in "rеact" → skeleton "react" (a popular pkg).
-        assert_eq!(npm_check("r\u{0435}act").unwrap().kind, "unicode confusable");
+        assert_eq!(
+            npm_check("r\u{0435}act").unwrap().kind,
+            "unicode confusable"
+        );
         // A confusable name not in the corpus still flags (mixed-script).
         assert!(npm_check("n\u{0435}thereum").is_some());
         // Pure-ASCII legitimate names are untouched.
@@ -468,7 +520,9 @@ mod tests {
     fn flags_go_owner_and_path_squats() {
         // boltdb-go/bolt borrows boltdb/bolt via an owner suffix.
         assert_eq!(
-            check_module_path("github.com/boltdb-go/bolt").unwrap().target,
+            check_module_path("github.com/boltdb-go/bolt")
+                .unwrap()
+                .target,
             "github.com/boltdb/bolt"
         );
         assert!(check_module_path("github.com/boltdb/bolt").is_none()); // the real one
@@ -481,9 +535,18 @@ mod tests {
     #[test]
     fn pypi_squats_are_flagged() {
         // PyPI is the most typosquatted registry; these are its classic shapes.
-        assert_eq!(check("requsts", Ecosystem::Python).unwrap().target, "requests");
-        assert_eq!(check("urllib", Ecosystem::Python).unwrap().target, "urllib3");
-        assert!(check("requests", Ecosystem::Python).is_none(), "the real one");
+        assert_eq!(
+            check("requsts", Ecosystem::Python).unwrap().target,
+            "requests"
+        );
+        assert_eq!(
+            check("urllib", Ecosystem::Python).unwrap().target,
+            "urllib3"
+        );
+        assert!(
+            check("requests", Ecosystem::Python).is_none(),
+            "the real one"
+        );
         assert!(check("numpy", Ecosystem::Python).is_none());
     }
 
@@ -501,7 +564,10 @@ mod tests {
     #[test]
     fn rubygems_squats_are_flagged() {
         assert!(check("nokogiri", Ecosystem::Ruby).is_none(), "the real gem");
-        assert_eq!(check("nokogri", Ecosystem::Ruby).unwrap().target, "nokogiri");
+        assert_eq!(
+            check("nokogri", Ecosystem::Ruby).unwrap().target,
+            "nokogiri"
+        );
         assert!(check("rails", Ecosystem::Ruby).is_none());
     }
 
@@ -512,7 +578,10 @@ mod tests {
         let m = check("evilcorp/monolog", Ecosystem::Php).unwrap();
         assert_eq!(m.kind, "vendor variant");
         assert!(m.target.ends_with("/monolog"), "got {}", m.target);
-        assert!(check("monolog/monolog", Ecosystem::Php).is_none(), "the real one");
+        assert!(
+            check("monolog/monolog", Ecosystem::Php).is_none(),
+            "the real one"
+        );
     }
 
     #[test]
@@ -532,11 +601,20 @@ mod tests {
         // `requests` IS the canonical PyPI package, so PyPI must stay silent —
         // while on npm it is one edit from npm's own `request`, so npm flags it
         // and names *npm's* package, never PyPI's.
-        assert!(check("requests", Ecosystem::Python).is_none(), "requests is genuine on PyPI");
-        assert_eq!(check("requests", Ecosystem::Node).unwrap().target, "request");
+        assert!(
+            check("requests", Ecosystem::Python).is_none(),
+            "requests is genuine on PyPI"
+        );
+        assert_eq!(
+            check("requests", Ecosystem::Node).unwrap().target,
+            "request"
+        );
 
         // And a crate name is not judged against Python's list.
-        assert!(check("serde", Ecosystem::Rust).is_none(), "serde is genuine on crates.io");
+        assert!(
+            check("serde", Ecosystem::Rust).is_none(),
+            "serde is genuine on crates.io"
+        );
         let py = check("serde", Ecosystem::Python);
         assert!(
             py.is_none_or(|m| !crates().set.contains(m.target.as_str())
@@ -549,7 +627,12 @@ mod tests {
     fn ecosystems_without_a_corpus_never_match() {
         // OS packages and Java have no list; they must return None rather than
         // borrow another registry's.
-        for eco in [Ecosystem::Java, Ecosystem::Brew, Ecosystem::Apt, Ecosystem::Nix] {
+        for eco in [
+            Ecosystem::Java,
+            Ecosystem::Brew,
+            Ecosystem::Apt,
+            Ecosystem::Nix,
+        ] {
             assert!(check("lodahs", eco).is_none(), "{eco:?} has no corpus");
         }
     }
@@ -565,10 +648,25 @@ mod tests {
             ("rubygems", rubygems()),
             ("packagist", packagist()),
         ] {
-            assert!(c.names.len() > 500, "{name} corpus is too small: {}", c.names.len());
-            assert_eq!(c.names.len(), c.stripped.len(), "{name} derived forms misaligned");
-            assert_eq!(c.names.len(), c.folded.len(), "{name} derived forms misaligned");
-            assert!(!c.names.iter().any(|n| n.is_empty()), "{name} has an empty entry");
+            assert!(
+                c.names.len() > 500,
+                "{name} corpus is too small: {}",
+                c.names.len()
+            );
+            assert_eq!(
+                c.names.len(),
+                c.stripped.len(),
+                "{name} derived forms misaligned"
+            );
+            assert_eq!(
+                c.names.len(),
+                c.folded.len(),
+                "{name} derived forms misaligned"
+            );
+            assert!(
+                !c.names.iter().any(|n| n.is_empty()),
+                "{name} has an empty entry"
+            );
             assert!(
                 !c.names.iter().any(|n| n.starts_with('#')),
                 "{name} leaked a comment line into the corpus"

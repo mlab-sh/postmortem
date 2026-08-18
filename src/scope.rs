@@ -57,8 +57,12 @@ pub fn propagate(deps: &mut [Dependency]) {
     // scope actually rises, so each node is processed at most three times (once
     // per scope level) — cycles in the graph terminate on their own.
     while let Some(node) = queue.pop_front() {
-        let Some(scope) = best.get(&node).copied() else { continue };
-        let Some(kids) = children.get(&node) else { continue };
+        let Some(scope) = best.get(&node).copied() else {
+            continue;
+        };
+        let Some(kids) = children.get(&node) else {
+            continue;
+        };
         for kid in kids.clone() {
             let improved = match best.get(&kid) {
                 Some(cur) if *cur >= scope => false,
@@ -89,9 +93,14 @@ pub fn apply_omit(deps: Vec<Dependency>, omit: &[Scope]) -> Vec<Dependency> {
     if omit.is_empty() {
         return deps;
     }
-    let mut kept: Vec<Dependency> = deps.into_iter().filter(|d| !omit.contains(&d.scope)).collect();
-    let alive: HashSet<DepRef> =
-        kept.iter().map(|d| (d.name.clone(), d.version.clone())).collect();
+    let mut kept: Vec<Dependency> = deps
+        .into_iter()
+        .filter(|d| !omit.contains(&d.scope))
+        .collect();
+    let alive: HashSet<DepRef> = kept
+        .iter()
+        .map(|d| (d.name.clone(), d.version.clone()))
+        .collect();
     for d in &mut kept {
         d.parents.retain(|p| alive.contains(p));
     }
@@ -120,7 +129,10 @@ mod tests {
             license_source: crate::model::LicenseSource::Unknown,
             resolved_url: None,
             integrity: None,
-            parents: parents.iter().map(|p| ((*p).to_string(), "1.0.0".to_string())).collect(),
+            parents: parents
+                .iter()
+                .map(|p| ((*p).to_string(), "1.0.0".to_string()))
+                .collect(),
         }
     }
 
@@ -136,8 +148,16 @@ mod tests {
             dep("supports-color", false, Scope::Prod, &["jest-worker"]),
         ];
         propagate(&mut deps);
-        assert_eq!(scope_of(&deps, "jest-worker"), Scope::Dev, "one hop below a dev root");
-        assert_eq!(scope_of(&deps, "supports-color"), Scope::Dev, "two hops below");
+        assert_eq!(
+            scope_of(&deps, "jest-worker"),
+            Scope::Dev,
+            "one hop below a dev root"
+        );
+        assert_eq!(
+            scope_of(&deps, "supports-color"),
+            Scope::Dev,
+            "two hops below"
+        );
     }
 
     #[test]
@@ -149,9 +169,16 @@ mod tests {
             dep("ms", false, Scope::Prod, &["jest", "express"]),
         ];
         propagate(&mut deps);
-        assert_eq!(scope_of(&deps, "ms"), Scope::Prod, "a dev path must not hide a prod package");
+        assert_eq!(
+            scope_of(&deps, "ms"),
+            Scope::Prod,
+            "a dev path must not hide a prod package"
+        );
         let kept = apply_omit(deps, &[Scope::Dev]);
-        assert!(kept.iter().any(|d| d.name == "ms"), "--omit dev must keep it");
+        assert!(
+            kept.iter().any(|d| d.name == "ms"),
+            "--omit dev must keep it"
+        );
     }
 
     #[test]

@@ -36,7 +36,9 @@ impl OmitSet {
 #[command(
     name = "postmortem",
     version,
-    about = "Dependency scanner (Node / Python / Rust). Static analysis, no network by default.",
+    about = "Supply-chain security scanner for the code you depend on. Seven ecosystems \
+plus your machine's OS packages. No telemetry; offline unless you pass --online or --vulns.",
+    after_help = "Run `postmortem help` for an overview grouped by what each command answers.",
     subcommand_required = true,
     arg_required_else_help = true,
     disable_help_subcommand = true
@@ -80,6 +82,16 @@ pub enum Command {
     /// minimum upgrade per package, and where to make it.
     Fix(FixArgs),
 
+    /// Manage the git pre-commit hook that scans staged dependency changes.
+    Hook(HookArgs),
+
+    /// Re-scan whenever a lockfile changes — a feedback loop while you work.
+    Watch(WatchArgs),
+
+    /// List the dependencies that execute code when you install them, whether
+    /// each is approved, and what its script actually does.
+    Scripts(ScriptsArgs),
+
     /// Lay a package's release history out in order: when it changed hands,
     /// when an install script appeared, when its repository moved.
     Timeline(TimelineArgs),
@@ -99,6 +111,96 @@ pub enum Command {
 
     /// Show an overview of postmortem: what it does and the available commands.
     Help,
+}
+
+/// Arguments for `postmortem hook <action>`.
+#[derive(Args, Debug)]
+pub struct HookArgs {
+    #[command(subcommand)]
+    pub action: HookAction,
+
+    /// Repository to operate on. `global` so it works on either side of the
+    /// action word — `hook --path x status` and `hook status --path x` both.
+    #[arg(long, default_value = ".", global = true)]
+    pub path: PathBuf,
+
+    /// Accepted for symmetry with the other commands; this one has nothing to
+    /// animate.
+    #[arg(long, global = true)]
+    pub no_progress: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HookAction {
+    /// Write the pre-commit hook.
+    Install(HookInstallArgs),
+    /// Remove it, if postmortem wrote it.
+    Uninstall,
+    /// Report what the pre-commit slot currently holds.
+    Status,
+}
+
+#[derive(Args, Debug)]
+pub struct HookInstallArgs {
+    /// The postmortem command line the hook runs. Keep it offline — a hook that
+    /// reaches the network on every commit is a hook that gets deleted.
+    #[arg(long, default_value = "scan . --severity high --no-progress")]
+    pub run: String,
+
+    /// Replace a hook postmortem did not write. Refused by default: an existing
+    /// hook is somebody's work.
+    #[arg(long)]
+    pub force: bool,
+}
+
+/// Arguments for `postmortem watch <path>`.
+#[derive(Args, Debug)]
+pub struct WatchArgs {
+    /// Project directory to watch.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+
+    /// Seconds between checks. Polling costs a `stat` per lockfile, so this can
+    /// be short without being expensive.
+    #[arg(long, default_value_t = 2)]
+    pub interval: u64,
+
+    /// The postmortem command line to run on each change.
+    #[arg(long, default_value = "scan . --severity high")]
+    pub run: String,
+
+    /// Stop after this many runs. Mostly for tests and scripted use.
+    #[arg(long)]
+    pub max_runs: Option<u32>,
+}
+
+/// Arguments for `postmortem scripts <path>`.
+#[derive(Args, Debug)]
+pub struct ScriptsArgs {
+    /// Project directory to inventory.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+
+    /// Omit a dependency set. Repeatable — see the dependency-scopes docs.
+    #[arg(long, value_enum)]
+    pub omit: Vec<OmitSet>,
+
+    /// Emit the inventory as JSON instead of the terminal view.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Write output to file. Pass `-` to force stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Exit 1 when a script looks hostile, or when any is awaiting approval.
+    /// Off by default: an inventory is a report until you ask it to gate.
+    #[arg(long)]
+    pub fail_on_pending: bool,
+
+    /// Disable the animated progress UI.
+    #[arg(long)]
+    pub no_progress: bool,
 }
 
 /// Arguments for `postmortem timeline <package>`.

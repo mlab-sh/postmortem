@@ -1,8 +1,8 @@
 //! Fedora/RHEL `dnf` / `rpm` backend.
 
-use super::*;
 use super::privilege::{find_setuid_files, persistence_signals, verify_line_is_tamper};
 use super::recipe::analyze_recipe;
+use super::*;
 
 // --- dnf / rpm backend -------------------------------------------------------
 
@@ -51,8 +51,10 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
         .collect();
 
     let names: std::collections::HashSet<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
-    let version_of: HashMap<&str, &str> =
-        nodes.iter().map(|n| (n.name.as_str(), n.version.as_str())).collect();
+    let version_of: HashMap<&str, &str> = nodes
+        .iter()
+        .map(|n| (n.name.as_str(), n.version.as_str()))
+        .collect();
     let userinstalled = dnf_userinstalled();
     let mut parents = dnf_edges(&names, &version_of);
     let scripted = dnf_scripted();
@@ -78,7 +80,11 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
         let repo = from_repo.get(&n.name).map(String::as_str);
         let third_party = match dnf_provenance_label(repo, &n.vendor) {
             Some(label) => {
-                push_signal(&mut signals, &n.name, SysSignal::new(label, Severity::Medium, 30));
+                push_signal(
+                    &mut signals,
+                    &n.name,
+                    SysSignal::new(label, Severity::Medium, 30),
+                );
                 true
             }
             None => false,
@@ -86,7 +92,11 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
         // Unsigned = no header signature (tampered / untrusted origin), unless the
         // whole image is unsigned.
         if !mostly_unsigned && unsigned.contains(&n.name) {
-            push_signal(&mut signals, &n.name, SysSignal::new("unsigned", Severity::High, 40));
+            push_signal(
+                &mut signals,
+                &n.name,
+                SysSignal::new("unsigned", Severity::High, 40),
+            );
         }
         // Scriptlets run code at install/upgrade/erase. Surfaced for all; analyzed
         // for the untrusted (third-party) ones, whose recipes aren't review-gated.
@@ -99,7 +109,11 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
             if third_party {
                 // rpm scriptlets are usually shell but may be Lua (`-p <lua>`);
                 // analyze with the matching language.
-                let ext = if dnf_script_is_lua(&n.name) { "lua" } else { "sh" };
+                let ext = if dnf_script_is_lua(&n.name) {
+                    "lua"
+                } else {
+                    "sh"
+                };
                 for sig in analyze_recipe(&n.name, &dnf_scripts(&n.name), ext) {
                     push_signal(&mut signals, &n.name, sig);
                 }
@@ -151,19 +165,31 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
     }
 
     for (name, (old, new)) in dnf_outdated() {
-        signals.entry(name).or_default().push(outdated_signal(&old, &new));
+        signals
+            .entry(name)
+            .or_default()
+            .push(outdated_signal(&old, &new));
     }
 
     // Trust & integrity caveats (repo signature/transport posture + tampered files).
     let mut warnings = dnf_trust_warnings();
     let modified = dnf_modified_files();
     if modified > 0 {
-        warnings.push(format!("{modified} installed file(s) modified since install (rpm -Va)"));
+        warnings.push(format!(
+            "{modified} installed file(s) modified since install (rpm -Va)"
+        ));
     }
 
     let direct = deps.iter().filter(|d| d.direct).count();
     let summary = format!("{} package(s) ({direct} user-installed)", deps.len());
-    Ok(Inventory { manager: "dnf", deps, repos: dnf_repos(), signals, summary, notes: warnings })
+    Ok(Inventory {
+        manager: "dnf",
+        deps,
+        repos: dnf_repos(),
+        signals,
+        summary,
+        notes: warnings,
+    })
 }
 
 /// Installed packages' origin repo, `name → repo id`, via `dnf repoquery
@@ -172,7 +198,12 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
 /// falls back to the vendor.
 fn dnf_from_repo() -> HashMap<String, String> {
     let Ok(out) = Command::new("dnf")
-        .args(["repoquery", "--installed", "--qf", "%{name}\t%{from_repo}\n"])
+        .args([
+            "repoquery",
+            "--installed",
+            "--qf",
+            "%{name}\t%{from_repo}\n",
+        ])
         .output()
     else {
         return HashMap::new();
@@ -231,8 +262,13 @@ fn rpm_file_index() -> HashMap<String, Vec<String>> {
     };
     let mut idx: HashMap<String, Vec<String>> = HashMap::new();
     for line in text.lines() {
-        let Some((name, files)) = line.split_once('\t') else { continue };
-        let list = files.split(',').filter(|f| !f.is_empty()).map(str::to_string);
+        let Some((name, files)) = line.split_once('\t') else {
+            continue;
+        };
+        let list = files
+            .split(',')
+            .filter(|f| !f.is_empty())
+            .map(str::to_string);
         idx.entry(name.to_string()).or_default().extend(list);
     }
     idx
@@ -245,9 +281,13 @@ fn dnf_trust_warnings() -> Vec<String> {
     let (mut nogpg, mut http) = (0usize, 0usize);
     if let Ok(dir) = std::fs::read_dir("/etc/yum.repos.d") {
         for entry in dir.flatten() {
-            let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
             for section in text.split('[').skip(1) {
-                let Some((id, body)) = section.split_once(']') else { continue };
+                let Some((id, body)) = section.split_once(']') else {
+                    continue;
+                };
                 if id.trim().is_empty() {
                     continue;
                 }
@@ -264,7 +304,9 @@ fn dnf_trust_warnings() -> Vec<String> {
                 }
                 if body.lines().any(|l| {
                     let l = l.trim();
-                    (l.starts_with("baseurl") || l.starts_with("metalink") || l.starts_with("mirrorlist"))
+                    (l.starts_with("baseurl")
+                        || l.starts_with("metalink")
+                        || l.starts_with("mirrorlist"))
                         && l.contains("http://")
                 }) {
                     http += 1;
@@ -274,10 +316,14 @@ fn dnf_trust_warnings() -> Vec<String> {
     }
     let mut w = Vec::new();
     if nogpg > 0 {
-        w.push(format!("{nogpg} dnf repo(s) with gpgcheck=0 (signature checking disabled)"));
+        w.push(format!(
+            "{nogpg} dnf repo(s) with gpgcheck=0 (signature checking disabled)"
+        ));
     }
     if http > 0 {
-        w.push(format!("{http} dnf repo(s) over http (no transport encryption)"));
+        w.push(format!(
+            "{http} dnf repo(s) over http (no transport encryption)"
+        ));
     }
     w
 }
@@ -289,14 +335,23 @@ fn dnf_modified_files() -> usize {
         return 0;
     };
     // `rpm -Va` exits non-zero precisely when it finds discrepancies.
-    String::from_utf8_lossy(&out.stdout).lines().filter(|l| verify_line_is_tamper(l)).count()
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| verify_line_is_tamper(l))
+        .count()
 }
 
 /// `rpm -qa --qf <fmt>` → stdout as a string. Errors if rpm isn't runnable.
 fn rpm_qa(fmt: &str) -> Result<String> {
-    let out = Command::new("rpm").args(["-qa", "--qf", fmt]).output().context("running `rpm -qa`")?;
+    let out = Command::new("rpm")
+        .args(["-qa", "--qf", fmt])
+        .output()
+        .context("running `rpm -qa`")?;
     if !out.status.success() {
-        anyhow::bail!("`rpm -qa` failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        anyhow::bail!(
+            "`rpm -qa` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -331,16 +386,22 @@ fn dnf_edges(
     let mut provider: HashMap<String, String> = HashMap::new();
     if let Ok(text) = rpm_qa("%{NAME}\t[%{PROVIDENAME},]\n") {
         for line in text.lines() {
-            let Some((name, caps)) = line.split_once('\t') else { continue };
+            let Some((name, caps)) = line.split_once('\t') else {
+                continue;
+            };
             for cap in caps.split(',').filter(|c| !c.is_empty()) {
-                provider.entry(cap.to_string()).or_insert_with(|| name.to_string());
+                provider
+                    .entry(cap.to_string())
+                    .or_insert_with(|| name.to_string());
             }
         }
     }
     let mut parents: HashMap<String, Vec<DepRef>> = HashMap::new();
     if let Ok(text) = rpm_qa("%{NAME}\t[%{REQUIRENAME},]\n") {
         for line in text.lines() {
-            let Some((name, caps)) = line.split_once('\t') else { continue };
+            let Some((name, caps)) = line.split_once('\t') else {
+                continue;
+            };
             if !names.contains(name) {
                 continue;
             }
@@ -349,12 +410,17 @@ fn dnf_edges(
                 if cap.starts_with("rpmlib(") {
                     continue;
                 }
-                let Some(child) = provider.get(cap) else { continue };
+                let Some(child) = provider.get(cap) else {
+                    continue;
+                };
                 // A package depends on the provider: the provider gets this as a
                 // parent. Skip self-edges and duplicate parents.
                 if child != name && seen.insert(child.clone()) {
                     let ver = version_of.get(name).copied().unwrap_or("").to_string();
-                    parents.entry(child.clone()).or_default().push((name.to_string(), ver));
+                    parents
+                        .entry(child.clone())
+                        .or_default()
+                        .push((name.to_string(), ver));
                 }
             }
         }
@@ -380,7 +446,12 @@ fn dnf_scripted() -> std::collections::HashSet<String> {
 /// The concatenated scriptlet bodies of one package (for static analysis).
 fn dnf_scripts(name: &str) -> String {
     Command::new("rpm")
-        .args(["-q", "--qf", "%{PREIN}\n%{POSTIN}\n%{PREUN}\n%{POSTUN}\n", name])
+        .args([
+            "-q",
+            "--qf",
+            "%{PREIN}\n%{POSTIN}\n%{PREUN}\n%{POSTUN}\n",
+            name,
+        ])
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -408,7 +479,9 @@ fn dnf_unsigned() -> std::collections::HashSet<String> {
 /// installed version here, so only the available one is known. Best-effort: needs
 /// repo metadata, empty otherwise. Exit code 100 means updates are available.
 fn dnf_outdated() -> HashMap<String, (String, String)> {
-    let Ok(out) = Command::new("dnf").args(["--cacheonly", "check-update", "--qf", "%{name}\t%{evr}\n"]).output()
+    let Ok(out) = Command::new("dnf")
+        .args(["--cacheonly", "check-update", "--qf", "%{name}\t%{evr}\n"])
+        .output()
     else {
         return HashMap::new();
     };
@@ -435,10 +508,14 @@ fn dnf_repos() -> Vec<Repo> {
     };
     let mut repos = Vec::new();
     for entry in dir.flatten() {
-        let Ok(text) = std::fs::read_to_string(entry.path()) else { continue };
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
         // Each `[id]` starts a section; `enabled=0` (default is on) drops it.
         for section in text.split('[').skip(1) {
-            let Some((id, body)) = section.split_once(']') else { continue };
+            let Some((id, body)) = section.split_once(']') else {
+                continue;
+            };
             let id = id.trim();
             let enabled = !body
                 .lines()
@@ -517,7 +594,10 @@ fn dnf_foreign_arch() -> HashMap<String, String> {
     let mut arches: HashMap<String, Vec<String>> = HashMap::new();
     for line in text.lines() {
         if let Some((name, arch)) = line.split_once('\t') {
-            arches.entry(name.to_string()).or_default().push(arch.to_string());
+            arches
+                .entry(name.to_string())
+                .or_default()
+                .push(arch.to_string());
         }
     }
     arches
@@ -554,9 +634,20 @@ fn dnf_orphans() -> std::collections::HashSet<String> {
 /// their debug/source/testing variants.
 fn is_official_dnf_repo(id: &str) -> bool {
     const OFFICIAL: &[&str] = &[
-        "fedora", "updates", "rawhide", "fedora-modular", "updates-modular",
-        "fedora-cisco-openh264", "anaconda", "baseos", "appstream", "crb",
-        "powertools", "extras", "rhel", "epel",
+        "fedora",
+        "updates",
+        "rawhide",
+        "fedora-modular",
+        "updates-modular",
+        "fedora-cisco-openh264",
+        "anaconda",
+        "baseos",
+        "appstream",
+        "crb",
+        "powertools",
+        "extras",
+        "rhel",
+        "epel",
     ];
     // Strip the debug / source / testing variant suffixes before matching.
     let base = id
@@ -565,8 +656,6 @@ fn is_official_dnf_repo(id: &str) -> bool {
         .trim_end_matches("-testing");
     OFFICIAL.contains(&base) || base.starts_with("rhel-") || base.starts_with("epel")
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -604,11 +693,22 @@ mod tests {
 
     #[test]
     fn dnf_official_repo_classifies() {
-        for id in ["fedora", "updates", "updates-testing", "fedora-source", "rhel-9-baseos", "epel"]
-        {
+        for id in [
+            "fedora",
+            "updates",
+            "updates-testing",
+            "fedora-source",
+            "rhel-9-baseos",
+            "epel",
+        ] {
             assert!(is_official_dnf_repo(id), "{id} should be official");
         }
-        for id in ["rpmfusion-free", "copr:someuser:proj", "docker-ce", "google-chrome"] {
+        for id in [
+            "rpmfusion-free",
+            "copr:someuser:proj",
+            "docker-ce",
+            "google-chrome",
+        ] {
             assert!(!is_official_dnf_repo(id), "{id} should be third-party");
         }
     }

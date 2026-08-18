@@ -63,12 +63,20 @@ pub fn parse_lockfile(path: &Path, manifest: Option<&Path>) -> Result<Vec<Depend
     // So the scope here is authoritative rather than a seed — propagation later
     // can only confirm it.
     let dev_count = lock.packages_dev.len();
-    let all: Vec<&ComposerPkg> = lock.packages.iter().chain(lock.packages_dev.iter()).collect();
+    let all: Vec<&ComposerPkg> = lock
+        .packages
+        .iter()
+        .chain(lock.packages_dev.iter())
+        .collect();
     let prod_count = all.len() - dev_count;
 
     let mut out = Vec::with_capacity(all.len());
     for (idx, pkg) in all.iter().enumerate() {
-        let scope = if idx < prod_count { Scope::Prod } else { Scope::Dev };
+        let scope = if idx < prod_count {
+            Scope::Prod
+        } else {
+            Scope::Dev
+        };
         let licenses = crate::license::normalize_list(&pkg.license);
         let parents: Vec<_> = all
             .iter()
@@ -195,7 +203,12 @@ mod tests {
         assert!(psr.parents.iter().any(|(n, _)| n == "monolog/monolog"));
         // No manifest → roots (nobody requires them) are direct.
         assert!(!psr.direct, "psr/log is required by monolog");
-        assert!(deps.iter().find(|d| d.name == "monolog/monolog").unwrap().direct);
+        assert!(
+            deps.iter()
+                .find(|d| d.name == "monolog/monolog")
+                .unwrap()
+                .direct
+        );
     }
 
     #[test]
@@ -206,8 +219,18 @@ mod tests {
             r#"{ "require": { "php": ">=8.0", "monolog/monolog": "^2.8" }, "require-dev": { "phpunit/phpunit": "^9.5" } }"#,
         );
         let deps = parse_lockfile(&lock, Some(&manifest)).unwrap();
-        assert!(deps.iter().find(|d| d.name == "monolog/monolog").unwrap().direct);
-        assert!(deps.iter().find(|d| d.name == "phpunit/phpunit").unwrap().direct);
+        assert!(
+            deps.iter()
+                .find(|d| d.name == "monolog/monolog")
+                .unwrap()
+                .direct
+        );
+        assert!(
+            deps.iter()
+                .find(|d| d.name == "phpunit/phpunit")
+                .unwrap()
+                .direct
+        );
         assert!(!deps.iter().find(|d| d.name == "psr/log").unwrap().direct);
     }
 
@@ -242,7 +265,11 @@ mod tests {
         let scope = |n: &str| deps.iter().find(|d| d.name == n).unwrap().scope;
         assert_eq!(scope("app/core"), Scope::Prod);
         assert_eq!(scope("phpunit/phpunit"), Scope::Dev);
-        assert_eq!(scope("sebastian/diff"), Scope::Dev, "a transitive of a dev package");
+        assert_eq!(
+            scope("sebastian/diff"),
+            Scope::Dev,
+            "a transitive of a dev package"
+        );
     }
 
     #[test]
@@ -260,11 +287,18 @@ mod tests {
         );
         let deps = parse_lockfile(&lock, None).unwrap();
         let get = |n: &str| deps.iter().find(|d| d.name == n).unwrap();
-        assert_eq!(get("a/one").licenses, vec![License::Id { value: "MIT".into() }]);
+        assert_eq!(
+            get("a/one").licenses,
+            vec![License::Id {
+                value: "MIT".into()
+            }]
+        );
         assert_eq!(get("a/one").license_source, LicenseSource::Lockfile);
         assert_eq!(
             get("a/two").licenses,
-            vec![License::Expression { value: "MIT OR Apache-2.0".into() }],
+            vec![License::Expression {
+                value: "MIT OR Apache-2.0".into()
+            }],
             "composer's array means alternatives"
         );
         assert!(get("a/none").licenses.is_empty());

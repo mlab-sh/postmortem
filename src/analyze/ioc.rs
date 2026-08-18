@@ -200,14 +200,63 @@ const IP_NOISE: &[&str] = &["1.1.1.1", "1.0.0.1", "8.8.8.8", "8.8.4.4"];
 /// these is almost always attribute access, so we require string/URL context
 /// before treating it as a hostname.
 const AMBIGUOUS_TLDS: &[&str] = &[
-    "info", "name", "top", "id", "host", "link", "click", "services", "solutions",
-    "systems", "page", "app", "dev", "cloud", "digital", "media", "news", "press",
-    "blog", "world", "today", "guru", "ninja", "live", "store", "shop", "site",
-    "online", "tech", "fun", "best", "wtf", "lol", "buzz", "monster", "rest", "uno",
-    "cam", "skin", "design", "global", "studio", "pro", "biz", "mobi", "club", "icu",
+    "info",
+    "name",
+    "top",
+    "id",
+    "host",
+    "link",
+    "click",
+    "services",
+    "solutions",
+    "systems",
+    "page",
+    "app",
+    "dev",
+    "cloud",
+    "digital",
+    "media",
+    "news",
+    "press",
+    "blog",
+    "world",
+    "today",
+    "guru",
+    "ninja",
+    "live",
+    "store",
+    "shop",
+    "site",
+    "online",
+    "tech",
+    "fun",
+    "best",
+    "wtf",
+    "lol",
+    "buzz",
+    "monster",
+    "rest",
+    "uno",
+    "cam",
+    "skin",
+    "design",
+    "global",
+    "studio",
+    "pro",
+    "biz",
+    "mobi",
+    "club",
+    "icu",
     // ccTLDs that double as ordinary words / struct-field names (`tc.in`, `x.at`,
     // `this.ch` where `ch` is a char).
-    "in", "it", "at", "be", "no", "me", "us", "ch",
+    "in",
+    "it",
+    "at",
+    "be",
+    "no",
+    "me",
+    "us",
+    "ch",
 ];
 
 /// TLDs that, as the *leading* label, mark a reverse-DNS package path
@@ -221,35 +270,136 @@ const REVERSE_DNS_HEADS: &[&str] = &["com", "org", "net", "edu", "gov", "mil", "
 /// faithful public-suffix-list implementation.
 const KNOWN_TLDS: &[&str] = &[
     // Generic
-    "com", "org", "net", "info", "biz", "pro", "name", "io", "dev", "app", "ai", "sh",
-    "co", "tv", "cc", "me", "mobi", "tech", "cloud", "online", "site", "store", "shop",
-    "live", "studio", "host", "page", "ninja", "guru", "today", "world", "press", "blog",
-    "news", "media", "design", "digital", "global", "systems", "solutions", "services",
+    "com",
+    "org",
+    "net",
+    "info",
+    "biz",
+    "pro",
+    "name",
+    "io",
+    "dev",
+    "app",
+    "ai",
+    "sh",
+    "co",
+    "tv",
+    "cc",
+    "me",
+    "mobi",
+    "tech",
+    "cloud",
+    "online",
+    "site",
+    "store",
+    "shop",
+    "live",
+    "studio",
+    "host",
+    "page",
+    "ninja",
+    "guru",
+    "today",
+    "world",
+    "press",
+    "blog",
+    "news",
+    "media",
+    "design",
+    "digital",
+    "global",
+    "systems",
+    "solutions",
+    "services",
     // Governments / academia
-    "gov", "edu", "mil", "int",
+    "gov",
+    "edu",
+    "mil",
+    "int",
     // Country-codes (top 30 by registrations + a few useful)
-    "uk", "de", "fr", "jp", "cn", "ru", "br", "in", "au", "ca", "us", "eu", "it", "es",
-    "nl", "pl", "se", "no", "fi", "dk", "be", "ch", "at", "ie", "pt", "gr", "cz", "kr",
-    "tw", "hk", "sg", "id", "th", "vn", "ph", "my", "mx", "ar", "cl", "za", "il", "tr",
+    "uk",
+    "de",
+    "fr",
+    "jp",
+    "cn",
+    "ru",
+    "br",
+    "in",
+    "au",
+    "ca",
+    "us",
+    "eu",
+    "it",
+    "es",
+    "nl",
+    "pl",
+    "se",
+    "no",
+    "fi",
+    "dk",
+    "be",
+    "ch",
+    "at",
+    "ie",
+    "pt",
+    "gr",
+    "cz",
+    "kr",
+    "tw",
+    "hk",
+    "sg",
+    "id",
+    "th",
+    "vn",
+    "ph",
+    "my",
+    "mx",
+    "ar",
+    "cl",
+    "za",
+    "il",
+    "tr",
     // Free-TLD / throwaway-prone — often abused for C2
-    "tk", "ml", "ga", "cf", "gq", "xyz", "top", "pw", "club", "icu", "link", "click",
-    "lol", "fun", "wtf", "best", "buzz", "monster", "rest", "uno", "cam", "skin",
+    "tk",
+    "ml",
+    "ga",
+    "cf",
+    "gq",
+    "xyz",
+    "top",
+    "pw",
+    "club",
+    "icu",
+    "link",
+    "click",
+    "lol",
+    "fun",
+    "wtf",
+    "best",
+    "buzz",
+    "monster",
+    "rest",
+    "uno",
+    "cam",
+    "skin",
 ];
 
 /// File extensions that would otherwise look like 2-label domains
 /// (`config.json` parsed as `config.json`).
 const FILE_EXTENSIONS: &[&str] = &[
-    "json", "js", "mjs", "cjs", "ts", "tsx", "jsx", "py", "pyc", "pyi", "rs", "toml",
-    "lock", "yml", "yaml", "md", "html", "htm", "css", "scss", "sass", "less", "map",
-    "txt", "xml", "svg", "png", "jpg", "jpeg", "gif", "webp", "ico", "woff", "woff2",
-    "ttf", "eot", "rb", "go", "java", "class", "kt", "swift", "c", "cpp", "h", "hpp",
-    "sh", "bat", "ps1", "gradle", "jar", "war", "deb", "rpm", "tar", "gz", "zip",
-    "min", "node", "wasm", "log", "csv", "tsv", "sql", "db", "sqlite",
+    "json", "js", "mjs", "cjs", "ts", "tsx", "jsx", "py", "pyc", "pyi", "rs", "toml", "lock",
+    "yml", "yaml", "md", "html", "htm", "css", "scss", "sass", "less", "map", "txt", "xml", "svg",
+    "png", "jpg", "jpeg", "gif", "webp", "ico", "woff", "woff2", "ttf", "eot", "rb", "go", "java",
+    "class", "kt", "swift", "c", "cpp", "h", "hpp", "sh", "bat", "ps1", "gradle", "jar", "war",
+    "deb", "rpm", "tar", "gz", "zip", "min", "node", "wasm", "log", "csv", "tsv", "sql", "db",
+    "sqlite",
 ];
 
 pub fn scan_dir(root: &Path, out: &mut Vec<Finding>, lang: Lang) {
     for path in util::walk_files(root, lang.exts()) {
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         scan_text(&path, &text, out);
     }
 }
@@ -302,7 +452,9 @@ fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
         if IP_NOISE.contains(&ip) {
             continue;
         }
-        let Ok(addr) = Ipv4Addr::from_str(ip) else { continue };
+        let Ok(addr) = Ipv4Addr::from_str(ip) else {
+            continue;
+        };
         if !is_noteworthy_ipv4(&addr) {
             continue;
         }
@@ -337,7 +489,9 @@ fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
             continue;
         }
         // RFC-valid?
-        let Ok(addr) = Ipv6Addr::from_str(candidate) else { continue };
+        let Ok(addr) = Ipv6Addr::from_str(candidate) else {
+            continue;
+        };
         if !is_noteworthy_ipv6(&addr) {
             continue;
         }
@@ -408,7 +562,10 @@ fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
 
 fn is_interesting_domain(d: &str) -> bool {
     // Direct noise allowlist (exact or subdomain match).
-    if URL_NOISE_HOSTS.iter().any(|h| d == *h || d.ends_with(&format!(".{h}"))) {
+    if URL_NOISE_HOSTS
+        .iter()
+        .any(|h| d == *h || d.ends_with(&format!(".{h}")))
+    {
         return false;
     }
     let labels: Vec<&str> = d.split('.').collect();
@@ -481,7 +638,7 @@ fn is_noteworthy_ipv4(a: &Ipv4Addr) -> bool {
         || o[0] == 0                                // 0.0.0.0/8 "this network"
         || (o[0] == 100 && (64..=127).contains(&o[1])) // 100.64.0.0/10 CGNAT
         || (o[0] == 198 && (o[1] == 18 || o[1] == 19)) // 198.18.0.0/15 benchmarking
-        || o[0] >= 240)                            // 240.0.0.0/4 reserved
+        || o[0] >= 240) // 240.0.0.0/4 reserved
 }
 
 /// IPv6 analogue of `is_noteworthy_ipv4`: drop the non-routable ranges that
@@ -525,8 +682,7 @@ fn domain_is_code_access(text: &str, start: usize, end: usize, candidate: &str) 
     }
     // Identifier-ish TLD (`.name`, `.id`, `.top`): treat as data only when the
     // token is quote/URL-delimited, which member access never is.
-    if AMBIGUOUS_TLDS.contains(&tld.to_ascii_lowercase().as_str())
-        && !quote_adjacent(b, start, end)
+    if AMBIGUOUS_TLDS.contains(&tld.to_ascii_lowercase().as_str()) && !quote_adjacent(b, start, end)
     {
         return true;
     }
@@ -545,7 +701,9 @@ fn url_has_host(url: &str) -> bool {
 /// True when a URL's host is a non-routable IPv4 (`http://172.16.1.1:5000`) —
 /// a local/test endpoint, never real exfil infrastructure.
 fn url_host_is_private_ip(url: &str) -> bool {
-    let Some(rest) = url.split_once("://").map(|(_, r)| r) else { return false };
+    let Some(rest) = url.split_once("://").map(|(_, r)| r) else {
+        return false;
+    };
     let host = rest.split(['/', ':', '?', '#', '@']).next().unwrap_or("");
     Ipv4Addr::from_str(host).is_ok_and(|a| !is_noteworthy_ipv4(&a))
 }
@@ -625,18 +783,21 @@ mod tests {
     fn dedupes_domain_inside_url() {
         // The URL fires; the bare domain inside the URL should not fire a 2nd time.
         let fs = scan(r#"fetch("http://evil.tk/path");"#);
-        let domains: Vec<&Finding> = fs.iter().filter(|f| f.detail == "embedded domain name").collect();
-        assert!(domains.is_empty(), "domain should not double-fire inside URL: {fs:#?}");
+        let domains: Vec<&Finding> = fs
+            .iter()
+            .filter(|f| f.detail == "embedded domain name")
+            .collect();
+        assert!(
+            domains.is_empty(),
+            "domain should not double-fire inside URL: {fs:#?}"
+        );
         assert!(fs.iter().any(|f| f.detail == "embedded URL"));
     }
 
     #[test]
     fn finds_ipv6_compressed() {
         let fs = scan(r#"const host = "2606:4700::1";"#);
-        assert!(
-            details(&fs).contains(&"embedded IPv6 address"),
-            "{fs:#?}"
-        );
+        assert!(details(&fs).contains(&"embedded IPv6 address"), "{fs:#?}");
     }
 
     #[test]
@@ -680,9 +841,7 @@ mod tests {
 
     #[test]
     fn rejects_documentation_and_local_ipv6() {
-        let fs = scan(
-            r#"a="2001:db8::52:0:3"; b="fe80::1ff:fe23:4567:890a"; c="fc00::abcd";"#,
-        );
+        let fs = scan(r#"a="2001:db8::52:0:3"; b="fe80::1ff:fe23:4567:890a"; c="fc00::abcd";"#);
         assert!(
             !details(&fs).contains(&"embedded IPv6 address"),
             "doc/link-local/unique-local IPv6 must be suppressed: {fs:#?}"
@@ -750,7 +909,10 @@ mod tests {
     fn still_finds_real_domains() {
         // Classic TLD bare, and an ambiguous TLD only when quoted as data.
         let fs = scan(r#"host="evil.tk"; url2="steal.top"; ref=gmail.com;"#);
-        let n = details(&fs).iter().filter(|d| **d == "embedded domain name").count();
+        let n = details(&fs)
+            .iter()
+            .filter(|d| **d == "embedded domain name")
+            .count();
         assert!(n >= 3, "expected evil.tk, steal.top, gmail.com: {fs:#?}");
     }
 
@@ -768,7 +930,10 @@ mod tests {
         let fs = scan(
             "// see https://en.wikipedia.org/wiki/Foo and 45.77.12.34\n# ref https://evil.tk/x\n/// doc 203.0.113.9 https://bar.io\n",
         );
-        assert!(fs.is_empty(), "comment/doc lines must be suppressed: {fs:#?}");
+        assert!(
+            fs.is_empty(),
+            "comment/doc lines must be suppressed: {fs:#?}"
+        );
     }
 
     #[test]

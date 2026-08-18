@@ -97,7 +97,11 @@ impl DiffReport {
         self.added
             .iter()
             .map(|a| (a.ecosystem, a.name.clone(), a.version.clone()))
-            .chain(self.changed.iter().map(|c| (c.ecosystem, c.name.clone(), c.to.clone())))
+            .chain(
+                self.changed
+                    .iter()
+                    .map(|c| (c.ecosystem, c.name.clone(), c.to.clone())),
+            )
             .collect()
     }
 
@@ -165,7 +169,8 @@ pub fn to_json(r: &DiffReport, old: &str, new: &str) -> serde_json::Value {
 fn index(deps: &[Dependency]) -> std::collections::BTreeMap<Key, String> {
     let mut map = std::collections::BTreeMap::new();
     for d in deps {
-        map.entry((d.ecosystem, d.name.clone())).or_insert_with(|| d.version.clone());
+        map.entry((d.ecosystem, d.name.clone()))
+            .or_insert_with(|| d.version.clone());
     }
     map
 }
@@ -222,7 +227,10 @@ pub fn assess(
             a.severity = res.worst;
             a.signals = res.signals.clone();
         }
-        if let Some(p) = vulns.iter().find(|p| p.name == name && p.version == version) {
+        if let Some(p) = vulns
+            .iter()
+            .find(|p| p.name == name && p.version == version)
+        {
             a.vulns = p.vulns.clone();
         }
         a
@@ -241,7 +249,12 @@ pub fn assess(
 /// and advisories inline — a reviewer should not have to run a second command to
 /// learn that the one package this PR added was published six hours ago.
 pub fn render(report: &DiffReport, old_label: &str, new_label: &str) {
-    println!("{}  {}  →  {}", "dependency diff".bold(), old_label.dimmed(), new_label.dimmed());
+    println!(
+        "{}  {}  →  {}",
+        "dependency diff".bold(),
+        old_label.dimmed(),
+        new_label.dimmed()
+    );
 
     if report.is_empty() {
         println!();
@@ -250,7 +263,10 @@ pub fn render(report: &DiffReport, old_label: &str, new_label: &str) {
     }
 
     if !report.added.is_empty() {
-        println!("\n{}", format!("+ {} added", report.added.len()).green().bold());
+        println!(
+            "\n{}",
+            format!("+ {} added", report.added.len()).green().bold()
+        );
         for a in &report.added {
             println!(
                 "  {}{}",
@@ -261,13 +277,24 @@ pub fn render(report: &DiffReport, old_label: &str, new_label: &str) {
         }
     }
     if !report.removed.is_empty() {
-        println!("\n{}", format!("- {} removed", report.removed.len()).red().bold());
+        println!(
+            "\n{}",
+            format!("- {} removed", report.removed.len()).red().bold()
+        );
         for r in &report.removed {
-            println!("  {}", format!("- {}@{} ({})", r.name, r.version, r.ecosystem.as_str()).red());
+            println!(
+                "  {}",
+                format!("- {}@{} ({})", r.name, r.version, r.ecosystem.as_str()).red()
+            );
         }
     }
     if !report.changed.is_empty() {
-        println!("\n{}", format!("~ {} changed", report.changed.len()).yellow().bold());
+        println!(
+            "\n{}",
+            format!("~ {} changed", report.changed.len())
+                .yellow()
+                .bold()
+        );
         for c in &report.changed {
             println!(
                 "  {} {} {} {} {}{}",
@@ -315,7 +342,11 @@ fn inline(a: &Assessment) -> String {
     }
     if !a.vulns.is_empty() {
         let worst = a.worst_vuln().map(sev_word).unwrap_or("");
-        parts.push(format!("{} vuln{} ({worst})", a.vulns.len(), plural(a.vulns.len())));
+        parts.push(format!(
+            "{} vuln{} ({worst})",
+            a.vulns.len(),
+            plural(a.vulns.len())
+        ));
     }
     if parts.is_empty() {
         return String::new();
@@ -336,7 +367,14 @@ fn print_findings(a: &Assessment) {
     for v in &a.vulns {
         let line = format!("✗ {} [{}] {}", v.id, sev_word(v.severity), v.summary);
         let line = crate::analyze::util::snippet(&line, 100);
-        println!("      {}", if v.severity >= Severity::High { line.red().to_string() } else { line.yellow().to_string() });
+        println!(
+            "      {}",
+            if v.severity >= Severity::High {
+                line.red().to_string()
+            } else {
+                line.yellow().to_string()
+            }
+        );
     }
 }
 
@@ -357,7 +395,11 @@ fn findings_summary(report: &DiffReport) -> String {
     if flagged == 0 && vulns == 0 {
         return String::new();
     }
-    format!("  ⚠ introduces {flagged} flagged package{}, {vulns} advisor{}", plural(flagged), if vulns == 1 { "y" } else { "ies" })
+    format!(
+        "  ⚠ introduces {flagged} flagged package{}, {vulns} advisor{}",
+        plural(flagged),
+        if vulns == 1 { "y" } else { "ies" }
+    )
 }
 
 fn plural(n: usize) -> &'static str {
@@ -403,12 +445,22 @@ mod tests {
     fn diff_classifies_added_removed_changed() {
         let r = sample();
         assert_eq!(r.added.len(), 1);
-        assert_eq!((r.added[0].name.as_str(), r.added[0].version.as_str()), ("new", "0.1"));
+        assert_eq!(
+            (r.added[0].name.as_str(), r.added[0].version.as_str()),
+            ("new", "0.1")
+        );
         assert_eq!(r.removed.len(), 1);
-        assert_eq!((r.removed[0].name.as_str(), r.removed[0].version.as_str()), ("gone", "2.0"));
+        assert_eq!(
+            (r.removed[0].name.as_str(), r.removed[0].version.as_str()),
+            ("gone", "2.0")
+        );
         assert_eq!(r.changed.len(), 1);
         assert_eq!(
-            (r.changed[0].name.as_str(), r.changed[0].from.as_str(), r.changed[0].to.as_str()),
+            (
+                r.changed[0].name.as_str(),
+                r.changed[0].from.as_str(),
+                r.changed[0].to.as_str()
+            ),
             ("bump", "1.0", "2.0")
         );
         assert_eq!(r.unchanged, 1); // keep
@@ -441,7 +493,12 @@ mod tests {
     }
 
     fn vuln(id: &str, sev: Severity) -> Vuln {
-        Vuln { id: id.into(), severity: sev, summary: "x".into(), fixed: None }
+        Vuln {
+            id: id.into(),
+            severity: sev,
+            summary: "x".into(),
+            fixed: None,
+        }
     }
 
     #[test]
@@ -486,7 +543,10 @@ mod tests {
             vulns: vec![vuln("GHSA-old", Severity::Critical)],
         }];
         assess(&mut r, &HashMap::new(), &vulns);
-        assert!(!r.has_findings(), "a removed package must not raise a finding");
+        assert!(
+            !r.has_findings(),
+            "a removed package must not raise a finding"
+        );
     }
 
     #[test]
@@ -500,7 +560,10 @@ mod tests {
             vulns: vec![vuln("GHSA-old", Severity::High)],
         }];
         assess(&mut r, &HashMap::new(), &stale);
-        assert!(r.changed[0].assessment.vulns.is_empty(), "1.0 is the old version");
+        assert!(
+            r.changed[0].assessment.vulns.is_empty(),
+            "1.0 is the old version"
+        );
 
         // One against the version being adopted must.
         let mut r = sample();
@@ -530,12 +593,19 @@ mod tests {
         let mut res = HashMap::new();
         res.insert(
             ("new".to_string(), "0.1".to_string()),
-            Resolution { risk: 45, signals: vec!["typosquat of neu".into()], ..Default::default() },
+            Resolution {
+                risk: 45,
+                signals: vec!["typosquat of neu".into()],
+                ..Default::default()
+            },
         );
         assess(&mut r, &res, &[]);
         let doc = to_json(&r, "a", "b");
         assert_eq!(doc["schema_version"], 2);
         assert_eq!(doc["added"][0]["assessment"]["risk"], 45);
-        assert_eq!(doc["added"][0]["assessment"]["signals"][0], "typosquat of neu");
+        assert_eq!(
+            doc["added"][0]["assessment"]["signals"][0],
+            "typosquat of neu"
+        );
     }
 }

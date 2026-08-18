@@ -160,8 +160,12 @@ impl Baseline {
     pub fn load(path: &std::path::Path) -> Result<Self> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading baseline {}", path.display()))?;
-        let parsed: BaseTree = serde_json::from_str(&text)
-            .with_context(|| format!("parsing baseline {} (expected `tree --json` output)", path.display()))?;
+        let parsed: BaseTree = serde_json::from_str(&text).with_context(|| {
+            format!(
+                "parsing baseline {} (expected `tree --json` output)",
+                path.display()
+            )
+        })?;
         let mut b = Baseline::default();
         fn walk(n: &BaseNode, b: &mut Baseline) {
             if n.severity.is_some() {
@@ -176,17 +180,20 @@ impl Baseline {
         }
         for p in &parsed.vulnerabilities {
             for v in &p.vulns {
-                b.vulns.insert((p.name.clone(), p.version.clone(), v.id.clone()));
+                b.vulns
+                    .insert((p.name.clone(), p.version.clone(), v.id.clone()));
             }
         }
         Ok(b)
     }
 
     fn has_flagged(&self, name: &str, version: &str) -> bool {
-        self.flagged.contains(&(name.to_string(), version.to_string()))
+        self.flagged
+            .contains(&(name.to_string(), version.to_string()))
     }
     fn has_vuln(&self, name: &str, version: &str, id: &str) -> bool {
-        self.vulns.contains(&(name.to_string(), version.to_string(), id.to_string()))
+        self.vulns
+            .contains(&(name.to_string(), version.to_string(), id.to_string()))
     }
 }
 
@@ -210,7 +217,12 @@ fn spec_matches(pattern: &str, name: &str, version: &str) -> bool {
 /// Evaluate `policy` against `tree` as of `today`, optionally in diff mode
 /// against `baseline` (count only newly-introduced risk). Pure: `today` is
 /// injected so allowlist-expiry logic stays deterministic in tests.
-pub fn evaluate(policy: &Policy, tree: &Tree, today: NaiveDate, baseline: Option<&Baseline>) -> Outcome {
+pub fn evaluate(
+    policy: &Policy,
+    tree: &Tree,
+    today: NaiveDate,
+    baseline: Option<&Baseline>,
+) -> Outcome {
     // Partition the allowlist into still-effective patterns and expired ones.
     // The date logic is `crate::config`'s, shared with the scan suppressions —
     // a date that lapses in one place must lapse in the other.
@@ -361,10 +373,13 @@ pub fn report(outcome: &Outcome, policy: &Policy) {
 
     let m = &outcome.metrics;
     let head = if outcome.tripped() {
-        format!("gate FAIL — {} threshold(s) exceeded", outcome.violations.len())
-            .red()
-            .bold()
-            .to_string()
+        format!(
+            "gate FAIL — {} threshold(s) exceeded",
+            outcome.violations.len()
+        )
+        .red()
+        .bold()
+        .to_string()
     } else {
         "gate PASS".green().bold().to_string()
     };
@@ -398,19 +413,29 @@ pub fn report(outcome: &Outcome, policy: &Policy) {
         checked.push(format!("sus {}", m.sus));
     }
     if policy.max_vulns.is_some() || policy.fail_on_vuln.is_some() {
-        let worst = m.worst_vuln.map(|w| format!(", worst {w:?}")).unwrap_or_default();
+        let worst = m
+            .worst_vuln
+            .map(|w| format!(", worst {w:?}"))
+            .unwrap_or_default();
         checked.push(format!("vulns {}{worst}", m.vulns));
     }
     if !checked.is_empty() {
         eprintln!("    {}", checked.join(" · ").dimmed());
     }
     if m.bypassed > 0 {
-        eprintln!("    {}", format!("{} package(s) bypassed via allowlist", m.bypassed).dimmed());
+        eprintln!(
+            "    {}",
+            format!("{} package(s) bypassed via allowlist", m.bypassed).dimmed()
+        );
     }
     if m.baseline_suppressed > 0 {
         eprintln!(
             "    {}",
-            format!("{} pre-existing item(s) ignored via baseline", m.baseline_suppressed).dimmed()
+            format!(
+                "{} pre-existing item(s) ignored via baseline",
+                m.baseline_suppressed
+            )
+            .dimmed()
         );
     }
 }
@@ -435,7 +460,11 @@ mod tests {
             truncated: false,
             repo: None,
             stars: None,
-            signals: if sev.is_some() { vec!["low-stars".into()] } else { vec![] },
+            signals: if sev.is_some() {
+                vec!["low-stars".into()]
+            } else {
+                vec![]
+            },
             severity: sev,
             risk: Some(risk),
             dep: Some(dep),
@@ -449,7 +478,13 @@ mod tests {
         Tree {
             root: "proj".into(),
             ecosystems: vec!["node".into()],
-            stats: Stats { total: 0, direct: 0, transitive: 0, max_depth: 0, deduped: 0 },
+            stats: Stats {
+                total: 0,
+                direct: 0,
+                transitive: 0,
+                max_depth: 0,
+                deduped: 0,
+            },
             diagnostics: vec![],
             vulnerabilities: vulns,
             scored: true,
@@ -462,7 +497,12 @@ mod tests {
             name: name.into(),
             version: "1.0.0".into(),
             ecosystem: "node".into(),
-            vulns: vec![Vuln { id: "CVE-0000-0000".into(), severity: sev, summary: String::new(), fixed: None }],
+            vulns: vec![Vuln {
+                id: "CVE-0000-0000".into(),
+                severity: sev,
+                summary: String::new(),
+                fixed: None,
+            }],
         }
     }
 
@@ -477,7 +517,11 @@ mod tests {
             ],
             vec![],
         );
-        let p = Policy { max_high: Some(0), max_sus: Some(5), ..Default::default() };
+        let p = Policy {
+            max_high: Some(0),
+            max_sus: Some(5),
+            ..Default::default()
+        };
         let o = evaluate(&p, &t, today(), None);
         assert_eq!(o.metrics.high, 1);
         assert_eq!(o.metrics.sus, 1);
@@ -490,8 +534,30 @@ mod tests {
     fn risk_ceiling_is_strict_greater_than() {
         let t = tree(vec![node("a", Some(Severity::High), 80, 0)], vec![]);
         // exactly at the ceiling passes; one above fails.
-        assert!(!evaluate(&Policy { max_risk: Some(80), ..Default::default() }, &t, today(), None).tripped());
-        assert!(evaluate(&Policy { max_risk: Some(79), ..Default::default() }, &t, today(), None).tripped());
+        assert!(
+            !evaluate(
+                &Policy {
+                    max_risk: Some(80),
+                    ..Default::default()
+                },
+                &t,
+                today(),
+                None
+            )
+            .tripped()
+        );
+        assert!(
+            evaluate(
+                &Policy {
+                    max_risk: Some(79),
+                    ..Default::default()
+                },
+                &t,
+                today(),
+                None
+            )
+            .tripped()
+        );
     }
 
     #[test]
@@ -499,7 +565,11 @@ mod tests {
         let t = tree(vec![node("evil", Some(Severity::High), 99, 0)], vec![]);
         let p = Policy {
             max_high: Some(0),
-            allow: vec![Allow { package: "evil".into(), reason: None, expires: None }],
+            allow: vec![Allow {
+                package: "evil".into(),
+                reason: None,
+                expires: None,
+            }],
             ..Default::default()
         };
         let o = evaluate(&p, &t, today(), None);
@@ -516,7 +586,11 @@ mod tests {
         let t = tree(vec![n], vec![]);
         let p = Policy {
             max_high: Some(0),
-            allow: vec![Allow { package: "evil@1.0.0".into(), reason: None, expires: None }],
+            allow: vec![Allow {
+                package: "evil@1.0.0".into(),
+                reason: None,
+                expires: None,
+            }],
             ..Default::default()
         };
         // allow is for 1.0.0, dep is 2.0.0 → still counts → trips
@@ -544,10 +618,17 @@ mod tests {
     #[test]
     fn scoped_name_not_split_on_leading_at() {
         // "@scope/pkg" must match a bare-name allow, not be read as version.
-        let t = tree(vec![node("@scope/pkg", Some(Severity::High), 99, 0)], vec![]);
+        let t = tree(
+            vec![node("@scope/pkg", Some(Severity::High), 99, 0)],
+            vec![],
+        );
         let p = Policy {
             max_high: Some(0),
-            allow: vec![Allow { package: "@scope/pkg".into(), reason: None, expires: None }],
+            allow: vec![Allow {
+                package: "@scope/pkg".into(),
+                reason: None,
+                expires: None,
+            }],
             ..Default::default()
         };
         assert!(!evaluate(&p, &t, today(), None).tripped());
@@ -560,24 +641,55 @@ mod tests {
             vec![vuln_pkg("a", Severity::High), vuln_pkg("b", Severity::Low)],
         );
         // 2 vulns total; max_vulns=1 → trips on count
-        let o = evaluate(&Policy { max_vulns: Some(1), ..Default::default() }, &t, today(), None);
+        let o = evaluate(
+            &Policy {
+                max_vulns: Some(1),
+                ..Default::default()
+            },
+            &t,
+            today(),
+            None,
+        );
         assert_eq!(o.metrics.vulns, 2);
         assert!(o.tripped());
         // severity gate: worst is High, fail_on_vuln=High → trips
-        let o = evaluate(&Policy { fail_on_vuln: Some(Severity::High), ..Default::default() }, &t, today(), None);
+        let o = evaluate(
+            &Policy {
+                fail_on_vuln: Some(Severity::High),
+                ..Default::default()
+            },
+            &t,
+            today(),
+            None,
+        );
         assert_eq!(o.metrics.worst_vuln, Some(Severity::High));
         assert!(o.tripped());
         // fail_on_vuln=Critical → High doesn't reach it → passes
-        let o = evaluate(&Policy { fail_on_vuln: Some(Severity::Critical), ..Default::default() }, &t, today(), None);
+        let o = evaluate(
+            &Policy {
+                fail_on_vuln: Some(Severity::Critical),
+                ..Default::default()
+            },
+            &t,
+            today(),
+            None,
+        );
         assert!(!o.tripped());
     }
 
     #[test]
     fn allowlisted_vuln_excluded() {
-        let t = tree(vec![node("a", None, 0, 0)], vec![vuln_pkg("a", Severity::Critical)]);
+        let t = tree(
+            vec![node("a", None, 0, 0)],
+            vec![vuln_pkg("a", Severity::Critical)],
+        );
         let p = Policy {
             fail_on_vuln: Some(Severity::High),
-            allow: vec![Allow { package: "a".into(), reason: None, expires: None }],
+            allow: vec![Allow {
+                package: "a".into(),
+                reason: None,
+                expires: None,
+            }],
             ..Default::default()
         };
         let o = evaluate(&p, &t, today(), None);
@@ -596,7 +708,10 @@ mod tests {
         );
         let mut base = Baseline::default();
         base.flagged.insert(("old-bad".into(), "1.0.0".into()));
-        let p = Policy { max_high: Some(0), ..Default::default() };
+        let p = Policy {
+            max_high: Some(0),
+            ..Default::default()
+        };
         // no baseline: both high deps count → trips on 2 > 0
         assert!(evaluate(&p, &t, today(), None).tripped());
         // with baseline: old-bad is pre-existing → only new-bad counts
@@ -611,10 +726,17 @@ mod tests {
         let t = tree(vec![node("old-bad", Some(Severity::High), 90, 0)], vec![]);
         let mut base = Baseline::default();
         base.flagged.insert(("old-bad".into(), "1.0.0".into()));
-        let p = Policy { max_high: Some(0), max_risk: Some(0), ..Default::default() };
+        let p = Policy {
+            max_high: Some(0),
+            max_risk: Some(0),
+            ..Default::default()
+        };
         let o = evaluate(&p, &t, today(), Some(&base));
         assert_eq!(o.metrics.high, 0);
-        assert_eq!(o.metrics.risk, 0, "a baselined dep's risk score is not counted");
+        assert_eq!(
+            o.metrics.risk, 0,
+            "a baselined dep's risk score is not counted"
+        );
         assert!(!o.tripped());
     }
 
@@ -625,8 +747,12 @@ mod tests {
             vec![vuln_pkg("a", Severity::High), vuln_pkg("b", Severity::High)],
         );
         let mut base = Baseline::default();
-        base.vulns.insert(("a".into(), "1.0.0".into(), "CVE-0000-0000".into()));
-        let p = Policy { max_vulns: Some(0), ..Default::default() };
+        base.vulns
+            .insert(("a".into(), "1.0.0".into(), "CVE-0000-0000".into()));
+        let p = Policy {
+            max_vulns: Some(0),
+            ..Default::default()
+        };
         let o = evaluate(&p, &t, today(), Some(&base));
         assert_eq!(o.metrics.vulns, 1, "only b's vuln is new");
         assert!(o.tripped());

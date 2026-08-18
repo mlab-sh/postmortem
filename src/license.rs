@@ -140,12 +140,26 @@ const ALIASES: &[(&str, &str)] = &[
 /// Values that carry no information — treated as *absent*, not as a license.
 /// Reporting `UNKNOWN` as a license name would make an unlicensed package look
 /// documented.
-const NULL_VALUES: &[&str] = &["", "unknown", "none", "null", "nolicense", "unlicensed", "seelicense", "other", "proprietary1", "todo"];
+const NULL_VALUES: &[&str] = &[
+    "",
+    "unknown",
+    "none",
+    "null",
+    "nolicense",
+    "unlicensed",
+    "seelicense",
+    "other",
+    "proprietary1",
+    "todo",
+];
 
 /// Strip everything that varies between spellings: case, spaces, punctuation.
 /// `Apache License 2.0` → `apachelicense20`.
 fn squash(s: &str) -> String {
-    s.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase()
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 /// The canonical SPDX identifier for a single token, preserving official casing
@@ -175,7 +189,10 @@ fn canonical_id(token: &str) -> Option<String> {
     }
     // Otherwise try the free-text aliases.
     let sq = squash(t);
-    ALIASES.iter().find(|(k, _)| *k == sq).map(|(_, v)| (*v).to_string())
+    ALIASES
+        .iter()
+        .find(|(k, _)| *k == sq)
+        .map(|(_, v)| (*v).to_string())
 }
 
 /// Turn a raw registry/lockfile value into a [`License`], or `None` when it says
@@ -192,7 +209,9 @@ pub fn normalize(raw: &str) -> Option<License> {
     }
     // A long value is prose (a pasted license text or a sentence), not an id.
     if raw.len() > 200 {
-        return Some(License::Name { value: crate::analyze::util::snippet(raw, 80) });
+        return Some(License::Name {
+            value: crate::analyze::util::snippet(raw, 80),
+        });
     }
 
     // The pre-SPDX slash form (`MIT/Apache-2.0`) meant "or" in both Cargo and
@@ -217,18 +236,23 @@ pub fn normalize(raw: &str) -> Option<License> {
         if let Some(expr) = normalize_expression(raw) {
             return Some(License::Expression { value: expr });
         }
-        return Some(License::Name { value: raw.to_string() });
+        return Some(License::Name {
+            value: raw.to_string(),
+        });
     }
 
     match canonical_id(raw) {
         Some(id) => Some(License::Id { value: id }),
-        None => Some(License::Name { value: raw.to_string() }),
+        None => Some(License::Name {
+            value: raw.to_string(),
+        }),
     }
 }
 
 /// Does this look like an SPDX compound expression rather than a bare id?
 fn is_expression(raw: &str) -> bool {
-    raw.split_whitespace().any(|w| matches!(w.to_ascii_uppercase().as_str(), "OR" | "AND" | "WITH"))
+    raw.split_whitespace()
+        .any(|w| matches!(w.to_ascii_uppercase().as_str(), "OR" | "AND" | "WITH"))
 }
 
 /// Normalize every operand of an expression, keeping the operators. Returns
@@ -273,8 +297,11 @@ pub fn normalize_list(raws: &[String]) -> Vec<License> {
         }
     }
     if seen.len() > 1 && seen.iter().all(License::is_spdx) {
-        let expr =
-            seen.iter().map(|l| l.label().to_string()).collect::<Vec<_>>().join(" OR ");
+        let expr = seen
+            .iter()
+            .map(|l| l.label().to_string())
+            .collect::<Vec<_>>()
+            .join(" OR ");
         return vec![License::Expression { value: expr }];
     }
     seen
@@ -294,8 +321,11 @@ pub fn normalize_list(raws: &[String]) -> Vec<License> {
 /// than to prose. When several SPDX candidates survive they are alternatives, so
 /// they collapse into one `OR` expression.
 pub fn resolve_raw(raws: &[String]) -> Vec<License> {
-    let spdx: Vec<String> =
-        raws.iter().filter(|r| normalize(r).is_some_and(|l| l.is_spdx())).cloned().collect();
+    let spdx: Vec<String> = raws
+        .iter()
+        .filter(|r| normalize(r).is_some_and(|l| l.is_spdx()))
+        .cloned()
+        .collect();
     if !spdx.is_empty() {
         return normalize_list(&spdx);
     }
@@ -387,7 +417,12 @@ pub fn evaluate(deps: &[Dependency], policy: &Policy) -> Vec<Violation> {
             .flat_map(|l| operands(l.label()))
             .map(|s| norm(&s))
             .collect();
-        let label = d.licenses.iter().map(License::label).collect::<Vec<_>>().join(", ");
+        let label = d
+            .licenses
+            .iter()
+            .map(License::label)
+            .collect::<Vec<_>>()
+            .join(", ");
 
         if !deny.is_empty() && options.iter().all(|o| deny.contains(o)) {
             out.push(Violation {
@@ -445,9 +480,18 @@ pub fn inventory(deps: &[Dependency]) -> Vec<Bucket> {
             unknown.push(id);
             continue;
         }
-        let label = d.licenses.iter().map(License::label).collect::<Vec<_>>().join(", ");
+        let label = d
+            .licenses
+            .iter()
+            .map(License::label)
+            .collect::<Vec<_>>()
+            .join(", ");
         let spdx = d.licenses.iter().all(License::is_spdx);
-        by_label.entry(label).or_insert((spdx, Vec::new())).1.push(id);
+        by_label
+            .entry(label)
+            .or_insert((spdx, Vec::new()))
+            .1
+            .push(id);
     }
 
     let mut out: Vec<Bucket> = by_label
@@ -455,16 +499,29 @@ pub fn inventory(deps: &[Dependency]) -> Vec<Bucket> {
         .map(|(label, (spdx, mut packages))| {
             packages.sort();
             packages.dedup();
-            Bucket { label, spdx, packages }
+            Bucket {
+                label,
+                spdx,
+                packages,
+            }
         })
         .collect();
     // Biggest first, then alphabetically for a stable, diffable order.
-    out.sort_by(|a, b| b.packages.len().cmp(&a.packages.len()).then(a.label.cmp(&b.label)));
+    out.sort_by(|a, b| {
+        b.packages
+            .len()
+            .cmp(&a.packages.len())
+            .then(a.label.cmp(&b.label))
+    });
 
     if !unknown.is_empty() {
         unknown.sort();
         unknown.dedup();
-        out.push(Bucket { label: "(unknown)".into(), spdx: false, packages: unknown });
+        out.push(Bucket {
+            label: "(unknown)".into(),
+            spdx: false,
+            packages: unknown,
+        });
     }
     out
 }
@@ -480,7 +537,10 @@ pub fn inventory_json(
     violations: &[Violation],
     deps: &[Dependency],
 ) -> serde_json::Value {
-    let unknown = inventory.iter().find(|b| b.label == "(unknown)").map_or(0, |b| b.packages.len());
+    let unknown = inventory
+        .iter()
+        .find(|b| b.label == "(unknown)")
+        .map_or(0, |b| b.packages.len());
     serde_json::json!({
         "schema_version": 1,
         "total": deps.len(),
@@ -517,24 +577,89 @@ mod tests {
 
     #[test]
     fn exact_spdx_ids_round_trip_with_official_casing() {
-        assert_eq!(lic("MIT"), Some(License::Id { value: "MIT".into() }));
-        assert_eq!(lic("mit"), Some(License::Id { value: "MIT".into() }));
-        assert_eq!(lic("Apache-2.0"), Some(License::Id { value: "Apache-2.0".into() }));
-        assert_eq!(lic("apache-2.0"), Some(License::Id { value: "Apache-2.0".into() }));
-        assert_eq!(lic("ISC"), Some(License::Id { value: "ISC".into() }));
-        assert_eq!(lic("BSD-3-Clause"), Some(License::Id { value: "BSD-3-Clause".into() }));
-        assert_eq!(lic("GPL-3.0-only"), Some(License::Id { value: "GPL-3.0-only".into() }));
-        assert_eq!(lic("MPL-2.0"), Some(License::Id { value: "MPL-2.0".into() }));
+        assert_eq!(
+            lic("MIT"),
+            Some(License::Id {
+                value: "MIT".into()
+            })
+        );
+        assert_eq!(
+            lic("mit"),
+            Some(License::Id {
+                value: "MIT".into()
+            })
+        );
+        assert_eq!(
+            lic("Apache-2.0"),
+            Some(License::Id {
+                value: "Apache-2.0".into()
+            })
+        );
+        assert_eq!(
+            lic("apache-2.0"),
+            Some(License::Id {
+                value: "Apache-2.0".into()
+            })
+        );
+        assert_eq!(
+            lic("ISC"),
+            Some(License::Id {
+                value: "ISC".into()
+            })
+        );
+        assert_eq!(
+            lic("BSD-3-Clause"),
+            Some(License::Id {
+                value: "BSD-3-Clause".into()
+            })
+        );
+        assert_eq!(
+            lic("GPL-3.0-only"),
+            Some(License::Id {
+                value: "GPL-3.0-only".into()
+            })
+        );
+        assert_eq!(
+            lic("MPL-2.0"),
+            Some(License::Id {
+                value: "MPL-2.0".into()
+            })
+        );
     }
 
     #[test]
     fn pypi_free_text_maps_to_spdx() {
         // These are real PyPI `license` values — the field is prose.
-        assert_eq!(lic("Apache 2.0"), Some(License::Id { value: "Apache-2.0".into() }));
-        assert_eq!(lic("MIT License"), Some(License::Id { value: "MIT".into() }));
-        assert_eq!(lic("BSD License"), Some(License::Id { value: "BSD-3-Clause".into() }));
-        assert_eq!(lic("GPLv3"), Some(License::Id { value: "GPL-3.0-only".into() }));
-        assert_eq!(lic("Mozilla Public License 2.0"), Some(License::Id { value: "MPL-2.0".into() }));
+        assert_eq!(
+            lic("Apache 2.0"),
+            Some(License::Id {
+                value: "Apache-2.0".into()
+            })
+        );
+        assert_eq!(
+            lic("MIT License"),
+            Some(License::Id {
+                value: "MIT".into()
+            })
+        );
+        assert_eq!(
+            lic("BSD License"),
+            Some(License::Id {
+                value: "BSD-3-Clause".into()
+            })
+        );
+        assert_eq!(
+            lic("GPLv3"),
+            Some(License::Id {
+                value: "GPL-3.0-only".into()
+            })
+        );
+        assert_eq!(
+            lic("Mozilla Public License 2.0"),
+            Some(License::Id {
+                value: "MPL-2.0".into()
+            })
+        );
     }
 
     #[test]
@@ -558,16 +683,22 @@ mod tests {
     fn compound_expressions_are_normalized_as_expressions() {
         assert_eq!(
             lic("MIT OR Apache-2.0"),
-            Some(License::Expression { value: "MIT OR Apache-2.0".into() })
+            Some(License::Expression {
+                value: "MIT OR Apache-2.0".into()
+            })
         );
         // Operands are normalized individually, operators upper-cased.
         assert_eq!(
             lic("mit or apache-2.0"),
-            Some(License::Expression { value: "MIT OR Apache-2.0".into() })
+            Some(License::Expression {
+                value: "MIT OR Apache-2.0".into()
+            })
         );
         assert_eq!(
             lic("(MIT AND Zlib)"),
-            Some(License::Expression { value: "(MIT AND Zlib)".into() })
+            Some(License::Expression {
+                value: "(MIT AND Zlib)".into()
+            })
         );
     }
 
@@ -577,11 +708,15 @@ mod tests {
         // still serves plenty of them.
         assert_eq!(
             lic("MIT/Apache-2.0"),
-            Some(License::Expression { value: "MIT OR Apache-2.0".into() })
+            Some(License::Expression {
+                value: "MIT OR Apache-2.0".into()
+            })
         );
         assert_eq!(
             lic("Unlicense/MIT"),
-            Some(License::Expression { value: "Unlicense OR MIT".into() })
+            Some(License::Expression {
+                value: "Unlicense OR MIT".into()
+            })
         );
     }
 
@@ -614,7 +749,12 @@ mod tests {
 
     #[test]
     fn or_later_plus_suffix_is_expanded() {
-        assert_eq!(lic("GPL-2.0+"), Some(License::Id { value: "GPL-2.0-or-later".into() }));
+        assert_eq!(
+            lic("GPL-2.0+"),
+            Some(License::Id {
+                value: "GPL-2.0-or-later".into()
+            })
+        );
     }
 
     #[test]
@@ -622,19 +762,32 @@ mod tests {
         let long = "a".repeat(500);
         let l = lic(&long).unwrap();
         assert!(matches!(l, License::Name { .. }));
-        assert!(l.label().len() < 120, "a pasted license body must not bloat the report");
+        assert!(
+            l.label().len() < 120,
+            "a pasted license body must not bloat the report"
+        );
     }
 
     #[test]
     fn a_list_of_alternatives_collapses_to_one_or_expression() {
         // composer / rubygems emit arrays meaning "any of these".
         let v = normalize_list(&["MIT".into(), "Apache-2.0".into()]);
-        assert_eq!(v, vec![License::Expression { value: "MIT OR Apache-2.0".into() }]);
+        assert_eq!(
+            v,
+            vec![License::Expression {
+                value: "MIT OR Apache-2.0".into()
+            }]
+        );
     }
 
     #[test]
     fn a_single_element_list_stays_an_id() {
-        assert_eq!(normalize_list(&["MIT".into()]), vec![License::Id { value: "MIT".into() }]);
+        assert_eq!(
+            normalize_list(&["MIT".into()]),
+            vec![License::Id {
+                value: "MIT".into()
+            }]
+        );
         assert!(normalize_list(&[]).is_empty());
         assert!(normalize_list(&["UNKNOWN".into()]).is_empty());
     }
@@ -666,14 +819,30 @@ mod tests {
 
     #[test]
     fn an_empty_policy_flags_nothing() {
-        let deps = vec![dep("a", vec![]), dep("b", vec![License::Id { value: "AGPL-3.0".into() }])];
+        let deps = vec![
+            dep("a", vec![]),
+            dep(
+                "b",
+                vec![License::Id {
+                    value: "AGPL-3.0".into(),
+                }],
+            ),
+        ];
         assert!(evaluate(&deps, &Policy::default()).is_empty());
     }
 
     #[test]
     fn deny_matches_case_insensitively() {
-        let deps = vec![dep("a", vec![License::Id { value: "AGPL-3.0".into() }])];
-        let p = Policy { deny: vec!["agpl-3.0".into()], ..Default::default() };
+        let deps = vec![dep(
+            "a",
+            vec![License::Id {
+                value: "AGPL-3.0".into(),
+            }],
+        )];
+        let p = Policy {
+            deny: vec!["agpl-3.0".into()],
+            ..Default::default()
+        };
         let v = evaluate(&deps, &p);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].reason, Reason::Denied);
@@ -683,22 +852,49 @@ mod tests {
     #[test]
     fn a_dual_licensed_package_escapes_a_denylist_via_its_other_option() {
         // `MIT OR AGPL-3.0` means you may take MIT. Denying AGPL must not flag it.
-        let deps = vec![dep("a", vec![License::Expression { value: "MIT OR AGPL-3.0".into() }])];
-        let p = Policy { deny: vec!["AGPL-3.0".into()], ..Default::default() };
-        assert!(evaluate(&deps, &p).is_empty(), "a permitted alternative exists");
+        let deps = vec![dep(
+            "a",
+            vec![License::Expression {
+                value: "MIT OR AGPL-3.0".into(),
+            }],
+        )];
+        let p = Policy {
+            deny: vec!["AGPL-3.0".into()],
+            ..Default::default()
+        };
+        assert!(
+            evaluate(&deps, &p).is_empty(),
+            "a permitted alternative exists"
+        );
 
         // Denying both leaves no way out.
-        let p = Policy { deny: vec!["AGPL-3.0".into(), "MIT".into()], ..Default::default() };
+        let p = Policy {
+            deny: vec!["AGPL-3.0".into(), "MIT".into()],
+            ..Default::default()
+        };
         assert_eq!(evaluate(&deps, &p).len(), 1);
     }
 
     #[test]
     fn an_allowlist_is_satisfied_by_any_one_option() {
         let deps = vec![
-            dep("ok", vec![License::Expression { value: "MIT OR AGPL-3.0".into() }]),
-            dep("bad", vec![License::Id { value: "AGPL-3.0".into() }]),
+            dep(
+                "ok",
+                vec![License::Expression {
+                    value: "MIT OR AGPL-3.0".into(),
+                }],
+            ),
+            dep(
+                "bad",
+                vec![License::Id {
+                    value: "AGPL-3.0".into(),
+                }],
+            ),
         ];
-        let p = Policy { allow: vec!["MIT".into()], ..Default::default() };
+        let p = Policy {
+            allow: vec!["MIT".into()],
+            ..Default::default()
+        };
         let v = evaluate(&deps, &p);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].package, "bad");
@@ -708,10 +904,19 @@ mod tests {
     #[test]
     fn unknown_licenses_are_only_flagged_when_asked() {
         let deps = vec![dep("a", vec![])];
-        let p = Policy { deny: vec!["AGPL-3.0".into()], ..Default::default() };
-        assert!(evaluate(&deps, &p).is_empty(), "no license is not a denied license");
+        let p = Policy {
+            deny: vec!["AGPL-3.0".into()],
+            ..Default::default()
+        };
+        assert!(
+            evaluate(&deps, &p).is_empty(),
+            "no license is not a denied license"
+        );
 
-        let p = Policy { fail_on_unknown: true, ..Default::default() };
+        let p = Policy {
+            fail_on_unknown: true,
+            ..Default::default()
+        };
         let v = evaluate(&deps, &p);
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].reason, Reason::Unknown);
@@ -723,9 +928,24 @@ mod tests {
     #[test]
     fn inventory_groups_by_license_biggest_first_with_unknown_last() {
         let deps = vec![
-            dep("a", vec![License::Id { value: "MIT".into() }]),
-            dep("b", vec![License::Id { value: "MIT".into() }]),
-            dep("c", vec![License::Id { value: "Apache-2.0".into() }]),
+            dep(
+                "a",
+                vec![License::Id {
+                    value: "MIT".into(),
+                }],
+            ),
+            dep(
+                "b",
+                vec![License::Id {
+                    value: "MIT".into(),
+                }],
+            ),
+            dep(
+                "c",
+                vec![License::Id {
+                    value: "Apache-2.0".into(),
+                }],
+            ),
             dep("d", vec![]),
         ];
         let inv = inventory(&deps);
@@ -739,8 +959,18 @@ mod tests {
     #[test]
     fn inventory_dedupes_identical_package_versions() {
         let deps = vec![
-            dep("a", vec![License::Id { value: "MIT".into() }]),
-            dep("a", vec![License::Id { value: "MIT".into() }]),
+            dep(
+                "a",
+                vec![License::Id {
+                    value: "MIT".into(),
+                }],
+            ),
+            dep(
+                "a",
+                vec![License::Id {
+                    value: "MIT".into(),
+                }],
+            ),
         ];
         assert_eq!(inventory(&deps)[0].packages.len(), 1);
     }

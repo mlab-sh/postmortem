@@ -95,7 +95,10 @@ pub fn scan(
         Ok(resp) => resp.into_string()?,
         Err(ureq::Error::Status(429, _)) => anyhow::bail!("mlab rate limit reached (try a token)"),
         Err(ureq::Error::Status(code, resp)) => {
-            anyhow::bail!("mlab scan failed ({code}): {}", resp.into_string().unwrap_or_default())
+            anyhow::bail!(
+                "mlab scan failed ({code}): {}",
+                resp.into_string().unwrap_or_default()
+            )
         }
         Err(e) => return Err(e.into()),
     };
@@ -156,7 +159,10 @@ pub(crate) fn scan_coordinates(
         Ok(resp) => resp.into_string()?,
         Err(ureq::Error::Status(429, _)) => anyhow::bail!("mlab rate limit reached (try a token)"),
         Err(ureq::Error::Status(code, resp)) => {
-            anyhow::bail!("mlab scan failed ({code}): {}", resp.into_string().unwrap_or_default())
+            anyhow::bail!(
+                "mlab scan failed ({code}): {}",
+                resp.into_string().unwrap_or_default()
+            )
         }
         Err(e) => return Err(e.into()),
     };
@@ -187,7 +193,11 @@ fn parse_coordinate_results(
         let vulns: Vec<Vuln> = res
             .get("vulns")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().map(|v| parse_vuln_for(v, name, version)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .map(|v| parse_vuln_for(v, name, version))
+                    .collect()
+            })
             .unwrap_or_default();
         if vulns.is_empty() {
             continue;
@@ -214,7 +224,10 @@ fn parse_response(doc: &serde_json::Value) -> Vec<VulnPackage> {
     let mut out = Vec::new();
     for (pkg, res) in packages.iter().zip(results) {
         let str_at = |k: &str| {
-            pkg.get(k).and_then(|v| v.as_str()).unwrap_or_default().to_string()
+            pkg.get(k)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
         };
         let (name, version) = (str_at("name"), str_at("version"));
         // The name and version are what select this package's ranges out of the
@@ -223,12 +236,21 @@ fn parse_response(doc: &serde_json::Value) -> Vec<VulnPackage> {
         let vulns: Vec<Vuln> = res
             .get("vulns")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().map(|v| parse_vuln_for(v, &name, &version)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .map(|v| parse_vuln_for(v, &name, &version))
+                    .collect()
+            })
             .unwrap_or_default();
         if vulns.is_empty() {
             continue;
         }
-        out.push(VulnPackage { name, version, ecosystem: str_at("ecosystem"), vulns });
+        out.push(VulnPackage {
+            name,
+            version,
+            ecosystem: str_at("ecosystem"),
+            vulns,
+        });
     }
     out
 }
@@ -242,7 +264,11 @@ fn parse_response(doc: &serde_json::Value) -> Vec<VulnPackage> {
 /// dozen more — so it is filtered by name before any range is read. Taking the
 /// first entry blindly would report another package's fix version.
 pub(crate) fn parse_vuln_for(v: &serde_json::Value, name: &str, installed: &str) -> Vuln {
-    let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("UNKNOWN").to_string();
+    let id = v
+        .get("id")
+        .and_then(|i| i.as_str())
+        .unwrap_or("UNKNOWN")
+        .to_string();
     let summary = v
         .get("summary")
         .or_else(|| v.get("details"))
@@ -251,7 +277,12 @@ pub(crate) fn parse_vuln_for(v: &serde_json::Value, name: &str, installed: &str)
         .chars()
         .take(120)
         .collect();
-    Vuln { id, severity: osv_severity(v), summary, fixed: fixed_version(v, name, installed) }
+    Vuln {
+        id,
+        severity: osv_severity(v),
+        summary,
+        fixed: fixed_version(v, name, installed),
+    }
 }
 
 /// The earliest published fix that applies to `installed`.
@@ -273,11 +304,19 @@ fn fixed_version(v: &serde_json::Value, name: &str, installed: &str) -> Option<S
 
     for a in affected {
         // Only this package's ranges; an advisory routinely lists siblings.
-        let a_name = a.get("package").and_then(|p| p.get("name")).and_then(|n| n.as_str());
+        let a_name = a
+            .get("package")
+            .and_then(|p| p.get("name"))
+            .and_then(|n| n.as_str());
         if a_name != Some(name) {
             continue;
         }
-        for range in a.get("ranges").and_then(|r| r.as_array()).into_iter().flatten() {
+        for range in a
+            .get("ranges")
+            .and_then(|r| r.as_array())
+            .into_iter()
+            .flatten()
+        {
             // GIT ranges are commit hashes, not versions — unusable here.
             if range.get("type").and_then(|t| t.as_str()) == Some("GIT") {
                 continue;
@@ -289,7 +328,9 @@ fn fixed_version(v: &serde_json::Value, name: &str, installed: &str) -> Option<S
                     introduced = Some(i.to_string());
                     continue;
                 }
-                let Some(fix) = e.get("fixed").and_then(|x| x.as_str()) else { continue };
+                let Some(fix) = e.get("fixed").and_then(|x| x.as_str()) else {
+                    continue;
+                };
                 // `introduced: "0"` means "from the beginning".
                 let opened = match introduced.as_deref() {
                     Some("0") | None => true,
@@ -522,15 +563,24 @@ mod tests {
 
     #[test]
     fn osv_severity_defaults_medium() {
-        assert_eq!(osv_severity(&serde_json::json!({ "id": "x" })), Severity::Medium);
+        assert_eq!(
+            osv_severity(&serde_json::json!({ "id": "x" })),
+            Severity::Medium
+        );
     }
 
     #[test]
     fn cvss_v3_vector_scores_correctly() {
         // The canonical 9.8 vector (network, no auth, full impact).
-        assert_eq!(cvss_base("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"), Some(9.8));
+        assert_eq!(
+            cvss_base("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"),
+            Some(9.8)
+        );
         // A scope-changed medium.
-        assert_eq!(cvss_base("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"), Some(6.1));
+        assert_eq!(
+            cvss_base("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N"),
+            Some(6.1)
+        );
         // Bare numeric still parses (mlab path).
         assert_eq!(cvss_base("7.5"), Some(7.5));
         // A v4.0 vector we don't compute → None (caller falls back).

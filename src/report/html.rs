@@ -49,7 +49,11 @@ pub fn render(report: &Report) -> String {
 
     let mut findings_html = String::new();
     let mut sorted: Vec<_> = report.findings.iter().collect();
-    sorted.sort_by(|a, b| b.severity.cmp(&a.severity).then(a.dependency.cmp(&b.dependency)));
+    sorted.sort_by(|a, b| {
+        b.severity
+            .cmp(&a.severity)
+            .then(a.dependency.cmp(&b.dependency))
+    });
     for f in &sorted {
         let enrich_cell = match f.enrich_url.as_deref() {
             Some(u) => format!(
@@ -92,7 +96,8 @@ pub fn render(report: &Report) -> String {
         ));
     }
 
-    format!(r#"<!doctype html>
+    format!(
+        r#"<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <title>postmortem report</title>
@@ -139,8 +144,11 @@ pub fn render(report: &Report) -> String {
         info = info,
         ecos = esc(&report.ecosystems.join(", ")),
         findings_body = if findings_html.is_empty() {
-            r#"<tr><td colspan="5" style="text-align:center;color:#888;">no findings</td></tr>"#.to_string()
-        } else { findings_html },
+            r#"<tr><td colspan="5" style="text-align:center;color:#888;">no findings</td></tr>"#
+                .to_string()
+        } else {
+            findings_html
+        },
         deps_body = deps_html,
     )
 }
@@ -189,8 +197,11 @@ pub fn render_tree(tree: &crate::tree::Tree) -> String {
     collect(&tree.roots, &mut flat);
 
     // Worst first: severity, then risk, then name — the order a reviewer reads.
-    let mut flagged: Vec<&crate::tree::Node> =
-        flat.iter().copied().filter(|n| !n.signals.is_empty()).collect();
+    let mut flagged: Vec<&crate::tree::Node> = flat
+        .iter()
+        .copied()
+        .filter(|n| !n.signals.is_empty())
+        .collect();
     flagged.sort_by(|a, b| {
         b.severity
             .cmp(&a.severity)

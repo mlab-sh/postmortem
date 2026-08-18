@@ -36,18 +36,26 @@ use owo_colors::OwoColorize;
 pub enum Event {
     FirstRelease,
     /// The publisher differs from the previous release's.
-    PublisherChanged { from: String, to: String },
+    PublisherChanged {
+        from: String,
+        to: String,
+    },
     InstallScriptAdded,
     InstallScriptRemoved,
     /// The declared source repository moved — a transfer, a rename, or a
     /// redirect to somewhere else entirely.
-    RepoChanged { from: String, to: String },
+    RepoChanged {
+        from: String,
+        to: String,
+    },
     /// A published attestation appeared (a move to Trusted Publishing).
     ProvenanceAdded,
     /// One disappeared — a publish that skipped the trusted flow.
     ProvenanceRemoved,
     /// This release followed a long silence.
-    Dormancy { days: i64 },
+    Dormancy {
+        days: i64,
+    },
     Deprecated,
 }
 
@@ -129,11 +137,16 @@ impl Timeline {
     /// Releases carrying at least one event, plus the installed one — which is
     /// always shown, since "where am I on this line" is the reason to look.
     pub fn eventful(&self) -> impl Iterator<Item = &Release> {
-        self.releases.iter().filter(|r| !r.events.is_empty() || r.installed)
+        self.releases
+            .iter()
+            .filter(|r| !r.events.is_empty() || r.installed)
     }
 
     pub fn notable(&self) -> usize {
-        self.releases.iter().filter(|r| r.events.iter().any(Event::is_notable)).count()
+        self.releases
+            .iter()
+            .filter(|r| r.events.iter().any(Event::is_notable))
+            .count()
     }
 }
 
@@ -150,7 +163,10 @@ pub fn build(doc: &serde_json::Value, package: &str, installed: Option<&str>) ->
         doc.get("time").and_then(|t| t.as_object()),
         doc.get("versions").and_then(|v| v.as_object()),
     ) else {
-        return Timeline { package: package.into(), ..Default::default() };
+        return Timeline {
+            package: package.into(),
+            ..Default::default()
+        };
     };
 
     // Chronological order is what makes this a narrative rather than a list;
@@ -182,7 +198,10 @@ pub fn build(doc: &serde_json::Value, package: &str, installed: Option<&str>) ->
                 if let (Some(a), Some(b)) = (was, now)
                     && a != b
                 {
-                    events.push(Event::PublisherChanged { from: a.into(), to: b.into() });
+                    events.push(Event::PublisherChanged {
+                        from: a.into(),
+                        to: b.into(),
+                    });
                 }
                 match (has_install_hook(p), has_install_hook(manifest)) {
                     (false, true) => events.push(Event::InstallScriptAdded),
@@ -222,29 +241,50 @@ pub fn build(doc: &serde_json::Value, package: &str, installed: Option<&str>) ->
         prev_ts = Some(ts);
     }
 
-    let quiet = releases.iter().filter(|r| r.events.is_empty() && !r.installed).count();
+    let quiet = releases
+        .iter()
+        .filter(|r| r.events.is_empty() && !r.installed)
+        .count();
     let installed_missing = installed
         .filter(|v| !releases.iter().any(|r| r.version == *v))
         .map(str::to_string);
-    Timeline { package: package.into(), releases, quiet, installed_missing }
+    Timeline {
+        package: package.into(),
+        releases,
+        quiet,
+        installed_missing,
+    }
 }
 
 fn parse_ts(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp())
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.timestamp())
 }
 
 fn publisher(manifest: &serde_json::Value) -> Option<&str> {
-    manifest.get("_npmUser").and_then(|u| u.get("name")).and_then(|n| n.as_str())
+    manifest
+        .get("_npmUser")
+        .and_then(|u| u.get("name"))
+        .and_then(|n| n.as_str())
 }
 
 fn has_provenance(manifest: &serde_json::Value) -> bool {
-    manifest.get("dist").and_then(|d| d.get("attestations")).is_some()
+    manifest
+        .get("dist")
+        .and_then(|d| d.get("attestations"))
+        .is_some()
 }
 
 fn has_install_hook(manifest: &serde_json::Value) -> bool {
-    manifest.get("scripts").and_then(|s| s.as_object()).is_some_and(|s| {
-        ["preinstall", "install", "postinstall"].iter().any(|k| s.contains_key(*k))
-    })
+    manifest
+        .get("scripts")
+        .and_then(|s| s.as_object())
+        .is_some_and(|s| {
+            ["preinstall", "install", "postinstall"]
+                .iter()
+                .any(|k| s.contains_key(*k))
+        })
 }
 
 fn repo_url(manifest: &serde_json::Value) -> Option<String> {
@@ -266,10 +306,7 @@ fn same_repo(a: &str, b: &str) -> bool {
 
 fn normalize_repo(u: &str) -> String {
     let u = u.trim().to_ascii_lowercase();
-    let u = u
-        .strip_prefix("git+")
-        .unwrap_or(&u)
-        .to_string();
+    let u = u.strip_prefix("git+").unwrap_or(&u).to_string();
     let u = u
         .strip_prefix("https://")
         .or_else(|| u.strip_prefix("http://"))
@@ -311,14 +348,25 @@ pub fn render(t: &Timeline, all: bool) {
         t.releases.len() - t.quiet
     );
 
-    let shown: Vec<&Release> =
-        if all { t.releases.iter().collect() } else { t.eventful().collect() };
+    let shown: Vec<&Release> = if all {
+        t.releases.iter().collect()
+    } else {
+        t.eventful().collect()
+    };
 
     for r in shown {
         let date = fmt_date(r.published);
-        let here = if r.installed { "  ← installed".green().bold().to_string() } else { String::new() };
+        let here = if r.installed {
+            "  ← installed".green().bold().to_string()
+        } else {
+            String::new()
+        };
         let notable = r.events.iter().any(Event::is_notable);
-        let marker = if notable { "!".red().bold().to_string() } else { " ".to_string() };
+        let marker = if notable {
+            "!".red().bold().to_string()
+        } else {
+            " ".to_string()
+        };
 
         if r.events.is_empty() {
             println!("  {} {marker} {:<12}{here}", date.dimmed(), r.version);
@@ -331,7 +379,11 @@ pub fn render(t: &Timeline, all: bool) {
                 e.label().dimmed().to_string()
             };
             if i == 0 {
-                println!("  {} {marker} {:<12} {label}{here}", date.dimmed(), r.version);
+                println!(
+                    "  {} {marker} {:<12} {label}{here}",
+                    date.dimmed(),
+                    r.version
+                );
             } else {
                 println!("  {}   {:<12} {label}", " ".repeat(10), "");
             }
@@ -341,9 +393,12 @@ pub fn render(t: &Timeline, all: bool) {
     if !all && t.quiet > 0 {
         println!(
             "\n  {}",
-            format!("… {} release(s) with no change of publisher, scripts, repository or \
-                     provenance (--all to list them)", t.quiet)
-                .dimmed()
+            format!(
+                "… {} release(s) with no change of publisher, scripts, repository or \
+                     provenance (--all to list them)",
+                t.quiet
+            )
+            .dimmed()
         );
     }
 
@@ -364,15 +419,19 @@ fn summary(t: &Timeline, notable: usize) -> String {
         return format!("{}@{v} is installed but no longer published", t.package);
     }
     if notable == 0 {
-        return format!("{}: no handover, no new install script, no repository move", t.package);
+        return format!(
+            "{}: no handover, no new install script, no repository move",
+            t.package
+        );
     }
     // Two or more notable events is the shape worth naming — a handover
     // *followed by* a new install script is the takeover pattern, and neither
     // half alone would say so.
-    let handover = t
-        .releases
-        .iter()
-        .any(|r| r.events.iter().any(|e| matches!(e, Event::PublisherChanged { .. })));
+    let handover = t.releases.iter().any(|r| {
+        r.events
+            .iter()
+            .any(|e| matches!(e, Event::PublisherChanged { .. }))
+    });
     let hook = t
         .releases
         .iter()
@@ -383,7 +442,10 @@ fn summary(t: &Timeline, notable: usize) -> String {
             t.package
         );
     }
-    format!("{}: {notable} release(s) changed who or how it publishes", t.package)
+    format!(
+        "{}: {notable} release(s) changed who or how it publishes",
+        t.package
+    )
 }
 
 fn fmt_date(ts: i64) -> String {
@@ -498,7 +560,10 @@ mod tests {
         ]);
         doc["versions"]["1.1.0"]["_npmUser"] = json!(null);
         let t = build(&doc, "p", None);
-        assert!(kinds(&t, "1.1.0").is_empty(), "unknown must not read as changed");
+        assert!(
+            kinds(&t, "1.1.0").is_empty(),
+            "unknown must not read as changed"
+        );
     }
 
     #[test]
@@ -507,7 +572,10 @@ mod tests {
             ("1.0.0", "2020-01-01", "a", true, ""),
             ("1.1.0", "2020-02-01", "a", false, ""),
         ]);
-        assert_eq!(kinds(&build(&doc, "p", None), "1.1.0"), ["install_script_removed"]);
+        assert_eq!(
+            kinds(&build(&doc, "p", None), "1.1.0"),
+            ["install_script_removed"]
+        );
     }
 
     #[test]
@@ -515,21 +583,54 @@ mod tests {
         // Registries record the same repo half a dozen ways; reporting a move
         // every time a maintainer tidied the field would bury the real ones.
         let doc = packument(&[
-            ("1.0.0", "2020-01-01", "a", false, "git+https://github.com/acme/thing.git"),
-            ("1.1.0", "2020-02-01", "a", false, "git://www.github.com/acme/thing"),
-            ("1.2.0", "2020-03-01", "a", false, "https://github.com/evilcorp/thing"),
+            (
+                "1.0.0",
+                "2020-01-01",
+                "a",
+                false,
+                "git+https://github.com/acme/thing.git",
+            ),
+            (
+                "1.1.0",
+                "2020-02-01",
+                "a",
+                false,
+                "git://www.github.com/acme/thing",
+            ),
+            (
+                "1.2.0",
+                "2020-03-01",
+                "a",
+                false,
+                "https://github.com/evilcorp/thing",
+            ),
         ]);
         let t = build(&doc, "p", None);
-        assert!(kinds(&t, "1.1.0").is_empty(), "same repo, different spelling");
+        assert!(
+            kinds(&t, "1.1.0").is_empty(),
+            "same repo, different spelling"
+        );
         assert_eq!(kinds(&t, "1.2.0"), ["repo_changed"]);
     }
 
     #[test]
     fn repo_normalization_covers_the_shapes_registries_use() {
-        assert!(same_repo("git+https://github.com/a/b.git", "https://github.com/a/b"));
-        assert!(same_repo("git@github.com:a/b.git", "https://github.com/a/b"));
-        assert!(same_repo("https://www.github.com/a/b/", "http://github.com/a/b"));
-        assert!(!same_repo("https://github.com/a/b", "https://github.com/c/b"));
+        assert!(same_repo(
+            "git+https://github.com/a/b.git",
+            "https://github.com/a/b"
+        ));
+        assert!(same_repo(
+            "git@github.com:a/b.git",
+            "https://github.com/a/b"
+        ));
+        assert!(same_repo(
+            "https://www.github.com/a/b/",
+            "http://github.com/a/b"
+        ));
+        assert!(!same_repo(
+            "https://github.com/a/b",
+            "https://github.com/c/b"
+        ));
     }
 
     #[test]
@@ -565,7 +666,13 @@ mod tests {
             ("1.2.0", "2020-03-01", "a", false, ""),
         ]);
         let t = build(&doc, "p", Some("1.1.0"));
-        assert!(t.releases.iter().find(|r| r.version == "1.1.0").unwrap().installed);
+        assert!(
+            t.releases
+                .iter()
+                .find(|r| r.version == "1.1.0")
+                .unwrap()
+                .installed
+        );
         assert!(t.eventful().any(|r| r.version == "1.1.0"));
         // 1.2.0 is quiet and not installed, so it collapses.
         assert!(!t.eventful().any(|r| r.version == "1.2.0"));

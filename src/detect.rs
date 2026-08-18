@@ -168,7 +168,11 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
         )
     };
 
-    let detected = match target.file_name().and_then(|n| n.to_str()).unwrap_or_default() {
+    let detected = match target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default()
+    {
         "package-lock.json" | "npm-shrinkwrap.json" | "pnpm-lock.yaml" | "yarn.lock" => {
             if !root.join("package.json").is_file() {
                 return Err(missing("package.json"));
@@ -276,7 +280,11 @@ fn go_at(root: &Path, manifest: PathBuf) -> Detected {
 }
 
 fn maven_at(root: &Path, pom: PathBuf) -> Detected {
-    Detected::Java { root: root.to_path_buf(), manifest: Some(pom), lockfile: None }
+    Detected::Java {
+        root: root.to_path_buf(),
+        manifest: Some(pom),
+        lockfile: None,
+    }
 }
 
 fn gradle_at(root: &Path, lockfile: PathBuf) -> Detected {
@@ -313,9 +321,11 @@ fn py_lock(root: &Path) -> Option<PathBuf> {
 
 /// First `*.gemspec` at the repo root, if any.
 fn first_gemspec(root: &Path) -> Option<PathBuf> {
-    std::fs::read_dir(root).ok()?.flatten().map(|e| e.path()).find(|p| {
-        p.extension().and_then(|s| s.to_str()) == Some("gemspec")
-    })
+    std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| p.extension().and_then(|s| s.to_str()) == Some("gemspec"))
 }
 
 fn first_existing(root: &Path, names: &[&str]) -> Option<PathBuf> {

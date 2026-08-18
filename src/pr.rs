@@ -53,8 +53,14 @@ const WANTED: &[&str] = &[
 /// Directories whose manifests describe someone else's project, not this one.
 /// A vendored `node_modules/*/package.json` would otherwise be materialized by
 /// the thousand and parsed as a project of its own.
-const SKIP_DIRS: &[&str] =
-    &["node_modules/", "vendor/", ".git/", "test/fixtures/", "tests/fixtures/", "testdata/"];
+const SKIP_DIRS: &[&str] = &[
+    "node_modules/",
+    "vendor/",
+    ".git/",
+    "test/fixtures/",
+    "tests/fixtures/",
+    "testdata/",
+];
 
 /// A parsed pull-request reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,12 +111,7 @@ pub fn parse_url(s: &str) -> Option<PrRef> {
     if kind != "pull" && kind != "pulls" {
         return None;
     }
-    let number: u64 = parts
-        .next()?
-        .split(['#', '?'])
-        .next()?
-        .parse()
-        .ok()?;
+    let number: u64 = parts.next()?.split(['#', '?']).next()?.parse().ok()?;
 
     Some(PrRef {
         owner: owner.to_string(),
@@ -184,8 +185,7 @@ pub fn materialize(pr: &PrRef, settings: &mut Settings, ui: &crate::ui::Ui) -> R
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("creating {}", parent.display()))?;
             }
-            std::fs::write(&dest, body)
-                .with_context(|| format!("writing {}", dest.display()))?;
+            std::fs::write(&dest, body).with_context(|| format!("writing {}", dest.display()))?;
             files += 1;
         }
     }
@@ -207,7 +207,10 @@ fn api_get(
     let mut req = agents
         .for_url(url)
         .get(url)
-        .set("User-Agent", concat!("postmortem/", env!("CARGO_PKG_VERSION")))
+        .set(
+            "User-Agent",
+            concat!("postmortem/", env!("CARGO_PKG_VERSION")),
+        )
         .set("Accept", "application/vnd.github+json");
     if let Some(t) = token {
         req = req.set("Authorization", &format!("Bearer {t}"));
@@ -237,12 +240,26 @@ fn fetch_meta(
     token: Option<&str>,
     pr: &PrRef,
 ) -> Result<PrMeta> {
-    let url = format!("{}/repos/{}/{}/pulls/{}", ep.github(), pr.owner, pr.repo, pr.number);
-    let v = api_get(agents, token, &url)
-        .with_context(|| format!("reading pull request {}/{} #{}", pr.owner, pr.repo, pr.number))?;
+    let url = format!(
+        "{}/repos/{}/{}/pulls/{}",
+        ep.github(),
+        pr.owner,
+        pr.repo,
+        pr.number
+    );
+    let v = api_get(agents, token, &url).with_context(|| {
+        format!(
+            "reading pull request {}/{} #{}",
+            pr.owner, pr.repo, pr.number
+        )
+    })?;
 
     let s = |path: [&str; 2]| -> String {
-        v.get(path[0]).and_then(|x| x.get(path[1])).and_then(|x| x.as_str()).unwrap_or("").to_string()
+        v.get(path[0])
+            .and_then(|x| x.get(path[1]))
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string()
     };
     let base_sha = s(["base", "sha"]);
     let head_sha = s(["head", "sha"]);
@@ -264,7 +281,11 @@ fn fetch_meta(
         .map(String::from);
 
     Ok(PrMeta {
-        title: v.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+        title: v
+            .get("title")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
         base_ref: s(["base", "ref"]),
         base_sha,
         head_ref: s(["head", "ref"]),
@@ -281,10 +302,13 @@ fn list_manifests(
     pr: &PrRef,
     sha: &str,
 ) -> Result<Vec<String>> {
-    let url =
-        format!("{}/repos/{}/{}/git/trees/{sha}?recursive=1", ep.github(), pr.owner, pr.repo);
-    let v = api_get(agents, token, &url)
-        .with_context(|| format!("listing the tree at {sha}"))?;
+    let url = format!(
+        "{}/repos/{}/{}/git/trees/{sha}?recursive=1",
+        ep.github(),
+        pr.owner,
+        pr.repo
+    );
+    let v = api_get(agents, token, &url).with_context(|| format!("listing the tree at {sha}"))?;
 
     // GitHub caps a recursive tree; say so rather than silently diff a subset.
     if v.get("truncated").and_then(|x| x.as_bool()) == Some(true) {
@@ -296,12 +320,22 @@ fn list_manifests(
     }
 
     let mut out: Vec<String> = Vec::new();
-    for e in v.get("tree").and_then(|t| t.as_array()).into_iter().flatten() {
+    for e in v
+        .get("tree")
+        .and_then(|t| t.as_array())
+        .into_iter()
+        .flatten()
+    {
         if e.get("type").and_then(|x| x.as_str()) != Some("blob") {
             continue;
         }
-        let Some(path) = e.get("path").and_then(|x| x.as_str()) else { continue };
-        if SKIP_DIRS.iter().any(|d| path.starts_with(d) || path.contains(&format!("/{d}"))) {
+        let Some(path) = e.get("path").and_then(|x| x.as_str()) else {
+            continue;
+        };
+        if SKIP_DIRS
+            .iter()
+            .any(|d| path.starts_with(d) || path.contains(&format!("/{d}")))
+        {
             continue;
         }
         let name = path.rsplit('/').next().unwrap_or(path);
@@ -322,10 +356,10 @@ fn fetch_file(
     path: &str,
 ) -> Result<String> {
     let url = format!("{}/{}/{}/{sha}/{path}", ep.github_raw(), pr.owner, pr.repo);
-    let mut req = agents
-        .for_url(&url)
-        .get(&url)
-        .set("User-Agent", concat!("postmortem/", env!("CARGO_PKG_VERSION")));
+    let mut req = agents.for_url(&url).get(&url).set(
+        "User-Agent",
+        concat!("postmortem/", env!("CARGO_PKG_VERSION")),
+    );
     if let Some(t) = token {
         req = req.set("Authorization", &format!("Bearer {t}"));
     }
@@ -340,12 +374,19 @@ mod tests {
     use super::*;
 
     fn pr(owner: &str, repo: &str, number: u64) -> Option<PrRef> {
-        Some(PrRef { owner: owner.into(), repo: repo.into(), number })
+        Some(PrRef {
+            owner: owner.into(),
+            repo: repo.into(),
+            number,
+        })
     }
 
     #[test]
     fn parses_the_canonical_url() {
-        assert_eq!(parse_url("https://github.com/mlab-sh/postmortem/pull/42"), pr("mlab-sh", "postmortem", 42));
+        assert_eq!(
+            parse_url("https://github.com/mlab-sh/postmortem/pull/42"),
+            pr("mlab-sh", "postmortem", 42)
+        );
     }
 
     #[test]
@@ -392,7 +433,10 @@ mod tests {
 
     #[test]
     fn strips_a_git_suffix_from_the_repo() {
-        assert_eq!(parse_url("https://github.com/o/r.git/pull/7"), pr("o", "r", 7));
+        assert_eq!(
+            parse_url("https://github.com/o/r.git/pull/7"),
+            pr("o", "r", 7)
+        );
     }
 
     #[test]
@@ -400,13 +444,19 @@ mod tests {
         // A manifest missing here is silently absent from both sides of the
         // diff, which reads as "no dependencies" rather than as an error.
         for name in [
-            "package-lock.json", "pnpm-lock.yaml", "yarn.lock", // node
-            "requirements.txt", "poetry.lock", "Pipfile.lock",  // python
-            "Cargo.lock",                                        // rust
-            "Gemfile.lock",                                      // ruby
-            "composer.lock",                                     // php
-            "go.mod", "go.sum",                                  // go
-            "pom.xml", "gradle.lockfile",                        // java
+            "package-lock.json",
+            "pnpm-lock.yaml",
+            "yarn.lock", // node
+            "requirements.txt",
+            "poetry.lock",
+            "Pipfile.lock",  // python
+            "Cargo.lock",    // rust
+            "Gemfile.lock",  // ruby
+            "composer.lock", // php
+            "go.mod",
+            "go.sum", // go
+            "pom.xml",
+            "gradle.lockfile", // java
         ] {
             assert!(WANTED.contains(&name), "{name} is not fetched");
         }

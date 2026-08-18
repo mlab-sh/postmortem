@@ -70,7 +70,11 @@ pub struct Remedy {
 impl Remedy {
     /// The worst advisory severity — what sorts the plan.
     pub fn worst(&self) -> Severity {
-        self.vulns.iter().map(|v| v.severity).max().unwrap_or(Severity::Info)
+        self.vulns
+            .iter()
+            .map(|v| v.severity)
+            .max()
+            .unwrap_or(Severity::Info)
     }
 
     /// Advisories with no published fix. A remedy carrying any of these cannot
@@ -118,8 +122,10 @@ impl Plan {
 /// deterministic and testable without a network.
 pub fn plan(deps: &[Dependency], vulns: &[VulnPackage]) -> Plan {
     // Direct dependencies, for the reverse walk and the position check.
-    let index: BTreeMap<(&str, &str), &Dependency> =
-        deps.iter().map(|d| ((d.name.as_str(), d.version.as_str()), d)).collect();
+    let index: BTreeMap<(&str, &str), &Dependency> = deps
+        .iter()
+        .map(|d| ((d.name.as_str(), d.version.as_str()), d))
+        .collect();
 
     let mut remedies = Vec::new();
     for vp in vulns {
@@ -131,8 +137,16 @@ pub fn plan(deps: &[Dependency], vulns: &[VulnPackage]) -> Plan {
         };
 
         let target = best_target(&vp.vulns, &vp.version);
-        let position = if dep.direct { Position::Direct } else { Position::Transitive };
-        let via = if dep.direct { Vec::new() } else { direct_ancestors(dep, &index) };
+        let position = if dep.direct {
+            Position::Direct
+        } else {
+            Position::Transitive
+        };
+        let via = if dep.direct {
+            Vec::new()
+        } else {
+            direct_ancestors(dep, &index)
+        };
 
         remedies.push(Remedy {
             ecosystem: dep.ecosystem,
@@ -163,7 +177,9 @@ pub fn plan(deps: &[Dependency], vulns: &[VulnPackage]) -> Plan {
 fn best_target(vulns: &[Vuln], installed: &str) -> Option<String> {
     let mut best: Option<String> = None;
     for v in vulns {
-        let Some(f) = v.fixed.as_deref() else { continue };
+        let Some(f) = v.fixed.as_deref() else {
+            continue;
+        };
         // A "fix" at or below what is installed cannot be the answer; that means
         // the ranges disagree with the installed version, so trust neither.
         if !crate::semver::lt(installed, f) {
@@ -233,7 +249,11 @@ pub fn upgrade_command(eco: Ecosystem, name: &str, target: &str) -> Option<Strin
 ///
 /// `None` where the ecosystem has no override mechanism, which is itself worth
 /// reporting rather than papering over.
-pub fn override_snippet(eco: Ecosystem, name: &str, target: &str) -> Option<(&'static str, String)> {
+pub fn override_snippet(
+    eco: Ecosystem,
+    name: &str,
+    target: &str,
+) -> Option<(&'static str, String)> {
     Some(match eco {
         Ecosystem::Node => (
             "package.json (npm) — or \"resolutions\" for yarn, \"pnpm.overrides\" for pnpm",
@@ -289,12 +309,21 @@ pub fn render(plan: &Plan, root_label: &str) {
         let sev = sev_label(r.worst());
         let head = format!("{}@{}", r.name, r.installed);
         match &r.target {
-            Some(t) => println!("  {sev}  {}  {}  {}", head.bold(), "→".dimmed(), t.green().bold()),
+            Some(t) => println!(
+                "  {sev}  {}  {}  {}",
+                head.bold(),
+                "→".dimmed(),
+                t.green().bold()
+            ),
             None => println!("  {sev}  {}  {}", head.bold(), "(no published fix)".red()),
         }
 
         for v in &r.vulns {
-            let mark = if v.fixed.is_none() { "✗".red().to_string() } else { "·".dimmed().to_string() };
+            let mark = if v.fixed.is_none() {
+                "✗".red().to_string()
+            } else {
+                "·".dimmed().to_string()
+            };
             println!(
                 "        {mark} {} {}",
                 v.id.dimmed(),
@@ -342,7 +371,11 @@ pub fn render(plan: &Plan, root_label: &str) {
             .truecolor(255, 165, 0)
         );
     }
-    if plan.remedies.iter().any(|r| r.position == Position::Transitive) {
+    if plan
+        .remedies
+        .iter()
+        .any(|r| r.position == Position::Transitive)
+    {
         println!(
             "{}",
             "note: an override forces a version the parent never declared support for — \
@@ -358,7 +391,10 @@ pub fn render(plan: &Plan, root_label: &str) {
     };
     crate::gochi::say(
         mood,
-        format!("{actionable} of {} fixable by upgrading", plan.remedies.len()),
+        format!(
+            "{actionable} of {} fixable by upgrading",
+            plan.remedies.len()
+        ),
     );
 }
 
@@ -422,7 +458,10 @@ mod tests {
             license_source: LicenseSource::Unknown,
             resolved_url: None,
             integrity: None,
-            parents: parents.iter().map(|(n, v)| (n.to_string(), v.to_string())).collect(),
+            parents: parents
+                .iter()
+                .map(|(n, v)| (n.to_string(), v.to_string()))
+                .collect(),
         }
     }
 
@@ -447,7 +486,11 @@ mod tests {
     #[test]
     fn a_direct_package_gets_an_upgrade_command() {
         let deps = vec![dep("lodash", "4.17.15", true, &[])];
-        let vulns = vec![vp("lodash", "4.17.15", vec![vuln("GHSA-a", Severity::High, Some("4.18.0"))])];
+        let vulns = vec![vp(
+            "lodash",
+            "4.17.15",
+            vec![vuln("GHSA-a", Severity::High, Some("4.18.0"))],
+        )];
         let p = plan(&deps, &vulns);
 
         assert_eq!(p.remedies.len(), 1);
@@ -470,11 +513,19 @@ mod tests {
             dep("send", "0.18.0", false, &[("express", "4.18.2")]),
             dep("ms", "2.0.0", false, &[("send", "0.18.0")]),
         ];
-        let vulns = vec![vp("ms", "2.0.0", vec![vuln("GHSA-b", Severity::Medium, Some("2.1.3"))])];
+        let vulns = vec![vp(
+            "ms",
+            "2.0.0",
+            vec![vuln("GHSA-b", Severity::Medium, Some("2.1.3"))],
+        )];
         let r = &plan(&deps, &vulns).remedies[0];
 
         assert_eq!(r.position, Position::Transitive);
-        assert_eq!(r.via, vec!["express@4.18.2"], "the walk stops at the direct dependency");
+        assert_eq!(
+            r.via,
+            vec!["express@4.18.2"],
+            "the walk stops at the direct dependency"
+        );
         assert!(override_snippet(Ecosystem::Node, "ms", "2.1.3").is_some());
     }
 
@@ -483,9 +534,18 @@ mod tests {
         let deps = vec![
             dep("a", "1.0", true, &[]),
             dep("b", "1.0", true, &[]),
-            dep("shared", "1.0", false, &[("a", "1.0"), ("b", "1.0"), ("a", "1.0")]),
+            dep(
+                "shared",
+                "1.0",
+                false,
+                &[("a", "1.0"), ("b", "1.0"), ("a", "1.0")],
+            ),
         ];
-        let vulns = vec![vp("shared", "1.0", vec![vuln("G", Severity::Low, Some("2.0"))])];
+        let vulns = vec![vp(
+            "shared",
+            "1.0",
+            vec![vuln("G", Severity::Low, Some("2.0"))],
+        )];
         assert_eq!(plan(&deps, &vulns).remedies[0].via, vec!["a@1.0", "b@1.0"]);
     }
 
@@ -514,7 +574,10 @@ mod tests {
         let vulns = vec![vp(
             "x",
             "1.0.0",
-            vec![vuln("G-1", Severity::High, Some("1.2.0")), vuln("G-2", Severity::High, None)],
+            vec![
+                vuln("G-1", Severity::High, Some("1.2.0")),
+                vuln("G-2", Severity::High, None),
+            ],
         )];
         let p = plan(&deps, &vulns);
         let r = &p.remedies[0];
@@ -532,7 +595,11 @@ mod tests {
         // The database and the lockfile disagree; recommending a downgrade would
         // be nonsense, so neither is trusted.
         let deps = vec![dep("x", "2.0.0", true, &[])];
-        let vulns = vec![vp("x", "2.0.0", vec![vuln("G", Severity::High, Some("1.0.0"))])];
+        let vulns = vec![vp(
+            "x",
+            "2.0.0",
+            vec![vuln("G", Severity::High, Some("1.0.0"))],
+        )];
         assert_eq!(plan(&deps, &vulns).remedies[0].target, None);
     }
 
@@ -540,7 +607,11 @@ mod tests {
     fn an_advisory_for_a_package_outside_the_graph_is_skipped() {
         // The scan and the parse disagree; inventing a position would be a guess.
         let deps = vec![dep("x", "1.0.0", true, &[])];
-        let vulns = vec![vp("ghost", "9.9.9", vec![vuln("G", Severity::High, Some("10.0"))])];
+        let vulns = vec![vp(
+            "ghost",
+            "9.9.9",
+            vec![vuln("G", Severity::High, Some("10.0"))],
+        )];
         assert!(plan(&deps, &vulns).is_empty());
     }
 
@@ -548,8 +619,16 @@ mod tests {
     fn the_plan_is_ordered_worst_first() {
         let deps = vec![dep("low", "1.0", true, &[]), dep("crit", "1.0", true, &[])];
         let vulns = vec![
-            vp("low", "1.0", vec![vuln("G-low", Severity::Low, Some("2.0"))]),
-            vp("crit", "1.0", vec![vuln("G-crit", Severity::Critical, Some("2.0"))]),
+            vp(
+                "low",
+                "1.0",
+                vec![vuln("G-low", Severity::Low, Some("2.0"))],
+            ),
+            vp(
+                "crit",
+                "1.0",
+                vec![vuln("G-crit", Severity::Critical, Some("2.0"))],
+            ),
         ];
         let p = plan(&deps, &vulns);
         assert_eq!(p.remedies[0].name, "crit");
@@ -584,8 +663,16 @@ mod tests {
             dep("deep", "1.0", false, &[("direct", "1.0")]),
         ];
         let vulns = vec![
-            vp("direct", "1.0", vec![vuln("G-1", Severity::High, Some("2.0"))]),
-            vp("deep", "1.0", vec![vuln("G-2", Severity::High, Some("3.0"))]),
+            vp(
+                "direct",
+                "1.0",
+                vec![vuln("G-1", Severity::High, Some("2.0"))],
+            ),
+            vp(
+                "deep",
+                "1.0",
+                vec![vuln("G-2", Severity::High, Some("3.0"))],
+            ),
         ];
         let doc = to_json(&plan(&deps, &vulns), "/p");
         let by_name = |n: &str| {
@@ -603,6 +690,9 @@ mod tests {
 
         let t = by_name("deep");
         assert!(t["override"]["snippet"].is_string());
-        assert!(t["command"].is_null(), "a transitive dep is not installed directly");
+        assert!(
+            t["command"].is_null(),
+            "a transitive dep is not installed directly"
+        );
     }
 }

@@ -21,7 +21,7 @@ use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::model::{Dependency, Ecosystem, Scope, LicenseSource};
+use crate::model::{Dependency, Ecosystem, LicenseSource, Scope};
 
 pub fn parse(manifest: &Path, lockfile: Option<&Path>) -> Result<Vec<Dependency>> {
     let text = std::fs::read_to_string(manifest)
@@ -160,8 +160,7 @@ fn parse_go_sum(text: &str) -> BTreeMap<(String, String), String> {
     let mut out = BTreeMap::new();
     for line in text.lines() {
         let mut parts = line.split_whitespace();
-        let (Some(path), Some(version), Some(hash)) =
-            (parts.next(), parts.next(), parts.next())
+        let (Some(path), Some(version), Some(hash)) = (parts.next(), parts.next(), parts.next())
         else {
             continue;
         };
@@ -199,13 +198,22 @@ replace example.com/x => ./local
     fn parses_direct_and_indirect() {
         let reqs = parse_go_mod(GO_MOD);
         assert_eq!(reqs.len(), 4);
-        let gin = reqs.iter().find(|r| r.path == "github.com/gin-gonic/gin").unwrap();
+        let gin = reqs
+            .iter()
+            .find(|r| r.path == "github.com/gin-gonic/gin")
+            .unwrap();
         assert!(!gin.indirect, "gin is direct");
-        let crypto = reqs.iter().find(|r| r.path == "golang.org/x/crypto").unwrap();
+        let crypto = reqs
+            .iter()
+            .find(|r| r.path == "golang.org/x/crypto")
+            .unwrap();
         assert!(crypto.indirect, "x/crypto is // indirect");
         assert_eq!(crypto.version, "v0.14.0");
         // single-line require outside a block
-        assert!(reqs.iter().any(|r| r.path == "github.com/sirupsen/logrus" && !r.indirect));
+        assert!(
+            reqs.iter()
+                .any(|r| r.path == "github.com/sirupsen/logrus" && !r.indirect)
+        );
     }
 
     #[test]
@@ -218,7 +226,10 @@ replace example.com/x => ./local
         std::fs::write(&sump, GO_SUM).unwrap();
 
         let deps = parse(&modp, Some(&sump)).unwrap();
-        let gin = deps.iter().find(|d| d.name == "github.com/gin-gonic/gin").unwrap();
+        let gin = deps
+            .iter()
+            .find(|d| d.name == "github.com/gin-gonic/gin")
+            .unwrap();
         assert_eq!(gin.integrity.as_deref(), Some("h1:AAAA="));
         assert_eq!(gin.ecosystem, Ecosystem::Go);
         assert!(gin.direct);

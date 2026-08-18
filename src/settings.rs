@@ -200,7 +200,12 @@ impl NetworkSettings {
     /// command over a config typo helps nobody. The warning goes to stderr so it
     /// cannot corrupt a machine format on stdout.
     pub fn apply(&self, builder: ureq::AgentBuilder) -> ureq::AgentBuilder {
-        let Some(url) = self.proxy.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        let Some(url) = self
+            .proxy
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        else {
             return builder;
         };
         match ureq::Proxy::new(url) {
@@ -215,8 +220,14 @@ impl NetworkSettings {
     /// Build the agent pair for these settings.
     pub fn agents(&self, timeout: std::time::Duration) -> Agents {
         let direct = ureq::AgentBuilder::new().timeout(timeout).build();
-        let proxied = self.apply(ureq::AgentBuilder::new().timeout(timeout)).build();
-        Agents { proxied, direct, no_proxy: self.no_proxy.clone() }
+        let proxied = self
+            .apply(ureq::AgentBuilder::new().timeout(timeout))
+            .build();
+        Agents {
+            proxied,
+            direct,
+            no_proxy: self.no_proxy.clone(),
+        }
     }
 }
 
@@ -274,7 +285,11 @@ pub struct TreeSettings {
 
 impl Default for TreeSettings {
     fn default() -> Self {
-        Self { min_stars: 20, recent_days: 30, stale_days: 365 }
+        Self {
+            min_stars: 20,
+            recent_days: 30,
+            stale_days: 365,
+        }
     }
 }
 
@@ -308,7 +323,9 @@ impl Settings {
         match Self::load() {
             Ok(s) => s,
             Err(e) => {
-                let where_ = config_path().map(|p| p.display().to_string()).unwrap_or_default();
+                let where_ = config_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
                 eprintln!(
                     "warn: ignoring {where_} — {e:#}\n\
                      warn: continuing with defaults; any `network` overrides in it are NOT applied"
@@ -358,7 +375,9 @@ impl Settings {
             return Ok(None);
         }
 
-        let where_to = config_path().map(|p| p.display().to_string()).unwrap_or_default();
+        let where_to = config_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
         eprint!("Save it to {where_to}? [y/N]: ");
         std::io::stderr().flush().ok();
         let mut ans = String::new();
@@ -377,7 +396,11 @@ impl Settings {
         self.gitlab_token
             .clone()
             .filter(|t| !t.trim().is_empty())
-            .or_else(|| std::env::var("GITLAB_TOKEN").ok().filter(|t| !t.trim().is_empty()))
+            .or_else(|| {
+                std::env::var("GITLAB_TOKEN")
+                    .ok()
+                    .filter(|t| !t.trim().is_empty())
+            })
     }
 
     /// Resolve the Codeberg token: config → `$CODEBERG_TOKEN`. No prompt — public
@@ -386,7 +409,11 @@ impl Settings {
         self.codeberg_token
             .clone()
             .filter(|t| !t.trim().is_empty())
-            .or_else(|| std::env::var("CODEBERG_TOKEN").ok().filter(|t| !t.trim().is_empty()))
+            .or_else(|| {
+                std::env::var("CODEBERG_TOKEN")
+                    .ok()
+                    .filter(|t| !t.trim().is_empty())
+            })
     }
 
     /// Resolve the mlab vuln-scan token: config → `$VULN_MLAB_TOKEN`. No prompt —
@@ -395,7 +422,11 @@ impl Settings {
         self.vuln_token
             .clone()
             .filter(|t| !t.trim().is_empty())
-            .or_else(|| std::env::var("VULN_MLAB_TOKEN").ok().filter(|t| !t.trim().is_empty()))
+            .or_else(|| {
+                std::env::var("VULN_MLAB_TOKEN")
+                    .ok()
+                    .filter(|t| !t.trim().is_empty())
+            })
     }
 }
 
@@ -423,13 +454,19 @@ mod tests {
     fn an_override_wins_and_loses_its_trailing_slash() {
         // Callers append `/path` unconditionally, so a trailing slash would
         // produce `//path` against mirrors that are strict about it.
-        let e = Endpoints { npm: Some("https://nexus.corp/repository/npm/".into()), ..Default::default() };
+        let e = Endpoints {
+            npm: Some("https://nexus.corp/repository/npm/".into()),
+            ..Default::default()
+        };
         assert_eq!(e.npm(), "https://nexus.corp/repository/npm");
     }
 
     #[test]
     fn a_blank_override_falls_back_rather_than_producing_a_bare_path() {
-        let e = Endpoints { npm: Some("   ".into()), ..Default::default() };
+        let e = Endpoints {
+            npm: Some("   ".into()),
+            ..Default::default()
+        };
         assert_eq!(e.npm(), "https://registry.npmjs.org");
     }
 
@@ -440,7 +477,10 @@ mod tests {
         let err = serde_yaml::from_str::<NetworkSettings>("endpoints:\n  npmm: https://x.test\n")
             .unwrap_err()
             .to_string();
-        assert!(err.contains("npmm"), "the error should name the bad key: {err}");
+        assert!(
+            err.contains("npmm"),
+            "the error should name the bad key: {err}"
+        );
         assert!(err.contains("npm"), "and list the valid ones: {err}");
     }
 
@@ -462,8 +502,14 @@ mod tests {
 
     #[test]
     fn host_is_extracted_without_userinfo_or_port() {
-        assert_eq!(host_of("https://user:pw@nexus.corp:8443/repo/npm").as_deref(), Some("nexus.corp"));
-        assert_eq!(host_of("https://Registry.NPMJS.org/x").as_deref(), Some("registry.npmjs.org"));
+        assert_eq!(
+            host_of("https://user:pw@nexus.corp:8443/repo/npm").as_deref(),
+            Some("nexus.corp")
+        );
+        assert_eq!(
+            host_of("https://Registry.NPMJS.org/x").as_deref(),
+            Some("registry.npmjs.org")
+        );
         assert_eq!(host_of("not a url"), Some("not a url".into()));
     }
 

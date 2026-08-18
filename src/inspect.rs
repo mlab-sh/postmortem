@@ -26,8 +26,10 @@ pub fn run(args: &crate::cli::InspectArgs) -> Result<()> {
     let ui = ui::Ui::new(!args.no_progress);
 
     // Read the installed inventory once (via whichever backend is available).
-    let Some(backend) =
-        system::detect().into_iter().find(|m| m.available && m.implemented).map(|m| m.name)
+    let Some(backend) = system::detect()
+        .into_iter()
+        .find(|m| m.available && m.implemented)
+        .map(|m| m.name)
     else {
         bail!("no supported system package manager found");
     };
@@ -46,7 +48,10 @@ pub fn run(args: &crate::cli::InspectArgs) -> Result<()> {
     // The package's dependency subtree (itself + everything it pulls in).
     let sub = subtree_deps(&args.package, &inv.deps);
     if sub.is_empty() {
-        bail!("'{}' is not installed, or has no dependency record", args.package);
+        bail!(
+            "'{}' is not installed, or has no dependency record",
+            args.package
+        );
     }
 
     if !args.deep {
@@ -57,7 +62,11 @@ pub fn run(args: &crate::cli::InspectArgs) -> Result<()> {
 
 /// Basic mode: the offline subtree with the same signals/scoring as `system`.
 fn render_focused(pkg: &str, sub: &[Dependency], inv: &system::Inventory) -> Result<()> {
-    let eco = sub.first().map(|d| d.ecosystem.as_str()).unwrap_or("system").to_string();
+    let eco = sub
+        .first()
+        .map(|d| d.ecosystem.as_str())
+        .unwrap_or("system")
+        .to_string();
     let mut forest = tree::build_focused(pkg, &[eco], sub, None, pkg);
     system::annotate(&mut forest, &inv.signals);
     tree::score(&mut forest);
@@ -83,7 +92,8 @@ fn deep(args: &crate::cli::InspectArgs, sub: &[Dependency], ui: &ui::Ui) -> Resu
         gitlab: settings.gitlab_token(),
         codeberg: settings.codeberg_token(),
     };
-    let resolver = resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network);
+    let resolver =
+        resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network);
     let resolutions = resolver.resolve_all(sub, ui);
 
     // 2. Stage a temp workspace under ~/.postmortem/inspect/.
@@ -104,7 +114,9 @@ fn deep(args: &crate::cli::InspectArgs, sub: &[Dependency], ui: &ui::Ui) -> Resu
     let truncated = targets.len().saturating_sub(MAX_CLONES);
     targets.truncate(MAX_CLONES);
     if truncated > 0 {
-        ui.note(format!("capping at {MAX_CLONES} repos ({truncated} more not cloned)"));
+        ui.note(format!(
+            "capping at {MAX_CLONES} repos ({truncated} more not cloned)"
+        ));
     }
 
     let bar = gochi::Loader::start(targets.len() as u64, ui.animating());
@@ -120,7 +132,13 @@ fn deep(args: &crate::cli::InspectArgs, sub: &[Dependency], ui: &ui::Ui) -> Resu
         bar.step(format!("git clone {}", repo.slug()));
         let dest = work.join(sanitize(&repo.slug()));
         if git_clone(&clone_url(repo), &dest) {
-            analyzed.push(audit_clone(name, repo, &dest, &vuln_ctx, args.allow_test_files));
+            analyzed.push(audit_clone(
+                name,
+                repo,
+                &dest,
+                &vuln_ctx,
+                args.allow_test_files,
+            ));
         } else {
             analyzed.push(RepoAudit::clone_failed(name, repo));
         }
@@ -128,8 +146,15 @@ fn deep(args: &crate::cli::InspectArgs, sub: &[Dependency], ui: &ui::Ui) -> Resu
     }
     let findings_total: usize = analyzed.iter().map(|a| a.findings.len()).sum();
     bar.finish(
-        if findings_total > 0 { gochi::Mood::Bad } else { gochi::Mood::Happy },
-        format!("analyzed {} repo(s), {findings_total} finding(s)", analyzed.len()),
+        if findings_total > 0 {
+            gochi::Mood::Bad
+        } else {
+            gochi::Mood::Happy
+        },
+        format!(
+            "analyzed {} repo(s), {findings_total} finding(s)",
+            analyzed.len()
+        ),
     );
 
     // 4. Write the Markdown report, then delete the cloned source.
@@ -157,7 +182,13 @@ struct RepoAudit {
 
 impl RepoAudit {
     fn clone_failed(dep: &str, repo: &RepoRef) -> Self {
-        RepoAudit { dep: dep.into(), slug: repo.slug(), cloned: false, findings: vec![], vulns: 0 }
+        RepoAudit {
+            dep: dep.into(),
+            slug: repo.slug(),
+            cloned: false,
+            findings: vec![],
+            vulns: 0,
+        }
     }
 }
 
@@ -168,7 +199,12 @@ fn audit_clone(
     dep: &str,
     repo: &RepoRef,
     dir: &Path,
-    vuln_ctx: &(crate::settings::Agents, crate::cache::Cache, Option<String>, String),
+    vuln_ctx: &(
+        crate::settings::Agents,
+        crate::cache::Cache,
+        Option<String>,
+        String,
+    ),
     allow_test_files: bool,
 ) -> RepoAudit {
     // Rewrite finding locations relative to the clone (the absolute temp path is
@@ -197,7 +233,13 @@ fn audit_clone(
             vulns += v.iter().map(|p| p.vulns.len()).sum::<usize>();
         }
     }
-    RepoAudit { dep: dep.into(), slug: repo.slug(), cloned: true, findings, vulns }
+    RepoAudit {
+        dep: dep.into(),
+        slug: repo.slug(),
+        cloned: true,
+        findings,
+        vulns,
+    }
 }
 
 // --- report -------------------------------------------------------------------
@@ -211,7 +253,10 @@ fn render_report(
 ) -> String {
     use std::fmt::Write;
     let mut md = String::new();
-    let flagged = audits.iter().filter(|a| !a.findings.is_empty() || a.vulns > 0).count();
+    let flagged = audits
+        .iter()
+        .filter(|a| !a.findings.is_empty() || a.vulns > 0)
+        .count();
 
     let _ = writeln!(md, "# postmortem deep inspection of `{pkg}`\n");
     let _ = writeln!(
@@ -219,7 +264,11 @@ fn render_report(
         "{} dependencies · {} repos analyzed · **{flagged} with findings**{}\n",
         sub.len(),
         audits.iter().filter(|a| a.cloned).count(),
-        if truncated > 0 { format!(" · {truncated} repos not cloned (cap)") } else { String::new() },
+        if truncated > 0 {
+            format!(" · {truncated} repos not cloned (cap)")
+        } else {
+            String::new()
+        },
     );
 
     // Reputation summary (tree --online).
@@ -230,17 +279,35 @@ fn render_report(
     rows.sort_by(|a, b| a.name.cmp(&b.name));
     for d in rows {
         if let Some(r) = resolutions.get(&(d.name.clone(), d.version.clone())) {
-            let repo = r.repo.as_ref().map(|x| x.slug()).unwrap_or_else(|| "-".into());
-            let stars = r.stats.as_ref().map(|s| s.stars.to_string()).unwrap_or_else(|| "-".into());
-            let sig = if r.signals.is_empty() { "-".into() } else { r.signals.join(", ") };
-            let _ = writeln!(md, "| `{}` | {} | {} | {} | {} |", d.name, repo, stars, r.risk, sig);
+            let repo = r
+                .repo
+                .as_ref()
+                .map(|x| x.slug())
+                .unwrap_or_else(|| "-".into());
+            let stars = r
+                .stats
+                .as_ref()
+                .map(|s| s.stars.to_string())
+                .unwrap_or_else(|| "-".into());
+            let sig = if r.signals.is_empty() {
+                "-".into()
+            } else {
+                r.signals.join(", ")
+            };
+            let _ = writeln!(
+                md,
+                "| `{}` | {} | {} | {} | {} |",
+                d.name, repo, stars, r.risk, sig
+            );
         }
     }
 
     // Static analysis of the cloned source.
     let _ = writeln!(md, "\n## Static analysis (full source)\n");
-    let mut with_findings: Vec<&RepoAudit> =
-        audits.iter().filter(|a| !a.findings.is_empty() || a.vulns > 0).collect();
+    let mut with_findings: Vec<&RepoAudit> = audits
+        .iter()
+        .filter(|a| !a.findings.is_empty() || a.vulns > 0)
+        .collect();
     with_findings.sort_by(|a, b| b.findings.len().cmp(&a.findings.len()));
     if with_findings.is_empty() {
         let _ = writeln!(md, "_No findings across the cloned sources._");
@@ -248,14 +315,27 @@ fn render_report(
     for a in with_findings {
         let _ = writeln!(md, "### `{}` ({})", a.dep, a.slug);
         if a.vulns > 0 {
-            let _ = writeln!(md, "- **{} known vulnerabilit{}** (via vuln.mlab.sh)", a.vulns, if a.vulns == 1 { "y" } else { "ies" });
+            let _ = writeln!(
+                md,
+                "- **{} known vulnerabilit{}** (via vuln.mlab.sh)",
+                a.vulns,
+                if a.vulns == 1 { "y" } else { "ies" }
+            );
         }
         let mut fs: Vec<&crate::model::Finding> = a.findings.iter().collect();
         fs.sort_by(|x, y| y.severity.cmp(&x.severity));
         for f in fs.iter().take(50) {
-            let loc = f.location.as_deref().map(|l| format!(" ({l})")).unwrap_or_default();
+            let loc = f
+                .location
+                .as_deref()
+                .map(|l| format!(" ({l})"))
+                .unwrap_or_default();
             // The matched value (IP / domain / URL / wallet), after the location.
-            let val = f.evidence.as_deref().map(|e| format!(" [`{}`]", e.trim())).unwrap_or_default();
+            let val = f
+                .evidence
+                .as_deref()
+                .map(|e| format!(" [`{}`]", e.trim()))
+                .unwrap_or_default();
             let _ = writeln!(
                 md,
                 "- `{}` **{}**: {}{}{}",
@@ -297,12 +377,17 @@ fn sev_label(s: Severity) -> &'static str {
 
 /// The package + its full transitive dependency closure (BFS over child edges).
 fn subtree_deps(pkg: &str, deps: &[Dependency]) -> Vec<Dependency> {
-    let index: HashMap<DepRef, &Dependency> =
-        deps.iter().map(|d| ((d.name.clone(), d.version.clone()), d)).collect();
+    let index: HashMap<DepRef, &Dependency> = deps
+        .iter()
+        .map(|d| ((d.name.clone(), d.version.clone()), d))
+        .collect();
     let mut children: HashMap<DepRef, Vec<DepRef>> = HashMap::new();
     for d in deps {
         for p in &d.parents {
-            children.entry(p.clone()).or_default().push((d.name.clone(), d.version.clone()));
+            children
+                .entry(p.clone())
+                .or_default()
+                .push((d.name.clone(), d.version.clone()));
         }
     }
     let mut seen = HashSet::new();
@@ -343,10 +428,12 @@ fn confirm(pkg: &str, deps: usize, yes: bool) -> Result<bool> {
     );
     eprintln!(
         "      {}",
-        "I'll clone every dependency's source and run the full detection suite over it."
-            .dimmed()
+        "I'll clone every dependency's source and run the full detection suite over it.".dimmed()
     );
-    eprintln!("      {}", "This can take a while and use network + disk.".dimmed());
+    eprintln!(
+        "      {}",
+        "This can take a while and use network + disk.".dimmed()
+    );
     if !std::io::stdin().is_terminal() {
         eprintln!("      {}", "non-interactive, pass -y to proceed.".dimmed());
         return Ok(false);
@@ -362,7 +449,9 @@ fn confirm(pkg: &str, deps: usize, yes: bool) -> Result<bool> {
 fn workspace(pkg: &str) -> Result<PathBuf> {
     let base = settings::base_dir()
         .ok_or_else(|| anyhow::anyhow!("cannot determine $HOME for the workspace"))?;
-    let dir = base.join("inspect").join(format!("{}-{}", sanitize(pkg), std::process::id()));
+    let dir = base
+        .join("inspect")
+        .join(format!("{}-{}", sanitize(pkg), std::process::id()));
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -372,7 +461,11 @@ fn report_path(pkg: &str) -> PathBuf {
 }
 
 fn git_available() -> bool {
-    Command::new("git").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
+    Command::new("git")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 fn git_clone(url: &str, dest: &Path) -> bool {
@@ -391,7 +484,15 @@ fn clone_url(repo: &RepoRef) -> String {
 
 /// Collapse a slug/name into one filesystem-safe path segment.
 fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' }).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -410,7 +511,10 @@ mod tests {
             direct: parents.is_empty(),
             resolved_url: None,
             integrity: None,
-            parents: parents.iter().map(|p| (p.to_string(), "1.0".to_string())).collect(),
+            parents: parents
+                .iter()
+                .map(|p| (p.to_string(), "1.0".to_string()))
+                .collect(),
         }
     }
 
@@ -424,18 +528,31 @@ mod tests {
             dep("c", &["a"]),
             dep("d", &[]),
         ];
-        let mut got: Vec<String> = subtree_deps("root", &deps).into_iter().map(|d| d.name).collect();
+        let mut got: Vec<String> = subtree_deps("root", &deps)
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
         got.sort();
         assert_eq!(got, vec!["a", "b", "c", "root"]);
         // A leaf's subtree is just itself.
-        assert_eq!(subtree_deps("c", &deps).into_iter().map(|d| d.name).collect::<Vec<_>>(), vec!["c"]);
+        assert_eq!(
+            subtree_deps("c", &deps)
+                .into_iter()
+                .map(|d| d.name)
+                .collect::<Vec<_>>(),
+            vec!["c"]
+        );
         // Unknown package → empty.
         assert!(subtree_deps("nope", &deps).is_empty());
     }
 
     #[test]
     fn clone_url_and_sanitize() {
-        let repo = RepoRef { host: "github.com".into(), owner: "o".into(), name: "r".into() };
+        let repo = RepoRef {
+            host: "github.com".into(),
+            owner: "o".into(),
+            name: "r".into(),
+        };
         assert_eq!(clone_url(&repo), "https://github.com/o/r.git");
         assert_eq!(sanitize("group/sub/proj"), "group_sub_proj");
     }

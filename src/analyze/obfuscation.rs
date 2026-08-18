@@ -93,7 +93,9 @@ pub fn scan_dir(root: &Path, out: &mut Vec<Finding>, lang: Lang) {
         if s.ends_with(".min.js.map") || s.ends_with(".d.ts") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         scan_file(&path, &text, out, lang);
     }
 }

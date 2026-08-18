@@ -76,7 +76,9 @@ pub fn scan(
 
     let mut out = Vec::new();
     for dep in deps {
-        let Some(groups) = by_pkg.get(dep.name.as_str()) else { continue };
+        let Some(groups) = by_pkg.get(dep.name.as_str()) else {
+            continue;
+        };
         let mut vulns: Vec<Vuln> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for g in groups {

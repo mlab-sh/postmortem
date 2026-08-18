@@ -128,7 +128,10 @@ pub enum RiskSignal {
     StatsUnavailable,
     // --- identity / provenance (P2) ---
     /// Name is a near-miss of a popular package (typosquat).
-    Typosquat { target: String, kind: &'static str },
+    Typosquat {
+        target: String,
+        kind: &'static str,
+    },
     /// An install lifecycle script appears in this version but not the prior one.
     InstallScriptAdded,
     /// Published after a long dormancy (the event-stream pattern).
@@ -145,13 +148,17 @@ pub enum RiskSignal {
     NewbornPackage(i64),
     /// The linked source repo doesn't declare this package — its stars are being
     /// borrowed to manufacture reputation (starjacking).
-    Starjacking { repo: String },
+    Starjacking {
+        repo: String,
+    },
     /// This version dropped the provenance attestation an earlier version carried
     /// — published outside the trusted OIDC/CI flow (the axios pattern).
     ProvenanceRemoved,
     /// The declared source repo returns 404 (deleted/renamed) — its handle is
     /// re-registerable, i.e. repojacking-exposed.
-    DanglingRepo { repo: String },
+    DanglingRepo {
+        repo: String,
+    },
 }
 
 impl RiskSignal {
@@ -424,7 +431,10 @@ impl Resolver {
                         }
                         let dep = unique[i];
                         let res = self.resolve_one(dep);
-                        if res.worst.is_some_and(|s| s >= crate::model::Severity::Medium) {
+                        if res
+                            .worst
+                            .is_some_and(|s| s >= crate::model::Severity::Medium)
+                        {
                             flagged.fetch_add(1, Ordering::Relaxed);
                         }
                         out.lock()
@@ -480,7 +490,10 @@ impl Resolver {
         // Typosquat proximity, against the corpus for this dependency's own
         // ecosystem. Offline, and a no-op where no corpus exists.
         if let Some(m) = crate::typosquat::check(&dep.name, dep.ecosystem) {
-            signals.push(RiskSignal::Typosquat { target: m.target, kind: m.kind });
+            signals.push(RiskSignal::Typosquat {
+                target: m.target,
+                kind: m.kind,
+            });
         }
 
         // Version/provenance anomalies stay npm-specific: they read the npm
@@ -555,7 +568,11 @@ impl Resolver {
         if dep.ecosystem == Ecosystem::Go {
             let repo = parse_repo(&dep.name);
             if !self.want_licenses {
-                return Ok(CachedRepo { repo, licenses: Vec::new(), maintainers: Vec::new() });
+                return Ok(CachedRepo {
+                    repo,
+                    licenses: Vec::new(),
+                    maintainers: Vec::new(),
+                });
             }
             let key = format!("go:{}@{}", dep.name, dep.version);
             if let Some(hit) = self.cache.get::<CachedRepo>("registry", &key) {
@@ -572,10 +589,20 @@ impl Resolver {
                 // deps.dev not knowing a module is normal (private, or too new);
                 // a transport failure is not cached, so it retries next run.
                 Ok(None) => Vec::new(),
-                Err(_) => return Ok(CachedRepo { repo, licenses: Vec::new(), maintainers: Vec::new() }),
+                Err(_) => {
+                    return Ok(CachedRepo {
+                        repo,
+                        licenses: Vec::new(),
+                        maintainers: Vec::new(),
+                    });
+                }
             };
             // Go resolves through deps.dev, which publishes no maintainer set.
-            let record = CachedRepo { repo, licenses, maintainers: Vec::new() };
+            let record = CachedRepo {
+                repo,
+                licenses,
+                maintainers: Vec::new(),
+            };
             self.cache.put("registry", &key, &record);
             return Ok(record);
         }
@@ -598,7 +625,10 @@ impl Resolver {
                 None => None,
             },
         };
-        let licenses = doc.as_ref().map(|v| raw_licenses_from(dep, v)).unwrap_or_default();
+        let licenses = doc
+            .as_ref()
+            .map(|v| raw_licenses_from(dep, v))
+            .unwrap_or_default();
         // Packagist publishes the maintainer set in the same document; npm's
         // comes from the packument, and the other registries need a call we do
         // not make — those stay empty, meaning *unknown*, never "nobody".
@@ -609,7 +639,9 @@ impl Resolver {
             .map(|p| maintainer_names(p.get("maintainers")))
             .unwrap_or_default();
         let mut repo = match &doc {
-            Some(v) => repo_candidates(dep.ecosystem, v).iter().find_map(|u| parse_repo(u)),
+            Some(v) => repo_candidates(dep.ecosystem, v)
+                .iter()
+                .find_map(|u| parse_repo(u)),
             None => None, // 404 — unpublished/private/unknown package
         };
         // Homebrew third-party taps aren't on formulae.brew.sh (404 above), but
@@ -620,12 +652,21 @@ impl Resolver {
         if repo.is_none()
             && matches!(
                 dep.ecosystem,
-                Ecosystem::Brew | Ecosystem::Pacman | Ecosystem::Apt | Ecosystem::Dnf | Ecosystem::Nix | Ecosystem::Apk
+                Ecosystem::Brew
+                    | Ecosystem::Pacman
+                    | Ecosystem::Apt
+                    | Ecosystem::Dnf
+                    | Ecosystem::Nix
+                    | Ecosystem::Apk
             )
         {
             repo = dep.resolved_url.as_deref().and_then(parse_repo);
         }
-        let record = CachedRepo { repo, licenses, maintainers };
+        let record = CachedRepo {
+            repo,
+            licenses,
+            maintainers,
+        };
         self.cache.put("registry", &key, &record);
         Ok(record)
     }
@@ -706,20 +747,43 @@ impl Resolver {
         }
         let stats = match repo.kind() {
             Some(Host::GitHub) => self.host_stats(
-                &format!("{}/repos/{}/{}", self.endpoints.github(), repo.owner, repo.name),
-                self.tokens.github.as_deref().map(|t| ("Authorization", format!("Bearer {t}"))),
+                &format!(
+                    "{}/repos/{}/{}",
+                    self.endpoints.github(),
+                    repo.owner,
+                    repo.name
+                ),
+                self.tokens
+                    .github
+                    .as_deref()
+                    .map(|t| ("Authorization", format!("Bearer {t}"))),
                 "stargazers_count",
                 "pushed_at",
             )?,
             Some(Host::GitLab) => self.host_stats(
-                &format!("{}/projects/{}", self.endpoints.gitlab(), urlencode(&repo.slug())),
-                self.tokens.gitlab.as_deref().map(|t| ("PRIVATE-TOKEN", t.to_string())),
+                &format!(
+                    "{}/projects/{}",
+                    self.endpoints.gitlab(),
+                    urlencode(&repo.slug())
+                ),
+                self.tokens
+                    .gitlab
+                    .as_deref()
+                    .map(|t| ("PRIVATE-TOKEN", t.to_string())),
                 "star_count",
                 "last_activity_at",
             )?,
             Some(Host::Codeberg) => self.host_stats(
-                &format!("{}/repos/{}/{}", self.endpoints.codeberg(), repo.owner, repo.name),
-                self.tokens.codeberg.as_deref().map(|t| ("Authorization", format!("token {t}"))),
+                &format!(
+                    "{}/repos/{}/{}",
+                    self.endpoints.codeberg(),
+                    repo.owner,
+                    repo.name
+                ),
+                self.tokens
+                    .codeberg
+                    .as_deref()
+                    .map(|t| ("Authorization", format!("token {t}"))),
                 "stars_count",
                 "updated_at",
             )?,
@@ -748,8 +812,14 @@ impl Resolver {
         };
         Ok(Some(RepoStats {
             stars: v.get(stars_field).and_then(|s| s.as_u64()).unwrap_or(0),
-            created_at: v.get("created_at").and_then(|s| s.as_str()).and_then(parse_ts),
-            pushed_at: v.get(activity_field).and_then(|s| s.as_str()).and_then(parse_ts),
+            created_at: v
+                .get("created_at")
+                .and_then(|s| s.as_str())
+                .and_then(parse_ts),
+            pushed_at: v
+                .get(activity_field)
+                .and_then(|s| s.as_str())
+                .and_then(parse_ts),
             archived: v.get("archived").and_then(|s| s.as_bool()).unwrap_or(false),
             // GitHub carries `language` in the repo object for free; the others
             // omit it (`None`), and fill it via `--languages` if requested.
@@ -770,16 +840,39 @@ impl Resolver {
         }
         let (url, auth) = match repo.kind() {
             Some(Host::GitHub) => (
-                format!("{}/repos/{}/{}/languages", self.endpoints.github(), repo.owner, repo.name),
-                self.tokens.github.as_deref().map(|t| ("Authorization", format!("Bearer {t}"))),
+                format!(
+                    "{}/repos/{}/{}/languages",
+                    self.endpoints.github(),
+                    repo.owner,
+                    repo.name
+                ),
+                self.tokens
+                    .github
+                    .as_deref()
+                    .map(|t| ("Authorization", format!("Bearer {t}"))),
             ),
             Some(Host::GitLab) => (
-                format!("{}/projects/{}/languages", self.endpoints.gitlab(), urlencode(&repo.slug())),
-                self.tokens.gitlab.as_deref().map(|t| ("PRIVATE-TOKEN", t.to_string())),
+                format!(
+                    "{}/projects/{}/languages",
+                    self.endpoints.gitlab(),
+                    urlencode(&repo.slug())
+                ),
+                self.tokens
+                    .gitlab
+                    .as_deref()
+                    .map(|t| ("PRIVATE-TOKEN", t.to_string())),
             ),
             Some(Host::Codeberg) => (
-                format!("{}/repos/{}/{}/languages", self.endpoints.codeberg(), repo.owner, repo.name),
-                self.tokens.codeberg.as_deref().map(|t| ("Authorization", format!("token {t}"))),
+                format!(
+                    "{}/repos/{}/{}/languages",
+                    self.endpoints.codeberg(),
+                    repo.owner,
+                    repo.name
+                ),
+                self.tokens
+                    .codeberg
+                    .as_deref()
+                    .map(|t| ("Authorization", format!("token {t}"))),
             ),
             None => return Ok(None),
         };
@@ -822,7 +915,11 @@ impl Resolver {
     /// failure is an `Err`. A `User-Agent` is always set — crates.io and the
     /// GitHub API reject requests without one.
     fn get_json(&self, url: &str, headers: &[(&str, String)]) -> Result<Option<serde_json::Value>> {
-        let mut req = self.agents.for_url(url).get(url).set("User-Agent", USER_AGENT);
+        let mut req = self
+            .agents
+            .for_url(url)
+            .get(url)
+            .set("User-Agent", USER_AGENT);
         for (k, v) in headers {
             req = req.set(k, v);
         }
@@ -869,7 +966,12 @@ fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) -> Option<Str
         Ecosystem::Brew => format!("{}/api/formula/{}.json", ep.brew(), dep.name),
         // Go's module path and Pacman's package URL resolve without a registry
         // call (repo parsed from the name / `resolved_url`).
-        Ecosystem::Go | Ecosystem::Pacman | Ecosystem::Apt | Ecosystem::Dnf | Ecosystem::Nix | Ecosystem::Apk => return None,
+        Ecosystem::Go
+        | Ecosystem::Pacman
+        | Ecosystem::Apt
+        | Ecosystem::Dnf
+        | Ecosystem::Nix
+        | Ecosystem::Apk => return None,
     })
 }
 
@@ -879,10 +981,7 @@ fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) -> Option<Str
 /// the exact artifact that was installed, whereas a registry describes what the
 /// publisher currently says about that version. So this only fills packages that
 /// have none, and never overwrites a [`LicenseSource::Lockfile`] value.
-pub fn apply_licenses(
-    deps: &mut [Dependency],
-    resolutions: &HashMap<DepRef, Resolution>,
-) {
+pub fn apply_licenses(deps: &mut [Dependency], resolutions: &HashMap<DepRef, Resolution>) {
     for d in deps.iter_mut() {
         if !d.licenses.is_empty() {
             continue;
@@ -934,7 +1033,11 @@ fn raw_licenses_from(dep: &Dependency, v: &serde_json::Value) -> Vec<String> {
     let arr_at = |val: &serde_json::Value, key: &str| -> Vec<String> {
         val.get(key)
             .and_then(|x| x.as_array())
-            .map(|a| a.iter().filter_map(|s| s.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default()
     };
     /// npm values may be a bare string or a `{type, url}` object.
@@ -966,7 +1069,9 @@ fn raw_licenses_from(dep: &Dependency, v: &serde_json::Value) -> Vec<String> {
         // then the free text, then the trove classifiers — whose last segment is
         // the license name (`License :: OSI Approved :: MIT License`).
         Ecosystem::Python => {
-            let Some(info) = v.get("info") else { return Vec::new() };
+            let Some(info) = v.get("info") else {
+                return Vec::new();
+            };
             let mut out = Vec::new();
             out.extend(str_at(info, "license_expression"));
             out.extend(str_at(info, "license"));
@@ -984,7 +1089,8 @@ fn raw_licenses_from(dep: &Dependency, v: &serde_json::Value) -> Vec<String> {
                 .get("versions")
                 .and_then(|a| a.as_array())
                 .and_then(|a| {
-                    a.iter().find(|ver| str_at(ver, "num").as_deref() == Some(&dep.version))
+                    a.iter()
+                        .find(|ver| str_at(ver, "num").as_deref() == Some(&dep.version))
                 })
                 .and_then(|ver| str_at(ver, "license"));
             pinned
@@ -1022,12 +1128,21 @@ fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<String> {
     match eco {
         Ecosystem::Node => extract_repo_url(v).into_iter().collect(),
         Ecosystem::Python => {
-            let Some(info) = v.get("info") else { return Vec::new() };
+            let Some(info) = v.get("info") else {
+                return Vec::new();
+            };
             let mut out = Vec::new();
             // Prefer explicitly repo-labelled project URLs, then any URL, then
             // the home page.
             if let Some(urls) = info.get("project_urls").and_then(|u| u.as_object()) {
-                for key in ["Source", "Source Code", "Repository", "Code", "GitHub", "Git"] {
+                for key in [
+                    "Source",
+                    "Source Code",
+                    "Repository",
+                    "Code",
+                    "GitHub",
+                    "Git",
+                ] {
                     if let Some(u) = urls.get(key).and_then(|x| x.as_str()) {
                         out.push(u.to_string());
                     }
@@ -1075,13 +1190,20 @@ fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<String> {
         // formulae point `urls.stable` straight at a GitHub release tarball).
         Ecosystem::Brew => [
             s(v, "homepage"),
-            v.get("urls").and_then(|u| u.get("stable")).and_then(|st| s(st, "url")),
+            v.get("urls")
+                .and_then(|u| u.get("stable"))
+                .and_then(|st| s(st, "url")),
         ]
         .into_iter()
         .flatten()
         .collect(),
         // Resolved directly from the name / resolved_url, never via a registry.
-        Ecosystem::Go | Ecosystem::Pacman | Ecosystem::Apt | Ecosystem::Dnf | Ecosystem::Nix | Ecosystem::Apk => Vec::new(),
+        Ecosystem::Go
+        | Ecosystem::Pacman
+        | Ecosystem::Apt
+        | Ecosystem::Dnf
+        | Ecosystem::Nix
+        | Ecosystem::Apk => Vec::new(),
     }
 }
 
@@ -1102,8 +1224,11 @@ fn normalize_languages(v: &serde_json::Value) -> Option<Vec<(String, f64)>> {
     }
     items.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    let mut out: Vec<(String, f64)> =
-        items.iter().take(TOP).map(|(n, w)| (n.clone(), w / total * 100.0)).collect();
+    let mut out: Vec<(String, f64)> = items
+        .iter()
+        .take(TOP)
+        .map(|(n, w)| (n.clone(), w / total * 100.0))
+        .collect();
     if items.len() > TOP {
         let other = (100.0 - out.iter().map(|(_, p)| p).sum::<f64>()).max(0.0);
         if other >= 0.05 {
@@ -1178,7 +1303,11 @@ fn parse_repo(url: &str) -> Option<RepoRef> {
     let rest = rest.trim_end_matches('/');
     let rest = rest.strip_suffix(".git").unwrap_or(rest);
 
-    let segs: Vec<&str> = rest.split('/').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let segs: Vec<&str> = rest
+        .split('/')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
     if segs.len() < 2 {
         return None;
     }
@@ -1214,7 +1343,9 @@ fn apache_mirror(url: &str) -> Option<String> {
     let repo = if let Some(i) = url.find("?p=") {
         url[i + 3..].split(['&', '#']).next()?
     } else if let Some(i) = url.find("/repos/asf/") {
-        url[i + "/repos/asf/".len()..].split(['/', '?', '#']).next()?
+        url[i + "/repos/asf/".len()..]
+            .split(['/', '?', '#'])
+            .next()?
     } else {
         return None;
     };
@@ -1256,9 +1387,10 @@ fn vanity_mirror(url: &str) -> Option<String> {
         "gopkg.in" => {
             if let Some(name) = tail.first().and_then(|s| strip_gopkg_version(s)) {
                 Some(format!("github.com/go-{name}/{name}"))
-            } else if let (Some(user), Some(name)) =
-                (tail.first(), tail.get(1).and_then(|s| strip_gopkg_version(s)))
-            {
+            } else if let (Some(user), Some(name)) = (
+                tail.first(),
+                tail.get(1).and_then(|s| strip_gopkg_version(s)),
+            ) {
                 Some(format!("github.com/{user}/{name}"))
             } else {
                 None
@@ -1313,7 +1445,9 @@ fn shares_token(a: &str, b: &str) -> bool {
 
 /// RFC3339 (GitHub timestamps) → unix seconds.
 fn parse_ts(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp())
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.timestamp())
 }
 
 /// Derive provenance anomalies for `version` from an npm packument. Compares the
@@ -1334,14 +1468,21 @@ fn compute_version_meta(doc: &serde_json::Value, version: &str) -> VersionMeta {
     ) else {
         return meta;
     };
-    let Some(inst_ts) = times.get(version).and_then(|t| t.as_str()).and_then(parse_ts) else {
+    let Some(inst_ts) = times
+        .get(version)
+        .and_then(|t| t.as_str())
+        .and_then(parse_ts)
+    else {
         return meta;
     };
     // Record the (immutable) publish time up front — even a brand-new *first*
     // release is "fresh", and that decision happens at use-time, not here.
     meta.published_ts = Some(inst_ts);
     // `time.created` is the package's first-ever publish — the newborn clock.
-    meta.first_release_ts = times.get("created").and_then(|t| t.as_str()).and_then(parse_ts);
+    meta.first_release_ts = times
+        .get("created")
+        .and_then(|t| t.as_str())
+        .and_then(parse_ts);
 
     // Prior version = the one published closest before the installed one.
     let is_version = |k: &str| k != "created" && k != "modified" && k != version;
@@ -1351,7 +1492,9 @@ fn compute_version_meta(doc: &serde_json::Value, version: &str) -> VersionMeta {
         if !is_version(v) {
             continue;
         }
-        let Some(ts) = t.as_str().and_then(parse_ts) else { continue };
+        let Some(ts) = t.as_str().and_then(parse_ts) else {
+            continue;
+        };
         if ts >= inst_ts {
             continue;
         }
@@ -1396,7 +1539,10 @@ fn compute_version_meta(doc: &serde_json::Value, version: &str) -> VersionMeta {
 /// Does a version manifest carry an npm provenance attestation (published via
 /// Trusted Publishing / `--provenance`, i.e. `dist.attestations`)?
 fn has_provenance(manifest: &serde_json::Value) -> bool {
-    manifest.get("dist").and_then(|d| d.get("attestations")).is_some()
+    manifest
+        .get("dist")
+        .and_then(|d| d.get("attestations"))
+        .is_some()
 }
 
 /// Does a version manifest declare an install lifecycle script?
@@ -1435,7 +1581,10 @@ fn maintainer_names(v: Option<&serde_json::Value>) -> Vec<String> {
 }
 
 fn publisher(manifest: &serde_json::Value) -> Option<&str> {
-    manifest.get("_npmUser").and_then(|u| u.get("name")).and_then(|n| n.as_str())
+    manifest
+        .get("_npmUser")
+        .and_then(|u| u.get("name"))
+        .and_then(|n| n.as_str())
 }
 
 #[cfg(test)]
@@ -1459,7 +1608,10 @@ mod tests {
         let m = compute_version_meta(&doc, "2.0.0");
         assert!(m.install_script_added, "postinstall added vs prior");
         assert!(m.new_publisher, "eve never shipped an earlier version");
-        assert!(m.dormant_gap_days.unwrap() > 365, "long dormancy before the release");
+        assert!(
+            m.dormant_gap_days.unwrap() > 365,
+            "long dormancy before the release"
+        );
     }
 
     #[test]
@@ -1478,25 +1630,61 @@ mod tests {
         assert!(!m.install_script_added);
         assert!(!m.new_publisher);
         assert!(m.dormant_gap_days.is_none());
-        assert_eq!(m.published_ts, parse_ts("2023-02-01T00:00:00.000Z"), "publish time recorded");
+        assert_eq!(
+            m.published_ts,
+            parse_ts("2023-02-01T00:00:00.000Z"),
+            "publish time recorded"
+        );
     }
 
     #[test]
     fn fresh_release_cooldown_window() {
         let now = 1_700_000_000;
-        assert_eq!(fresh_age_hours(Some(now - 10 * 3600), now), Some(10), "10h old → fresh");
-        assert_eq!(fresh_age_hours(Some(now - 47 * 3600), now), Some(47), "just inside 48h");
-        assert_eq!(fresh_age_hours(Some(now - 49 * 3600), now), None, "aged out of window");
-        assert_eq!(fresh_age_hours(None, now), None, "no publish time → not fresh");
-        assert_eq!(fresh_age_hours(Some(now + 3600), now), Some(0), "clock skew → age 0, still fresh");
+        assert_eq!(
+            fresh_age_hours(Some(now - 10 * 3600), now),
+            Some(10),
+            "10h old → fresh"
+        );
+        assert_eq!(
+            fresh_age_hours(Some(now - 47 * 3600), now),
+            Some(47),
+            "just inside 48h"
+        );
+        assert_eq!(
+            fresh_age_hours(Some(now - 49 * 3600), now),
+            None,
+            "aged out of window"
+        );
+        assert_eq!(
+            fresh_age_hours(None, now),
+            None,
+            "no publish time → not fresh"
+        );
+        assert_eq!(
+            fresh_age_hours(Some(now + 3600), now),
+            Some(0),
+            "clock skew → age 0, still fresh"
+        );
     }
 
     #[test]
     fn newborn_window() {
         let now = 1_700_000_000;
-        assert_eq!(newborn_age_days(Some(now - 5 * 86_400), now), Some(5), "5d old → newborn");
-        assert_eq!(newborn_age_days(Some(now - 29 * 86_400), now), Some(29), "just inside 30d");
-        assert_eq!(newborn_age_days(Some(now - 45 * 86_400), now), None, "established package");
+        assert_eq!(
+            newborn_age_days(Some(now - 5 * 86_400), now),
+            Some(5),
+            "5d old → newborn"
+        );
+        assert_eq!(
+            newborn_age_days(Some(now - 29 * 86_400), now),
+            Some(29),
+            "just inside 30d"
+        );
+        assert_eq!(
+            newborn_age_days(Some(now - 45 * 86_400), now),
+            None,
+            "established package"
+        );
         assert_eq!(newborn_age_days(None, now), None);
     }
 
@@ -1579,7 +1767,10 @@ mod tests {
         assert_eq!(nested.owner, "group/sub");
         assert_eq!(nested.name, "proj");
         assert_eq!(nested.slug(), "group/sub/proj");
-        assert_eq!(parse_repo("gitlab:group/proj").unwrap().slug(), "group/proj");
+        assert_eq!(
+            parse_repo("gitlab:group/proj").unwrap().slug(),
+            "group/proj"
+        );
 
         // Codeberg (Forgejo) is always owner/repo.
         let cb = parse_repo("https://codeberg.org/forgejo/forgejo").unwrap();
@@ -1665,7 +1856,10 @@ mod tests {
     #[test]
     fn urlencodes_path_and_coordinate() {
         assert_eq!(urlencode("group/sub/proj"), "group%2Fsub%2Fproj");
-        assert_eq!(urlencode("com.google.guava:guava"), "com.google.guava%3Aguava");
+        assert_eq!(
+            urlencode("com.google.guava:guava"),
+            "com.google.guava%3Aguava"
+        );
     }
 
     #[test]
@@ -1674,19 +1868,35 @@ mod tests {
             "info": { "project_urls": { "Homepage": "https://x.dev", "Source": "https://github.com/psf/requests" } }
         });
         assert_eq!(
-            repo_candidates(Ecosystem::Python, &py).iter().find_map(|u| parse_repo(u)).unwrap().slug(),
+            repo_candidates(Ecosystem::Python, &py)
+                .iter()
+                .find_map(|u| parse_repo(u))
+                .unwrap()
+                .slug(),
             "psf/requests"
         );
-        let rs = serde_json::json!({ "crate": { "repository": "https://github.com/serde-rs/serde" } });
+        let rs =
+            serde_json::json!({ "crate": { "repository": "https://github.com/serde-rs/serde" } });
         assert_eq!(
-            repo_candidates(Ecosystem::Rust, &rs).iter().find_map(|u| parse_repo(u)).unwrap().slug(),
+            repo_candidates(Ecosystem::Rust, &rs)
+                .iter()
+                .find_map(|u| parse_repo(u))
+                .unwrap()
+                .slug(),
             "serde-rs/serde"
         );
         let rb = serde_json::json!({ "source_code_uri": "https://gitlab.com/o/r" });
-        assert_eq!(repo_candidates(Ecosystem::Ruby, &rb), vec!["https://gitlab.com/o/r"]);
+        assert_eq!(
+            repo_candidates(Ecosystem::Ruby, &rb),
+            vec!["https://gitlab.com/o/r"]
+        );
         let php = serde_json::json!({ "package": { "repository": "https://github.com/laravel/framework" } });
         assert_eq!(
-            repo_candidates(Ecosystem::Php, &php).iter().find_map(|u| parse_repo(u)).unwrap().slug(),
+            repo_candidates(Ecosystem::Php, &php)
+                .iter()
+                .find_map(|u| parse_repo(u))
+                .unwrap()
+                .slug(),
             "laravel/framework"
         );
         let java = serde_json::json!({
@@ -1694,7 +1904,11 @@ mod tests {
                        { "label": "SOURCE_REPO", "url": "https://github.com/google/guava" } ]
         });
         assert_eq!(
-            repo_candidates(Ecosystem::Java, &java).iter().find_map(|u| parse_repo(u)).unwrap().slug(),
+            repo_candidates(Ecosystem::Java, &java)
+                .iter()
+                .find_map(|u| parse_repo(u))
+                .unwrap()
+                .slug(),
             "google/guava"
         );
     }
@@ -1704,7 +1918,10 @@ mod tests {
         let s = serde_json::json!({ "repository": "github:a/b" });
         assert_eq!(extract_repo_url(&s).as_deref(), Some("github:a/b"));
         let o = serde_json::json!({ "repository": { "type": "git", "url": "https://github.com/a/b.git" } });
-        assert_eq!(extract_repo_url(&o).as_deref(), Some("https://github.com/a/b.git"));
+        assert_eq!(
+            extract_repo_url(&o).as_deref(),
+            Some("https://github.com/a/b.git")
+        );
         let none = serde_json::json!({ "name": "x" });
         assert_eq!(extract_repo_url(&none), None);
     }
@@ -1716,7 +1933,11 @@ mod tests {
             cache: Cache::open(),
             tokens: Tokens::default(),
             endpoints: crate::settings::Endpoints::default(),
-            thresholds: TreeSettings { min_stars: 20, recent_days: 30, stale_days: 365 },
+            thresholds: TreeSettings {
+                min_stars: 20,
+                recent_days: 30,
+                stale_days: 365,
+            },
             now: 1_000_000_000,
             languages: false,
             want_licenses: false,
@@ -1729,7 +1950,11 @@ mod tests {
             language: None,
             fetched_at: 0,
         };
-        let labels: Vec<String> = r.assess(&fresh_lowstar).iter().map(RiskSignal::label).collect();
+        let labels: Vec<String> = r
+            .assess(&fresh_lowstar)
+            .iter()
+            .map(RiskSignal::label)
+            .collect();
         assert!(labels.iter().any(|l| l.contains("low-stars")));
         assert!(labels.iter().any(|l| l.contains("recently-created")));
 

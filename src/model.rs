@@ -87,7 +87,9 @@ impl Category {
 ///
 /// The variant order is the precedence order (`Dev < Optional < Prod`), so
 /// merging two reachability paths is just [`Ord::max`].
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, Default,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Scope {
     /// Reachable only through a dev/test edge (`devDependencies`,
@@ -140,7 +142,9 @@ impl License {
     /// The text to show a human, whichever shape it is.
     pub fn label(&self) -> &str {
         match self {
-            License::Id { value } | License::Expression { value } | License::Name { value } => value,
+            License::Id { value } | License::Expression { value } | License::Name { value } => {
+                value
+            }
         }
     }
 

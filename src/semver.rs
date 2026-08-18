@@ -156,7 +156,10 @@ mod tests {
 
     #[test]
     fn build_metadata_carries_no_ordering() {
-        assert_eq!(compare("1.2.3+build9", "1.2.3+build1"), Some(Ordering::Equal));
+        assert_eq!(
+            compare("1.2.3+build9", "1.2.3+build1"),
+            Some(Ordering::Equal)
+        );
     }
 
     #[test]

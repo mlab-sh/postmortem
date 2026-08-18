@@ -17,7 +17,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde_yaml::{Mapping, Value};
 
-use crate::model::{DepRef, Dependency, Ecosystem, Scope, LicenseSource};
+use crate::model::{DepRef, Dependency, Ecosystem, LicenseSource, Scope};
 
 pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
     let text =
@@ -196,9 +196,18 @@ mod tests {
 
     #[test]
     fn key_shapes() {
-        assert_eq!(key_to_ref("lodash@4.17.21"), Some(("lodash".into(), "4.17.21".into())));
-        assert_eq!(key_to_ref("/lodash@4.17.21"), Some(("lodash".into(), "4.17.21".into())));
-        assert_eq!(key_to_ref("/lodash/4.17.21"), Some(("lodash".into(), "4.17.21".into())));
+        assert_eq!(
+            key_to_ref("lodash@4.17.21"),
+            Some(("lodash".into(), "4.17.21".into()))
+        );
+        assert_eq!(
+            key_to_ref("/lodash@4.17.21"),
+            Some(("lodash".into(), "4.17.21".into()))
+        );
+        assert_eq!(
+            key_to_ref("/lodash/4.17.21"),
+            Some(("lodash".into(), "4.17.21".into()))
+        );
         assert_eq!(
             key_to_ref("/@babel/core@7.0.0"),
             Some(("@babel/core".into(), "7.0.0".into()))
@@ -248,7 +257,11 @@ snapshots:
 
         let cookie = deps.iter().find(|d| d.name == "cookie").unwrap();
         assert!(!cookie.direct);
-        assert!(cookie.parents.contains(&("express".into(), "4.18.2".into())));
+        assert!(
+            cookie
+                .parents
+                .contains(&("express".into(), "4.18.2".into()))
+        );
     }
 
     #[test]
@@ -276,7 +289,11 @@ packages:
 
         assert!(deps.iter().find(|d| d.name == "express").unwrap().direct);
         let cookie = deps.iter().find(|d| d.name == "cookie").unwrap();
-        assert!(cookie.parents.contains(&("express".into(), "4.18.2".into())));
+        assert!(
+            cookie
+                .parents
+                .contains(&("express".into(), "4.18.2".into()))
+        );
     }
 
     #[test]
@@ -344,6 +361,9 @@ packages:
         let deps = parse(&p).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
 
-        assert_eq!(deps.iter().find(|d| d.name == "shared").unwrap().scope, Scope::Prod);
+        assert_eq!(
+            deps.iter().find(|d| d.name == "shared").unwrap().scope,
+            Scope::Prod
+        );
     }
 }

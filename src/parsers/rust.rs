@@ -5,7 +5,7 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::model::{Dependency, Ecosystem, Scope, LicenseSource};
+use crate::model::{Dependency, Ecosystem, LicenseSource, Scope};
 
 #[derive(Debug, Deserialize)]
 struct CargoLock {
@@ -26,8 +26,8 @@ struct CargoPkg {
 }
 
 pub fn parse_lockfile(path: &Path, manifest: Option<&Path>) -> Result<Vec<Dependency>> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let lock: CargoLock = toml::from_str(&text)
         .with_context(|| format!("parsing {} as Cargo.lock", path.display()))?;
 
@@ -41,11 +41,7 @@ pub fn parse_lockfile(path: &Path, manifest: Option<&Path>) -> Result<Vec<Depend
 
     // Workspace member packages have no `source` field — they're local.
     // Skip them (the scan target itself is not its own dependency).
-    let externals: Vec<&CargoPkg> = lock
-        .package
-        .iter()
-        .filter(|p| p.source.is_some())
-        .collect();
+    let externals: Vec<&CargoPkg> = lock.package.iter().filter(|p| p.source.is_some()).collect();
 
     let mut out = Vec::with_capacity(externals.len());
     for pkg in &externals {

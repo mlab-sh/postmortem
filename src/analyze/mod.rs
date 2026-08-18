@@ -136,22 +136,44 @@ fn plan(detected: &[Detected]) -> Vec<Step<'_>> {
         let root = d.root();
         if !seen_roots.contains(&root) {
             seen_roots.push(root);
-            steps.push(Step::new("ide/agent · autostart-hooks", move |f| ide_hooks::scan_dir(root, f)));
-            steps.push(Step::new("behaviour · secrets/persistence/worm", move |f| behavior::scan_dir(root, f)));
-            steps.push(Step::new("ci · github-actions workflows", move |f| gha::scan_dir(root, f)));
+            steps.push(Step::new("ide/agent · autostart-hooks", move |f| {
+                ide_hooks::scan_dir(root, f)
+            }));
+            steps.push(Step::new(
+                "behaviour · secrets/persistence/worm",
+                move |f| behavior::scan_dir(root, f),
+            ));
+            steps.push(Step::new("ci · github-actions workflows", move |f| {
+                gha::scan_dir(root, f)
+            }));
         }
     }
 
     for d in detected {
         match d {
-            Detected::Node { node_modules: Some(nm), .. } => {
-                steps.push(Step::new("node · install-hooks", move |f| install_hooks::scan_node(nm, f)));
-                steps.push(Step::new("node · ioc", move |f| ioc::scan_dir(nm, f, ioc::Lang::JavaScript)));
-                steps.push(Step::new("node · obfuscation", move |f| obfuscation::scan_dir(nm, f, obfuscation::Lang::JavaScript)));
-                steps.push(Step::new("node · sensitive-api", move |f| sensitive_api::scan_dir(nm, f, sensitive_api::Lang::JavaScript)));
+            Detected::Node {
+                node_modules: Some(nm),
+                ..
+            } => {
+                steps.push(Step::new("node · install-hooks", move |f| {
+                    install_hooks::scan_node(nm, f)
+                }));
+                steps.push(Step::new("node · ioc", move |f| {
+                    ioc::scan_dir(nm, f, ioc::Lang::JavaScript)
+                }));
+                steps.push(Step::new("node · obfuscation", move |f| {
+                    obfuscation::scan_dir(nm, f, obfuscation::Lang::JavaScript)
+                }));
+                steps.push(Step::new("node · sensitive-api", move |f| {
+                    sensitive_api::scan_dir(nm, f, sensitive_api::Lang::JavaScript)
+                }));
             }
             Detected::Node { .. } => { /* no node_modules → static-on-lockfile only */ }
-            Detected::Python { root, site_packages, .. } => {
+            Detected::Python {
+                root,
+                site_packages,
+                ..
+            } => {
                 // Local sources (setup.py, etc.) live at the repo root.
                 push_python(&mut steps, root);
                 if let Some(sp) = site_packages {
@@ -166,42 +188,72 @@ fn plan(detected: &[Detected]) -> Vec<Step<'_>> {
                 if src.is_dir() {
                     let ioc_src = src.clone();
                     let obf_src = src.clone();
-                    steps.push(Step::new("rust · sensitive-api", move |f| sensitive_api::scan_dir(&src, f, sensitive_api::Lang::Rust)));
-                    steps.push(Step::new("rust · ioc", move |f| ioc::scan_dir(&ioc_src, f, ioc::Lang::Rust)));
-                    steps.push(Step::new("rust · obfuscation", move |f| obfuscation::scan_dir(&obf_src, f, obfuscation::Lang::Rust)));
+                    steps.push(Step::new("rust · sensitive-api", move |f| {
+                        sensitive_api::scan_dir(&src, f, sensitive_api::Lang::Rust)
+                    }));
+                    steps.push(Step::new("rust · ioc", move |f| {
+                        ioc::scan_dir(&ioc_src, f, ioc::Lang::Rust)
+                    }));
+                    steps.push(Step::new("rust · obfuscation", move |f| {
+                        obfuscation::scan_dir(&obf_src, f, obfuscation::Lang::Rust)
+                    }));
                 }
             }
             Detected::Ruby { root, .. } => {
                 // Gems aren't vendored in-repo (they live in the bundle path), so —
                 // like Rust — we scan the project's own Ruby source for sensitive
                 // primitives, IOCs, and obfuscation.
-                steps.push(Step::new("ruby · sensitive-api", move |f| sensitive_api::scan_dir(root, f, sensitive_api::Lang::Ruby)));
-                steps.push(Step::new("ruby · ioc", move |f| ioc::scan_dir(root, f, ioc::Lang::Ruby)));
-                steps.push(Step::new("ruby · obfuscation", move |f| obfuscation::scan_dir(root, f, obfuscation::Lang::Ruby)));
+                steps.push(Step::new("ruby · sensitive-api", move |f| {
+                    sensitive_api::scan_dir(root, f, sensitive_api::Lang::Ruby)
+                }));
+                steps.push(Step::new("ruby · ioc", move |f| {
+                    ioc::scan_dir(root, f, ioc::Lang::Ruby)
+                }));
+                steps.push(Step::new("ruby · obfuscation", move |f| {
+                    obfuscation::scan_dir(root, f, obfuscation::Lang::Ruby)
+                }));
             }
             Detected::Php { root, .. } => {
                 // Composer vendors dependencies under vendor/ when installed, so a
                 // single root walk covers both the project's own PHP and any
                 // committed vendor tree.
-                steps.push(Step::new("php · sensitive-api", move |f| sensitive_api::scan_dir(root, f, sensitive_api::Lang::Php)));
-                steps.push(Step::new("php · ioc", move |f| ioc::scan_dir(root, f, ioc::Lang::Php)));
-                steps.push(Step::new("php · obfuscation", move |f| obfuscation::scan_dir(root, f, obfuscation::Lang::Php)));
+                steps.push(Step::new("php · sensitive-api", move |f| {
+                    sensitive_api::scan_dir(root, f, sensitive_api::Lang::Php)
+                }));
+                steps.push(Step::new("php · ioc", move |f| {
+                    ioc::scan_dir(root, f, ioc::Lang::Php)
+                }));
+                steps.push(Step::new("php · obfuscation", move |f| {
+                    obfuscation::scan_dir(root, f, obfuscation::Lang::Php)
+                }));
             }
             Detected::Go { root, .. } => {
                 // Go has no install-time hooks; modules live in the module cache
                 // or a committed vendor/ tree. We scan the project's own source
                 // (and vendor/ if present) for sensitive APIs, IOCs, obfuscation.
-                steps.push(Step::new("go · sensitive-api", move |f| sensitive_api::scan_dir(root, f, sensitive_api::Lang::Go)));
-                steps.push(Step::new("go · ioc", move |f| ioc::scan_dir(root, f, ioc::Lang::Go)));
-                steps.push(Step::new("go · obfuscation", move |f| obfuscation::scan_dir(root, f, obfuscation::Lang::Go)));
+                steps.push(Step::new("go · sensitive-api", move |f| {
+                    sensitive_api::scan_dir(root, f, sensitive_api::Lang::Go)
+                }));
+                steps.push(Step::new("go · ioc", move |f| {
+                    ioc::scan_dir(root, f, ioc::Lang::Go)
+                }));
+                steps.push(Step::new("go · obfuscation", move |f| {
+                    obfuscation::scan_dir(root, f, obfuscation::Lang::Go)
+                }));
             }
             Detected::Java { root, .. } => {
                 // JVM dependencies live in the Maven/Gradle caches, not in-repo.
                 // We scan the project's own JVM source for sensitive APIs, IOCs,
                 // and obfuscation. (Build-script execution is out of scope.)
-                steps.push(Step::new("java · sensitive-api", move |f| sensitive_api::scan_dir(root, f, sensitive_api::Lang::Java)));
-                steps.push(Step::new("java · ioc", move |f| ioc::scan_dir(root, f, ioc::Lang::Java)));
-                steps.push(Step::new("java · obfuscation", move |f| obfuscation::scan_dir(root, f, obfuscation::Lang::Java)));
+                steps.push(Step::new("java · sensitive-api", move |f| {
+                    sensitive_api::scan_dir(root, f, sensitive_api::Lang::Java)
+                }));
+                steps.push(Step::new("java · ioc", move |f| {
+                    ioc::scan_dir(root, f, ioc::Lang::Java)
+                }));
+                steps.push(Step::new("java · obfuscation", move |f| {
+                    obfuscation::scan_dir(root, f, obfuscation::Lang::Java)
+                }));
             }
         }
     }
@@ -212,10 +264,18 @@ fn plan(detected: &[Detected]) -> Vec<Step<'_>> {
 /// Python is scanned identically at the repo root and (if present) the venv's
 /// site-packages, so both share one step-emitting helper.
 fn push_python<'a>(steps: &mut Vec<Step<'a>>, dir: &'a Path) {
-    steps.push(Step::new("python · install-hooks", move |f| install_hooks::scan_python(dir, f)));
-    steps.push(Step::new("python · ioc", move |f| ioc::scan_dir(dir, f, ioc::Lang::Python)));
-    steps.push(Step::new("python · obfuscation", move |f| obfuscation::scan_dir(dir, f, obfuscation::Lang::Python)));
-    steps.push(Step::new("python · sensitive-api", move |f| sensitive_api::scan_dir(dir, f, sensitive_api::Lang::Python)));
+    steps.push(Step::new("python · install-hooks", move |f| {
+        install_hooks::scan_python(dir, f)
+    }));
+    steps.push(Step::new("python · ioc", move |f| {
+        ioc::scan_dir(dir, f, ioc::Lang::Python)
+    }));
+    steps.push(Step::new("python · obfuscation", move |f| {
+        obfuscation::scan_dir(dir, f, obfuscation::Lang::Python)
+    }));
+    steps.push(Step::new("python · sensitive-api", move |f| {
+        sensitive_api::scan_dir(dir, f, sensitive_api::Lang::Python)
+    }));
 }
 
 #[cfg(test)]
@@ -238,12 +298,19 @@ mod tests {
     #[test]
     fn drops_test_iocs_by_default_only() {
         let base = std::path::Path::new("");
-        let fs = vec![ioc("src/a.rs:1"), ioc("test/b.py:2"), ioc("pkg/tests/c.rs:3")];
+        let fs = vec![
+            ioc("src/a.rs:1"),
+            ioc("test/b.py:2"),
+            ioc("pkg/tests/c.rs:3"),
+        ];
         let kept = drop_test_iocs(fs.clone(), false, base);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].location.as_deref(), Some("src/a.rs:1"));
         // A file merely named `test_*` is NOT a test dir.
-        assert_eq!(drop_test_iocs(vec![ioc("src/test_util.rs:1")], false, base).len(), 1);
+        assert_eq!(
+            drop_test_iocs(vec![ioc("src/test_util.rs:1")], false, base).len(),
+            1
+        );
         // --allow-test-files keeps everything.
         assert_eq!(drop_test_iocs(fs, true, base).len(), 3);
     }
@@ -253,7 +320,11 @@ mod tests {
         // A `tests` component that belongs to the base path must NOT count.
         let base = std::path::Path::new("/repo/tests/fixtures/proj");
         let f = ioc("/repo/tests/fixtures/proj/node_modules/evil/x.js:1");
-        assert_eq!(drop_test_iocs(vec![f], false, base).len(), 1, "harness path ignored");
+        assert_eq!(
+            drop_test_iocs(vec![f], false, base).len(),
+            1,
+            "harness path ignored"
+        );
         // But a test dir *below* the base is filtered.
         let f2 = ioc("/repo/tests/fixtures/proj/test/x.js:1");
         assert_eq!(drop_test_iocs(vec![f2], false, base).len(), 0);
@@ -263,6 +334,9 @@ mod tests {
     fn non_ioc_findings_in_tests_are_kept() {
         let mut f = ioc("test/x.rs:1");
         f.category = Category::SensitiveApi;
-        assert_eq!(drop_test_iocs(vec![f], false, std::path::Path::new("")).len(), 1);
+        assert_eq!(
+            drop_test_iocs(vec![f], false, std::path::Path::new("")).len(),
+            1
+        );
     }
 }

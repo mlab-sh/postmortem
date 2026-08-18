@@ -133,7 +133,10 @@ pub fn graph(deps: &[Dependency], resolutions: &HashMap<DepRef, Resolution>) -> 
 
     for d in deps {
         let key = (d.name.clone(), d.version.clone());
-        let names = resolutions.get(&key).map(|r| r.maintainers.as_slice()).unwrap_or(&[]);
+        let names = resolutions
+            .get(&key)
+            .map(|r| r.maintainers.as_slice())
+            .unwrap_or(&[]);
         if names.is_empty() {
             unattributed_ecos.insert(d.ecosystem.as_str().to_string());
             continue;
@@ -162,7 +165,10 @@ pub fn graph(deps: &[Dependency], resolutions: &HashMap<DepRef, Resolution>) -> 
 
     // Widest reach first, then most packages, then name for a stable order.
     maintainers.sort_by(|a, b| {
-        b.reach.cmp(&a.reach).then(b.owns.len().cmp(&a.owns.len())).then(a.name.cmp(&b.name))
+        b.reach
+            .cmp(&a.reach)
+            .then(b.owns.len().cmp(&a.owns.len()))
+            .then(a.name.cmp(&b.name))
     });
 
     Graph {
@@ -213,10 +219,18 @@ pub fn render(g: &Graph, deps: &[Dependency], root_label: &str) {
         } else {
             pct.dimmed().to_string()
         };
-        println!("  {:>6}  {:<24} {:>8}  {pct}", m.reach, m.name, m.owns.len());
+        println!(
+            "  {:>6}  {:<24} {:>8}  {pct}",
+            m.reach,
+            m.name,
+            m.owns.len()
+        );
     }
     if g.maintainers.len() > 20 {
-        println!("  {}", format!("… and {} more", g.maintainers.len() - 20).dimmed());
+        println!(
+            "  {}",
+            format!("… and {} more", g.maintainers.len() - 20).dimmed()
+        );
     }
 
     // The headline. Reaches overlap, so this is a set union, not a sum.
@@ -302,7 +316,10 @@ mod tests {
             license_source: LicenseSource::Unknown,
             resolved_url: None,
             integrity: None,
-            parents: parents.iter().map(|p| ((*p).to_string(), "1.0.0".to_string())).collect(),
+            parents: parents
+                .iter()
+                .map(|p| ((*p).to_string(), "1.0.0".to_string()))
+                .collect(),
         }
     }
 
@@ -360,7 +377,14 @@ mod tests {
             dep("side-b", &[]),
         ];
         // `few` owns one deep package; `many` owns two leaves of the tree.
-        let g = graph(&deps, &res(&[("leaf", &["few"]), ("side-a", &["many"]), ("side-b", &["many"])]));
+        let g = graph(
+            &deps,
+            &res(&[
+                ("leaf", &["few"]),
+                ("side-a", &["many"]),
+                ("side-b", &["many"]),
+            ]),
+        );
         assert_eq!(g.maintainers[0].name, "few", "3 reach beats 2 owned");
         assert_eq!(g.maintainers[0].reach, 3);
         assert_eq!(g.maintainers[1].reach, 2);
@@ -400,11 +424,7 @@ mod tests {
 
     #[test]
     fn a_cycle_terminates() {
-        let deps = vec![
-            dep("root", &[]),
-            dep("a", &["root", "b"]),
-            dep("b", &["a"]),
-        ];
+        let deps = vec![dep("root", &[]), dep("a", &["root", "b"]), dep("b", &["a"])];
         let g = graph(&deps, &res(&[("b", &["eve"])]));
         assert_eq!(g.maintainers[0].reach, 3);
     }

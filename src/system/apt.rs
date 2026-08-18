@@ -6,9 +6,9 @@
 //! keyring, pins, holds, foreign architectures, diversions and maintainer
 //! scripts.
 
-use super::*;
 use super::privilege::{find_setuid_files, persistence_signals, verify_line_is_tamper};
 use super::recipe::{analyze_recipe, host_domain};
+use super::*;
 
 // --- apt / dpkg backend ------------------------------------------------------
 
@@ -18,11 +18,18 @@ use super::recipe::{analyze_recipe, host_domain};
 /// come from a non-official source (PPA / manual `.deb`).
 pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
     let out = Command::new("dpkg-query")
-        .args(["-W", "-f", "${Package}\t${Version}\t${Depends}\t${Pre-Depends}\t${Homepage}\n"])
+        .args([
+            "-W",
+            "-f",
+            "${Package}\t${Version}\t${Depends}\t${Pre-Depends}\t${Homepage}\n",
+        ])
         .output()
         .context("running `dpkg-query -W`")?;
     if !out.status.success() {
-        anyhow::bail!("`dpkg-query` failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        anyhow::bail!(
+            "`dpkg-query` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     let manual = apt_manual();
     let deps = apt_graph(&String::from_utf8_lossy(&out.stdout), &manual);
@@ -109,13 +116,20 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
             push_signal(
                 &mut signals,
                 &d.name,
-                SysSignal::new(format!("dpkg-divert (overrides {path})"), Severity::Medium, 20),
+                SysSignal::new(
+                    format!("dpkg-divert (overrides {path})"),
+                    Severity::Medium,
+                    20,
+                ),
             );
         }
     }
 
     for (name, (old, new)) in apt_outdated() {
-        signals.entry(name).or_default().push(outdated_signal(&old, &new));
+        signals
+            .entry(name)
+            .or_default()
+            .push(outdated_signal(&old, &new));
     }
 
     let _ = opts; // apt reputation comes from the shared `--online` path
@@ -133,7 +147,9 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
     }
     let keys = apt_custom_keys();
     if keys > 0 {
-        warnings.push(format!("{keys} custom signing key(s) added to the apt keyring"));
+        warnings.push(format!(
+            "{keys} custom signing key(s) added to the apt keyring"
+        ));
     }
     let pins = apt_pins();
     if pins > 0 {
@@ -143,24 +159,41 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
     }
     // Signature & integrity caveats.
     let repos = apt_repos();
-    let http = repos.iter().filter(|r| r.name.starts_with("http://")).count();
+    let http = repos
+        .iter()
+        .filter(|r| r.name.starts_with("http://"))
+        .count();
     if http > 0 {
-        warnings.push(format!("{http} apt source(s) over http (no transport encryption)"));
+        warnings.push(format!(
+            "{http} apt source(s) over http (no transport encryption)"
+        ));
     }
     if apt_legacy_keyring() {
-        warnings
-            .push("legacy monolithic keyring /etc/apt/trusted.gpg in use (trusts every source)".into());
+        warnings.push(
+            "legacy monolithic keyring /etc/apt/trusted.gpg in use (trusts every source)".into(),
+        );
     }
     let expired = apt_expired_keys();
     if expired > 0 {
-        warnings.push(format!("{expired} expired signing key(s) in the apt keyring"));
+        warnings.push(format!(
+            "{expired} expired signing key(s) in the apt keyring"
+        ));
     }
     let modified = apt_modified_files();
     if modified > 0 {
-        warnings.push(format!("{modified} installed file(s) modified since install (md5 mismatch)"));
+        warnings.push(format!(
+            "{modified} installed file(s) modified since install (md5 mismatch)"
+        ));
     }
 
-    Ok(Inventory { manager: "apt", deps, repos, signals, summary, notes: warnings })
+    Ok(Inventory {
+        manager: "apt",
+        deps,
+        repos,
+        signals,
+        summary,
+        notes: warnings,
+    })
 }
 
 /// Count apt sources that disable signature verification (`[trusted=yes]` in a
@@ -205,7 +238,9 @@ fn apt_source_files() -> Vec<std::path::PathBuf> {
 /// Is the deprecated monolithic `/etc/apt/trusted.gpg` present and non-empty? Keys
 /// there are trusted for *every* source (unlike per-repo `signed-by=` keyrings).
 fn apt_legacy_keyring() -> bool {
-    std::fs::metadata("/etc/apt/trusted.gpg").map(|m| m.len() > 0).unwrap_or(false)
+    std::fs::metadata("/etc/apt/trusted.gpg")
+        .map(|m| m.len() > 0)
+        .unwrap_or(false)
 }
 
 /// Every apt keyring file: the legacy `trusted.gpg` + `trusted.gpg.d/` + `keyrings/`.
@@ -234,8 +269,10 @@ fn apt_expired_keys() -> usize {
     apt_keyring_files()
         .iter()
         .map(|f| {
-            let Ok(out) =
-                Command::new("gpg").args(["--show-keys", "--with-colons"]).arg(f).output()
+            let Ok(out) = Command::new("gpg")
+                .args(["--show-keys", "--with-colons"])
+                .arg(f)
+                .output()
             else {
                 return 0;
             };
@@ -263,9 +300,11 @@ fn apt_modified_files() -> usize {
         return 0;
     };
     // `dpkg --verify` exits non-zero precisely when it finds discrepancies.
-    String::from_utf8_lossy(&out.stdout).lines().filter(|l| verify_line_is_tamper(l)).count()
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| verify_line_is_tamper(l))
+        .count()
 }
-
 
 /// The manually-installed (direct) set, `apt-mark showmanual`. Foreign-arch
 /// entries come back qualified (`hello:armhf`) while the graph keys on the bare
@@ -303,7 +342,12 @@ fn apt_graph(text: &str, manual: &std::collections::HashSet<String>) -> Vec<Depe
             }
             let mut depends = apt_dep_names(f[2]);
             depends.extend(apt_dep_names(f[3])); // Pre-Depends
-            Some(P { name: f[0].into(), version: f[1].into(), depends, homepage: f[4].into() })
+            Some(P {
+                name: f[0].into(),
+                version: f[1].into(),
+                depends,
+                homepage: f[4].into(),
+            })
         })
         .collect();
 
@@ -312,7 +356,10 @@ fn apt_graph(text: &str, manual: &std::collections::HashSet<String>) -> Vec<Depe
     for p in &pkgs {
         for d in &p.depends {
             if installed.contains_key(d.as_str()) {
-                parents.entry(d.clone()).or_default().push((p.name.clone(), p.version.clone()));
+                parents
+                    .entry(d.clone())
+                    .or_default()
+                    .push((p.name.clone(), p.version.clone()));
             }
         }
     }
@@ -382,8 +429,10 @@ fn apt_provenance(names: &[String]) -> HashMap<String, AptProv> {
                 let toks: Vec<&str> = line.split_whitespace().collect();
                 let src = toks.get(1).copied().unwrap_or("");
                 // The suite/component token ("jammy/universe") → its component half.
-                let component =
-                    toks.get(2).and_then(|s| s.split('/').nth(1)).map(str::to_string);
+                let component = toks
+                    .get(2)
+                    .and_then(|s| s.split('/').nth(1))
+                    .map(str::to_string);
                 if let Some(host) = host_domain(src) {
                     if let Some(name) = cur.take() {
                         let source = (!apt_official_host(&host)).then_some(host);
@@ -393,7 +442,13 @@ fn apt_provenance(names: &[String]) -> HashMap<String, AptProv> {
                 } else if src.starts_with("/var/lib/dpkg") {
                     // Only the local status file backs this version → manual .deb.
                     if let Some(name) = cur.take() {
-                        out.insert(name, AptProv { source: Some("manual".into()), component: None });
+                        out.insert(
+                            name,
+                            AptProv {
+                                source: Some("manual".into()),
+                                component: None,
+                            },
+                        );
                     }
                     in_installed = false;
                 }
@@ -420,7 +475,12 @@ fn apt_held() -> std::collections::HashSet<String> {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -471,7 +531,11 @@ fn apt_pins() -> usize {
     files
         .iter()
         .filter_map(|f| std::fs::read_to_string(f).ok())
-        .map(|t| t.lines().filter(|l| l.trim_start().to_lowercase().starts_with("pin:")).count())
+        .map(|t| {
+            t.lines()
+                .filter(|l| l.trim_start().to_lowercase().starts_with("pin:"))
+                .count()
+        })
         .sum()
 }
 
@@ -500,10 +564,16 @@ fn apt_scripts(name: &str) -> String {
 /// the loop would be O(n²); this is one directory scan.
 fn apt_list_index() -> HashMap<String, Vec<std::path::PathBuf>> {
     let mut idx: HashMap<String, Vec<std::path::PathBuf>> = HashMap::new();
-    for e in std::fs::read_dir("/var/lib/dpkg/info").into_iter().flatten().flatten() {
+    for e in std::fs::read_dir("/var/lib/dpkg/info")
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
         let p = e.path();
-        let Some(stem) =
-            p.file_name().and_then(|s| s.to_str()).and_then(|f| f.strip_suffix(".list"))
+        let Some(stem) = p
+            .file_name()
+            .and_then(|s| s.to_str())
+            .and_then(|f| f.strip_suffix(".list"))
         else {
             continue;
         };
@@ -522,7 +592,6 @@ fn read_pkg_files(paths: &[std::path::PathBuf]) -> Vec<String> {
         .collect()
 }
 
-
 /// Package-created dpkg diversions (`dpkg-divert --list`) → `package → diverted
 /// path`. The merged-usr transition (`*.usr-is-merged`) and admin-local diversions
 /// (no `by <pkg>`) are excluded, leaving genuine file overrides.
@@ -532,17 +601,23 @@ fn apt_diversions() -> HashMap<String, String> {
     };
     let mut map = HashMap::new();
     for l in String::from_utf8_lossy(&out.stdout).lines() {
-        let Some(rest) = l.strip_prefix("diversion of ") else { continue };
-        let Some((path, after)) = rest.split_once(" to ") else { continue };
-        let Some((target, pkg)) = after.rsplit_once(" by ") else { continue };
+        let Some(rest) = l.strip_prefix("diversion of ") else {
+            continue;
+        };
+        let Some((path, after)) = rest.split_once(" to ") else {
+            continue;
+        };
+        let Some((target, pkg)) = after.rsplit_once(" by ") else {
+            continue;
+        };
         if target.trim().ends_with(".usr-is-merged") {
             continue;
         }
-        map.entry(pkg.trim().to_string()).or_insert_with(|| path.trim().to_string());
+        map.entry(pkg.trim().to_string())
+            .or_insert_with(|| path.trim().to_string());
     }
     map
 }
-
 
 /// `apt list --upgradable` → `name → (installed, current)`. Best-effort.
 fn apt_outdated() -> HashMap<String, (String, String)> {
@@ -568,11 +643,16 @@ fn apt_repos() -> Vec<Repo> {
     let mut seen = std::collections::HashSet::new();
     let mut repos = Vec::new();
     for f in apt_source_files() {
-        let Ok(text) = std::fs::read_to_string(&f) else { continue };
+        let Ok(text) = std::fs::read_to_string(&f) else {
+            continue;
+        };
         for line in text.lines() {
             let l = line.trim();
             // Classic: `deb [opts] URI suite comps`; deb822: `URIs: URI`.
-            let uri = if let Some(rest) = l.strip_prefix("deb ").or_else(|| l.strip_prefix("deb-src ")) {
+            let uri = if let Some(rest) = l
+                .strip_prefix("deb ")
+                .or_else(|| l.strip_prefix("deb-src "))
+            {
                 rest.split_whitespace().find(|t| t.contains("://"))
             } else if let Some(rest) = l.strip_prefix("URIs:") {
                 rest.split_whitespace().next()
@@ -583,14 +663,16 @@ fn apt_repos() -> Vec<Repo> {
                 && seen.insert(uri.to_string())
             {
                 let official = host_domain(uri).is_some_and(|h| apt_official_host(&h));
-                repos.push(Repo { name: uri.to_string(), url: String::new(), official });
+                repos.push(Repo {
+                    name: uri.to_string(),
+                    url: String::new(),
+                    official,
+                });
             }
         }
     }
     repos
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -603,7 +685,10 @@ mod tests {
             vec!["base-files", "debianutils"]
         );
         // Alternatives take the first; `:any` qualifier stripped.
-        assert_eq!(apt_dep_names("libc6 (>= 2.34) | libc6-udeb, perl:any"), vec!["libc6", "perl"]);
+        assert_eq!(
+            apt_dep_names("libc6 (>= 2.34) | libc6-udeb, perl:any"),
+            vec!["libc6", "perl"]
+        );
         assert!(apt_dep_names("").is_empty());
     }
 
@@ -611,8 +696,14 @@ mod tests {
     fn apt_community_component_classifies() {
         // Ubuntu community/non-free + Debian non-free sections flag; the curated
         // `main` (and a third-party PPA's own `main`) do not.
-        for c in ["universe", "multiverse", "restricted", "contrib", "non-free", "non-free-firmware"]
-        {
+        for c in [
+            "universe",
+            "multiverse",
+            "restricted",
+            "contrib",
+            "non-free",
+            "non-free-firmware",
+        ] {
             assert!(is_community_component(c), "{c} should flag");
         }
         assert!(!is_community_component("main"));
@@ -629,7 +720,10 @@ mod tests {
         let lib = deps.iter().find(|d| d.name == "lib").unwrap();
         assert!(app.direct, "in showmanual ⇒ direct");
         assert!(!lib.direct);
-        assert_eq!(app.resolved_url.as_deref(), Some("https://github.com/o/app"));
+        assert_eq!(
+            app.resolved_url.as_deref(),
+            Some("https://github.com/o/app")
+        );
         assert_eq!(lib.parents, vec![("app".to_string(), "1.0".to_string())]);
     }
 }

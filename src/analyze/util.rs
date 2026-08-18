@@ -124,7 +124,14 @@ pub fn is_test_path(path: &str) -> bool {
     path.split(['/', '\\']).any(|c| {
         matches!(
             c,
-            "test" | "tests" | "testdata" | "__tests__" | "spec" | "specs" | "fixtures" | "__mocks__"
+            "test"
+                | "tests"
+                | "testdata"
+                | "__tests__"
+                | "spec"
+                | "specs"
+                | "fixtures"
+                | "__mocks__"
         )
     })
 }
@@ -174,7 +181,9 @@ mod tests {
         // 64-character alphabet uniform over a long buffer → entropy near 6 bits/byte.
         let mut s = Vec::new();
         for _ in 0..50 {
-            s.extend_from_slice(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/");
+            s.extend_from_slice(
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",
+            );
         }
         let e = shannon_entropy(&s);
         assert!(e > 5.9, "got {e}");

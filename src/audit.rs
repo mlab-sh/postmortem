@@ -121,7 +121,11 @@ pub fn render(s: &AuditSummary, root_label: &str) {
     println!("{}  {}", "audit".bold(), root_label.dimmed());
     println!();
 
-    let eco = if s.ecosystems.is_empty() { "none".into() } else { s.ecosystems.join(", ") };
+    let eco = if s.ecosystems.is_empty() {
+        "none".into()
+    } else {
+        s.ecosystems.join(", ")
+    };
     row("ecosystems", &eco);
     row(
         "packages",
@@ -138,29 +142,59 @@ pub fn render(s: &AuditSummary, root_label: &str) {
     if mal_total == 0 {
         row("malware", &"none".green().to_string());
     } else {
-        let sev = format!("{} critical · {} high · {} medium · {} low", s.critical, s.high_findings, s.medium, s.low);
+        let sev = format!(
+            "{} critical · {} high · {} medium · {} low",
+            s.critical, s.high_findings, s.medium, s.low
+        );
         let val = format!("{mal_total} finding(s)  ({sev})");
-        let colored = if s.critical + s.high_findings > 0 { val.red().to_string() } else { val.yellow().to_string() };
+        let colored = if s.critical + s.high_findings > 0 {
+            val.red().to_string()
+        } else {
+            val.yellow().to_string()
+        };
         row("malware", &colored);
     }
 
     if s.diagnostics > 0 {
-        row("graph", &format!("{} diagnostic(s) — inventory may be incomplete", s.diagnostics).yellow().to_string());
+        row(
+            "graph",
+            &format!(
+                "{} diagnostic(s) — inventory may be incomplete",
+                s.diagnostics
+            )
+            .yellow()
+            .to_string(),
+        );
     }
 
     match s.risk {
         Some(r) => {
-            let val = format!("risk {r}/100 · {} high-risk · {} suspicious", s.high_deps, s.sus_deps);
-            let colored = if r >= 70 { val.red().to_string() } else if r >= 40 || s.high_deps > 0 { val.yellow().to_string() } else { val.green().to_string() };
+            let val = format!(
+                "risk {r}/100 · {} high-risk · {} suspicious",
+                s.high_deps, s.sus_deps
+            );
+            let colored = if r >= 70 {
+                val.red().to_string()
+            } else if r >= 40 || s.high_deps > 0 {
+                val.yellow().to_string()
+            } else {
+                val.green().to_string()
+            };
             row("reputation", &colored);
         }
-        None => row("reputation", &"not checked  (pass --online)".dimmed().to_string()),
+        None => row(
+            "reputation",
+            &"not checked  (pass --online)".dimmed().to_string(),
+        ),
     }
 
     match s.vulns {
         Some(0) => row("vulns", &"none known".green().to_string()),
         Some(n) => {
-            let worst = s.worst_vuln.map(|v| format!(" (worst: {v:?})").to_lowercase()).unwrap_or_default();
+            let worst = s
+                .worst_vuln
+                .map(|v| format!(" (worst: {v:?})").to_lowercase())
+                .unwrap_or_default();
             row("vulns", &format!("{n} known{worst}").red().to_string());
         }
         None => row("vulns", &"not checked  (pass --vulns)".dimmed().to_string()),
@@ -169,8 +203,14 @@ pub fn render(s: &AuditSummary, root_label: &str) {
     println!();
     let (mood, colored) = match g {
         Grade::Critical => (crate::gochi::Mood::Bad, "CRITICAL".red().bold().to_string()),
-        Grade::Warn => (crate::gochi::Mood::Alert, "WARN".yellow().bold().to_string()),
-        Grade::Clean => (crate::gochi::Mood::Happy, "CLEAN".green().bold().to_string()),
+        Grade::Warn => (
+            crate::gochi::Mood::Alert,
+            "WARN".yellow().bold().to_string(),
+        ),
+        Grade::Clean => (
+            crate::gochi::Mood::Happy,
+            "CLEAN".green().bold().to_string(),
+        ),
     };
     println!(
         "  {}  {}  {}  {}",
@@ -191,27 +231,65 @@ mod tests {
 
     #[test]
     fn grade_critical_on_malware() {
-        let s = AuditSummary { high_findings: 1, ..Default::default() };
+        let s = AuditSummary {
+            high_findings: 1,
+            ..Default::default()
+        };
         assert_eq!(grade(&s), Grade::Critical);
     }
 
     #[test]
     fn grade_critical_on_severe_vuln_or_high_risk() {
         assert_eq!(
-            grade(&AuditSummary { vulns: Some(1), worst_vuln: Some(Severity::Critical), ..Default::default() }),
+            grade(&AuditSummary {
+                vulns: Some(1),
+                worst_vuln: Some(Severity::Critical),
+                ..Default::default()
+            }),
             Grade::Critical
         );
-        assert_eq!(grade(&AuditSummary { risk: Some(85), ..Default::default() }), Grade::Critical);
+        assert_eq!(
+            grade(&AuditSummary {
+                risk: Some(85),
+                ..Default::default()
+            }),
+            Grade::Critical
+        );
     }
 
     #[test]
     fn grade_warn_then_clean() {
-        assert_eq!(grade(&AuditSummary { diagnostics: 1, ..Default::default() }), Grade::Warn);
-        assert_eq!(grade(&AuditSummary { medium: 2, ..Default::default() }), Grade::Warn);
-        assert_eq!(grade(&AuditSummary { vulns: Some(3), worst_vuln: Some(Severity::Low), ..Default::default() }), Grade::Warn);
+        assert_eq!(
+            grade(&AuditSummary {
+                diagnostics: 1,
+                ..Default::default()
+            }),
+            Grade::Warn
+        );
+        assert_eq!(
+            grade(&AuditSummary {
+                medium: 2,
+                ..Default::default()
+            }),
+            Grade::Warn
+        );
+        assert_eq!(
+            grade(&AuditSummary {
+                vulns: Some(3),
+                worst_vuln: Some(Severity::Low),
+                ..Default::default()
+            }),
+            Grade::Warn
+        );
         // Clean: nothing flagged, online + vulns both checked and empty.
         assert_eq!(
-            grade(&AuditSummary { total_deps: 10, direct_deps: 2, risk: Some(0), vulns: Some(0), ..Default::default() }),
+            grade(&AuditSummary {
+                total_deps: 10,
+                direct_deps: 2,
+                risk: Some(0),
+                vulns: Some(0),
+                ..Default::default()
+            }),
             Grade::Clean
         );
     }

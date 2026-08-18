@@ -22,7 +22,7 @@ use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::model::{Dependency, Ecosystem, Scope, LicenseSource};
+use crate::model::{Dependency, Ecosystem, LicenseSource, Scope};
 
 struct Spec {
     name: String,
@@ -32,8 +32,8 @@ struct Spec {
 }
 
 pub fn parse_lockfile(path: &Path, manifest: Option<&Path>) -> Result<Vec<Dependency>> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let (specs, direct) = parse_text(&text);
     // Gemfile.lock records no groups at all — `DEPENDENCIES` is a flat list. The
     // `:development` / `:test` split lives only in the Gemfile, so read it when
@@ -105,7 +105,9 @@ fn gemfile_scopes(text: &str) -> HashMap<String, Scope> {
             block_stack.pop();
             continue;
         }
-        let Some(rest) = line.strip_prefix("gem ") else { continue };
+        let Some(rest) = line.strip_prefix("gem ") else {
+            continue;
+        };
         let Some(name) = quoted(rest) else { continue };
         // An inline `group:` / `groups:` option overrides the enclosing block.
         let inline = rest.find("group").map(|i| scope_of_symbols(&rest[i..]));
@@ -130,7 +132,12 @@ fn scope_of_symbols(clause: &str) -> Scope {
     if syms.is_empty() {
         return Scope::Prod;
     }
-    if syms.iter().all(|s| matches!(s.as_str(), "development" | "test" | "lint" | "docs" | "cucumber")) {
+    if syms.iter().all(|s| {
+        matches!(
+            s.as_str(),
+            "development" | "test" | "lint" | "docs" | "cucumber"
+        )
+    }) {
         Scope::Dev
     } else {
         Scope::Prod
@@ -183,7 +190,12 @@ fn parse_text(text: &str) -> (Vec<Spec>, HashSet<String>) {
                 }
                 if indent == 4 {
                     if let Some((name, version)) = parse_spec_line(content) {
-                        specs.push(Spec { name, version, remote: remote.clone(), deps: Vec::new() });
+                        specs.push(Spec {
+                            name,
+                            version,
+                            remote: remote.clone(),
+                            deps: Vec::new(),
+                        });
                     }
                 } else if indent >= 6
                     && let Some(last) = specs.last_mut()
@@ -288,7 +300,11 @@ gem "dotenv", group: :default   # a non-dev group stays production
     #[test]
     fn gemfile_groups_classify_dev_gems() {
         let s = gemfile_scopes(GEMFILE);
-        assert_eq!(s.get("rails"), Some(&Scope::Prod), "an ungrouped gem is production");
+        assert_eq!(
+            s.get("rails"),
+            Some(&Scope::Prod),
+            "an ungrouped gem is production"
+        );
         assert_eq!(s.get("rspec-rails"), Some(&Scope::Dev));
         assert_eq!(s.get("factory_bot"), Some(&Scope::Dev));
         assert_eq!(s.get("simplecov"), Some(&Scope::Dev));
@@ -298,8 +314,16 @@ gem "dotenv", group: :default   # a non-dev group stays production
     fn gemfile_inline_group_options_classify() {
         let s = gemfile_scopes(GEMFILE);
         assert_eq!(s.get("pry"), Some(&Scope::Dev), "group: :development");
-        assert_eq!(s.get("rubocop"), Some(&Scope::Dev), "groups: [:development, :test]");
-        assert_eq!(s.get("dotenv"), Some(&Scope::Prod), ":default is not a dev group");
+        assert_eq!(
+            s.get("rubocop"),
+            Some(&Scope::Dev),
+            "groups: [:development, :test]"
+        );
+        assert_eq!(
+            s.get("dotenv"),
+            Some(&Scope::Prod),
+            ":default is not a dev group"
+        );
     }
 
     #[test]
@@ -322,7 +346,10 @@ gem "dotenv", group: :default   # a non-dev group stays production
         let (specs, direct) = parse_text(SAMPLE);
         let groups = gemfile_scopes("group :test do\n  gem \"rack\"\nend\n");
         let deps = build_deps(&specs, &direct, &groups);
-        assert_eq!(deps.iter().find(|d| d.name == "rack").unwrap().scope, Scope::Dev);
+        assert_eq!(
+            deps.iter().find(|d| d.name == "rack").unwrap().scope,
+            Scope::Dev
+        );
         assert_eq!(
             deps.iter().find(|d| d.name == "actionpack").unwrap().scope,
             Scope::Prod,

@@ -144,8 +144,10 @@ pub fn analyze(
             .or_default()
             .extend(d.parents.iter().cloned());
     }
-    let index: HashMap<DepRef, &Dependency> =
-        deps.iter().map(|d| ((d.name.clone(), d.version.clone()), d)).collect();
+    let index: HashMap<DepRef, &Dependency> = deps
+        .iter()
+        .map(|d| ((d.name.clone(), d.version.clone()), d))
+        .collect();
 
     // Everything that transitively depends on any copy of the target.
     let mut seen: HashSet<DepRef> = HashSet::new();
@@ -180,7 +182,10 @@ pub fn analyze(
         seen.remove(k);
     }
 
-    let mine: Vec<&Finding> = findings.iter().filter(|f| finding_is_for(f, target)).collect();
+    let mine: Vec<&Finding> = findings
+        .iter()
+        .filter(|f| finding_is_for(f, target))
+        .collect();
     let trigger = if mine.iter().any(|f| f.category == Category::InstallHook) {
         Trigger::Install
     } else if code_scanned {
@@ -240,20 +245,27 @@ pub fn render(b: &Blast, root_label: &str) {
         b.total,
         b.share() * 100.0
     );
-    let reach = if b.share() >= 0.25 { reach.red().bold().to_string() } else { reach };
+    let reach = if b.share() >= 0.25 {
+        reach.red().bold().to_string()
+    } else {
+        reach
+    };
     println!("  {:<12} {reach}", "reach".dimmed());
 
     let ships = if b.ships() {
-        format!("yes — {} (it is in the shipped artifact)", b.scope.as_str()).red().to_string()
+        format!("yes — {} (it is in the shipped artifact)", b.scope.as_str())
+            .red()
+            .to_string()
     } else {
         "no — dev/test only".green().to_string()
     };
     println!("  {:<12} {ships}", "ships".dimmed());
 
     let trig = match b.trigger {
-        Trigger::Install => {
-            "install hook — executes on every install, before review".red().bold().to_string()
-        }
+        Trigger::Install => "install hook — executes on every install, before review"
+            .red()
+            .bold()
+            .to_string(),
         Trigger::Runtime => "runtime only — executes when the code is called".to_string(),
         Trigger::Unknown => "unknown — dependency code not on disk, so not checked"
             .truecolor(255, 165, 0)
@@ -262,7 +274,11 @@ pub fn render(b: &Blast, root_label: &str) {
     println!("  {:<12} {trig}", "runs".dimmed());
 
     if !b.via.is_empty() {
-        println!("  {:<12} {}", "entered via".dimmed(), b.via.join(", ").yellow());
+        println!(
+            "  {:<12} {}",
+            "entered via".dimmed(),
+            b.via.join(", ").yellow()
+        );
     }
 
     // The ceiling first: this is what a hostile version could reach.
@@ -287,8 +303,7 @@ pub fn render(b: &Blast, root_label: &str) {
         }
         println!(
             "    {}",
-            "— a lower bound, not a limit: a hostile version is not restricted to this"
-                .dimmed()
+            "— a lower bound, not a limit: a hostile version is not restricted to this".dimmed()
         );
     }
 
@@ -310,7 +325,11 @@ fn verdict(b: &Blast) -> String {
             "{} {} — and whether it runs an install hook is unknown, which is the \
              difference between a runtime risk and one that lands on every machine",
             b.package,
-            if ships { "ships to production" } else { "is dev/test only" }
+            if ships {
+                "ships to production"
+            } else {
+                "is dev/test only"
+            }
         ),
         (Trigger::Install, _) => format!(
             "highest-leverage position: {} runs on every install, so a compromise lands \
@@ -379,7 +398,10 @@ mod tests {
             license_source: LicenseSource::Unknown,
             resolved_url: None,
             integrity: None,
-            parents: parents.iter().map(|p| ((*p).to_string(), "1.0.0".to_string())).collect(),
+            parents: parents
+                .iter()
+                .map(|p| ((*p).to_string(), "1.0.0".to_string()))
+                .collect(),
         }
     }
 
@@ -410,14 +432,22 @@ mod tests {
         let b = analyze(&graph(), &[], "leaf", true).unwrap();
         assert_eq!(b.dependents, 2, "mid and app, not just mid");
         assert_eq!(b.total, 4);
-        assert_eq!(b.via, vec!["app@1.0.0"], "the entry point a user can act on");
+        assert_eq!(
+            b.via,
+            vec!["app@1.0.0"],
+            "the entry point a user can act on"
+        );
     }
 
     #[test]
     fn a_package_is_not_its_own_dependent() {
         let b = analyze(&graph(), &[], "app", true).unwrap();
         assert_eq!(b.dependents, 0);
-        assert_eq!(b.via, vec!["app@1.0.0"], "a direct package is its own entry point");
+        assert_eq!(
+            b.via,
+            vec!["app@1.0.0"],
+            "a direct package is its own entry point"
+        );
     }
 
     #[test]
@@ -438,7 +468,11 @@ mod tests {
 
     #[test]
     fn an_install_hook_is_the_highest_leverage_position() {
-        let f = vec![finding("leaf", Category::InstallHook, "postinstall runs a script")];
+        let f = vec![finding(
+            "leaf",
+            Category::InstallHook,
+            "postinstall runs a script",
+        )];
         let b = analyze(&graph(), &f, "leaf", true).unwrap();
         assert_eq!(b.trigger, Trigger::Install);
         // Position alone puts CI secrets in scope — independent of the code.
@@ -457,7 +491,11 @@ mod tests {
         let b = analyze(&deps, &[], "helper", true).unwrap();
         assert!(!b.ships());
         assert_eq!(b.trigger, Trigger::Runtime);
-        assert!(b.exposure().iter().any(|e| e.contains("not in the shipped artifact")));
+        assert!(
+            b.exposure()
+                .iter()
+                .any(|e| e.contains("not in the shipped artifact"))
+        );
         assert!(verdict(&b).contains("build machine"));
     }
 
@@ -470,7 +508,10 @@ mod tests {
         let b = analyze(&deps, &f, "tool", true).unwrap();
         assert!(!b.ships());
         let e = b.exposure().join(" | ");
-        assert!(e.contains("developer laptops"), "scope must not downgrade an install hook: {e}");
+        assert!(
+            e.contains("developer laptops"),
+            "scope must not downgrade an install hook: {e}"
+        );
     }
 
     #[test]
@@ -478,7 +519,10 @@ mod tests {
         // Two copies, one dev one prod: the blast is the prod one.
         let deps = vec![
             dep("a", true, Scope::Prod, &[]),
-            Dependency { version: "2.0.0".into(), ..dep("dup", false, Scope::Dev, &["a"]) },
+            Dependency {
+                version: "2.0.0".into(),
+                ..dep("dup", false, Scope::Dev, &["a"])
+            },
             dep("dup", false, Scope::Prod, &["a"]),
         ];
         let b = analyze(&deps, &[], "dup", true).unwrap();
@@ -497,7 +541,11 @@ mod tests {
         ];
         let b = analyze(&graph(), &f, "leaf", true).unwrap();
         assert_eq!(b.observed, vec!["uses net, fs"]);
-        assert_eq!(b.findings.len(), 1, "non-sensitive-API findings listed separately");
+        assert_eq!(
+            b.findings.len(),
+            1,
+            "non-sensitive-API findings listed separately"
+        );
         // Exposure is derived from position, so it says nothing about net/fs.
         assert!(!b.exposure().join(" ").contains("uses net"));
     }
@@ -505,10 +553,16 @@ mod tests {
     #[test]
     fn findings_match_a_versioned_dependency_label() {
         let f = vec![finding("leaf@1.0.0", Category::InstallHook, "postinstall")];
-        assert_eq!(analyze(&graph(), &f, "leaf", true).unwrap().trigger, Trigger::Install);
+        assert_eq!(
+            analyze(&graph(), &f, "leaf", true).unwrap().trigger,
+            Trigger::Install
+        );
         // And must not match a different package sharing a prefix.
         let f = vec![finding("leafpad@1.0.0", Category::InstallHook, "x")];
-        assert_eq!(analyze(&graph(), &f, "leaf", true).unwrap().trigger, Trigger::Runtime);
+        assert_eq!(
+            analyze(&graph(), &f, "leaf", true).unwrap().trigger,
+            Trigger::Runtime
+        );
     }
 
     #[test]

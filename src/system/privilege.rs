@@ -29,7 +29,12 @@ pub(super) fn find_setuid_files() -> std::collections::HashSet<String> {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -42,17 +47,33 @@ pub(super) fn persistence_signals(
 ) -> Vec<SysSignal> {
     let mut out = Vec::new();
     if files.iter().any(|f| is_systemd_unit(f, ".service")) {
-        out.push(SysSignal::new("installs-service (runs at boot)", Severity::Info, 0));
+        out.push(SysSignal::new(
+            "installs-service (runs at boot)",
+            Severity::Info,
+            0,
+        ));
     }
     if files.iter().any(|f| is_cron_or_timer(f)) {
-        out.push(SysSignal::new("installs-scheduled-task (cron/timer)", Severity::Info, 0));
+        out.push(SysSignal::new(
+            "installs-scheduled-task (cron/timer)",
+            Severity::Info,
+            0,
+        ));
     }
     if files.iter().any(|f| is_auth_config(f)) {
-        out.push(SysSignal::new("modifies-auth (sudoers.d/pam)", Severity::Info, 0));
+        out.push(SysSignal::new(
+            "modifies-auth (sudoers.d/pam)",
+            Severity::Info,
+            0,
+        ));
     }
     if let Some(p) = files.iter().find(|f| setuid.contains(f.as_str())) {
         let name = p.rsplit('/').next().unwrap_or(p);
-        out.push(SysSignal::new(format!("setuid-binary ({name})"), Severity::Low, 10));
+        out.push(SysSignal::new(
+            format!("setuid-binary ({name})"),
+            Severity::Low,
+            10,
+        ));
     }
     out
 }
@@ -87,7 +108,6 @@ fn is_auth_config(f: &str) -> bool {
         || f.contains("/security/pam_")
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,10 +123,16 @@ mod tests {
             "/usr/bin/sudo".to_string(),
             "/usr/share/doc/foo/README".to_string(),
         ];
-        let labels: Vec<String> =
-            persistence_signals(&files, &setuid).into_iter().map(|s| s.label).collect();
+        let labels: Vec<String> = persistence_signals(&files, &setuid)
+            .into_iter()
+            .map(|s| s.label)
+            .collect();
         assert!(labels.iter().any(|l| l.starts_with("installs-service")));
-        assert!(labels.iter().any(|l| l.starts_with("installs-scheduled-task")));
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.starts_with("installs-scheduled-task"))
+        );
         assert!(labels.iter().any(|l| l.starts_with("modifies-auth")));
         assert!(labels.contains(&"setuid-binary (sudo)".to_string()));
         // cron.deny / a plain doc file must not trip cron or the others.

@@ -40,7 +40,9 @@ impl Release {
         let mut id = String::new();
         let mut version_id = String::new();
         for line in text.lines() {
-            let Some((k, v)) = line.split_once('=') else { continue };
+            let Some((k, v)) = line.split_once('=') else {
+                continue;
+            };
             let v = v.trim().trim_matches('"').to_string();
             match k.trim() {
                 "ID" => id = v,
@@ -62,13 +64,19 @@ impl Release {
                 id: id.trim().to_ascii_lowercase(),
                 version_id: ver.trim().to_string(),
             },
-            None => Release { id: s.trim().to_ascii_lowercase(), version_id: String::new() },
+            None => Release {
+                id: s.trim().to_ascii_lowercase(),
+                version_id: String::new(),
+            },
         }
     }
 
     /// The leading major component of `version_id` (`9.3` → `9`).
     fn major(&self) -> &str {
-        self.version_id.split('.').next().unwrap_or(&self.version_id)
+        self.version_id
+            .split('.')
+            .next()
+            .unwrap_or(&self.version_id)
     }
 
     /// `major.minor` of `version_id` — Alpine's release branch (`3.19.1` → `3.19`).
@@ -131,7 +139,10 @@ mod tests {
     use super::*;
 
     fn rel(id: &str, ver: &str) -> Release {
-        Release { id: id.into(), version_id: ver.into() }
+        Release {
+            id: id.into(),
+            version_id: ver.into(),
+        }
     }
 
     #[test]
@@ -183,7 +194,10 @@ mod tests {
     #[test]
     fn override_parses_id_and_version() {
         assert_eq!(Release::parse_override("debian:12"), rel("debian", "12"));
-        assert_eq!(Release::parse_override("Alpine:3.19"), rel("alpine", "3.19"));
+        assert_eq!(
+            Release::parse_override("Alpine:3.19"),
+            rel("alpine", "3.19")
+        );
         assert_eq!(Release::parse_override("debian"), rel("debian", ""));
     }
 }

@@ -4,9 +4,9 @@
 //! an AUR PKGBUILD rather than a signed repo, so they are resolved against the
 //! `aur.archlinux.org` RPC and their PKGBUILD is statically analyzed.
 
-use super::*;
 use super::privilege::{find_setuid_files, persistence_signals};
 use super::recipe::analyze_recipe;
+use super::*;
 
 // --- pacman backend (`pacman -Qi`) -------------------------------------------
 
@@ -16,9 +16,15 @@ use super::recipe::analyze_recipe;
 /// ships an install hook. `online` additionally enriches foreign/AUR packages
 /// via the AUR RPC.
 pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
-    let out = Command::new("pacman").arg("-Qi").output().context("running `pacman -Qi`")?;
+    let out = Command::new("pacman")
+        .arg("-Qi")
+        .output()
+        .context("running `pacman -Qi`")?;
     if !out.status.success() {
-        anyhow::bail!("`pacman -Qi` failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        anyhow::bail!(
+            "`pacman -Qi` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     let (deps, mut signals) = pacman_graph(&String::from_utf8_lossy(&out.stdout));
 
@@ -40,9 +46,15 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
     };
 
     if !foreign.is_empty() {
-        let aur = if opts.online { aur_info(&foreign) } else { HashMap::new() };
-        let version_of: HashMap<&str, &str> =
-            deps.iter().map(|d| (d.name.as_str(), d.version.as_str())).collect();
+        let aur = if opts.online {
+            aur_info(&foreign)
+        } else {
+            HashMap::new()
+        };
+        let version_of: HashMap<&str, &str> = deps
+            .iter()
+            .map(|d| (d.name.as_str(), d.version.as_str()))
+            .collect();
         for name in &foreign {
             for sig in foreign_signals(aur.get(name)) {
                 push_signal(&mut signals, name, sig);
@@ -80,13 +92,18 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
 
     // Version drift (needs a synced DB; best-effort).
     for (name, (old, new)) in read_pacman_outdated() {
-        signals.entry(name).or_default().push(outdated_signal(&old, &new));
+        signals
+            .entry(name)
+            .or_default()
+            .push(outdated_signal(&old, &new));
     }
 
     // Integrity & trust caveats.
     let modified = pacman_modified_files();
     if modified > 0 {
-        warnings.push(format!("{modified} installed file(s) modified since install (pacman -Qkk)"));
+        warnings.push(format!(
+            "{modified} installed file(s) modified since install (pacman -Qkk)"
+        ));
     }
     if pacman_sig_disabled() {
         warnings.push("pacman signature verification disabled (SigLevel = Never)".to_string());
@@ -99,7 +116,14 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
         format!(", {} foreign", foreign.len())
     };
     let summary = format!("{} package(s) ({explicit} explicit{extra})", deps.len());
-    Ok(Inventory { manager: "pacman", deps, repos: pacman_repos(), signals, summary, notes: warnings })
+    Ok(Inventory {
+        manager: "pacman",
+        deps,
+        repos: pacman_repos(),
+        signals,
+        summary,
+        notes: warnings,
+    })
 }
 
 /// `name → installed files`, from one `pacman -Ql` (`<pkg> <path>` per line).
@@ -113,7 +137,9 @@ fn pacman_file_index() -> HashMap<String, Vec<String>> {
     let mut idx: HashMap<String, Vec<String>> = HashMap::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         if let Some((name, path)) = line.split_once(' ') {
-            idx.entry(name.to_string()).or_default().push(path.trim().to_string());
+            idx.entry(name.to_string())
+                .or_default()
+                .push(path.trim().to_string());
         }
     }
     idx
@@ -128,7 +154,9 @@ fn pacman_modified_files() -> usize {
     // `pacman -Qkk` prints its findings to stderr and exits non-zero when any file
     // is altered; the SHA256 line is the definitive content-tamper signal.
     let text = String::from_utf8_lossy(&out.stderr);
-    text.lines().filter(|l| l.contains("SHA256 checksum mismatch")).count()
+    text.lines()
+        .filter(|l| l.contains("SHA256 checksum mismatch"))
+        .count()
 }
 
 /// Is package signature verification switched off in `/etc/pacman.conf`
@@ -192,12 +220,13 @@ fn aur_info(names: &[String]) -> HashMap<String, AurPkg> {
     let mut out = HashMap::new();
     for chunk in names.chunks(120) {
         let query: String = chunk.iter().map(|n| format!("&arg[]={n}")).collect();
-        let url =
-            format!("{aur}/rpc/v5/info?{}", query.trim_start_matches('&'));
+        let url = format!("{aur}/rpc/v5/info?{}", query.trim_start_matches('&'));
         let Ok(resp) = agent.get(&url).set("User-Agent", UA).call() else {
             continue;
         };
-        let Ok(text) = resp.into_string() else { continue };
+        let Ok(text) = resp.into_string() else {
+            continue;
+        };
         if let Ok(parsed) = serde_json::from_str::<AurResp>(&text) {
             out.extend(parsed.results.into_iter().map(|p| (p.name.clone(), p)));
         }
@@ -221,8 +250,17 @@ fn fetch_pkgbuild(name: &str) -> Option<String> {
     let agent = net
         .apply(ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)))
         .build();
-    let url = format!("{}/cgit/aur.git/plain/PKGBUILD?h={name}", net.endpoints.aur());
-    agent.get(&url).set("User-Agent", UA).call().ok()?.into_string().ok()
+    let url = format!(
+        "{}/cgit/aur.git/plain/PKGBUILD?h={name}",
+        net.endpoints.aur()
+    );
+    agent
+        .get(&url)
+        .set("User-Agent", UA)
+        .call()
+        .ok()?
+        .into_string()
+        .ok()
 }
 
 /// `pacman -Qu` → packages behind the synced repos, `name → (installed, current)`.
@@ -259,14 +297,22 @@ fn foreign_signals(aur: Option<&AurPkg>) -> Vec<SysSignal> {
     )];
     if let Some(p) = aur {
         if p.maintainer.is_none() {
-            v.push(SysSignal::new("aur-orphaned (no maintainer)", Severity::Medium, 30));
+            v.push(SysSignal::new(
+                "aur-orphaned (no maintainer)",
+                Severity::Medium,
+                30,
+            ));
         }
         if p.out_of_date.is_some() {
             v.push(SysSignal::new("aur-out-of-date", Severity::Medium, 20));
         }
         let votes = p.num_votes.unwrap_or(0);
         if votes < 10 {
-            v.push(SysSignal::new(format!("aur-unpopular ({votes} votes)"), Severity::Low, 10));
+            v.push(SysSignal::new(
+                format!("aur-unpopular ({votes} votes)"),
+                Severity::Low,
+                10,
+            ));
         }
     }
     v
@@ -290,7 +336,9 @@ fn pacman_graph(text: &str) -> (Vec<Dependency>, HashMap<String, Vec<SysSignal>>
         let (mut depends, mut explicit, mut unsigned, mut has_install) =
             (Vec::new(), false, false, false);
         for line in block.lines() {
-            let Some((k, v)) = line.split_once(':') else { continue };
+            let Some((k, v)) = line.split_once(':') else {
+                continue;
+            };
             let (k, v) = (k.trim(), v.trim());
             match k {
                 "Name" => name = v.to_string(),
@@ -306,17 +354,30 @@ fn pacman_graph(text: &str) -> (Vec<Dependency>, HashMap<String, Vec<SysSignal>>
             }
         }
         if !name.is_empty() {
-            pkgs.push(P { name, version, url, depends, explicit, unsigned, has_install });
+            pkgs.push(P {
+                name,
+                version,
+                url,
+                depends,
+                explicit,
+                unsigned,
+                has_install,
+            });
         }
     }
 
-    let installed: HashMap<&str, &str> =
-        pkgs.iter().map(|p| (p.name.as_str(), p.version.as_str())).collect();
+    let installed: HashMap<&str, &str> = pkgs
+        .iter()
+        .map(|p| (p.name.as_str(), p.version.as_str()))
+        .collect();
     let mut parents: HashMap<String, Vec<DepRef>> = HashMap::new();
     for p in &pkgs {
         for d in &p.depends {
             if installed.contains_key(d.as_str()) {
-                parents.entry(d.clone()).or_default().push((p.name.clone(), p.version.clone()));
+                parents
+                    .entry(d.clone())
+                    .or_default()
+                    .push((p.name.clone(), p.version.clone()));
             }
         }
     }
@@ -325,7 +386,11 @@ fn pacman_graph(text: &str) -> (Vec<Dependency>, HashMap<String, Vec<SysSignal>>
     let mut deps = Vec::with_capacity(pkgs.len());
     for p in &pkgs {
         if p.unsigned {
-            push_signal(&mut signals, &p.name, SysSignal::new("unsigned", Severity::High, 40));
+            push_signal(
+                &mut signals,
+                &p.name,
+                SysSignal::new("unsigned", Severity::High, 40),
+            );
         }
         if p.has_install {
             push_signal(
@@ -365,23 +430,39 @@ fn pacman_dep_name(tok: &str) -> Option<String> {
 /// are trusted; anything else is third-party.
 fn pacman_repos() -> Vec<Repo> {
     const OFFICIAL: &[&str] = &[
-        "core", "extra", "multilib", "testing", "core-testing", "extra-testing",
-        "multilib-testing", "community", "community-testing", "alarm", "aur-disabled",
+        "core",
+        "extra",
+        "multilib",
+        "testing",
+        "core-testing",
+        "extra-testing",
+        "multilib-testing",
+        "community",
+        "community-testing",
+        "alarm",
+        "aur-disabled",
     ];
     let Ok(text) = std::fs::read_to_string("/etc/pacman.conf") else {
         return Vec::new();
     };
     text.lines()
-        .filter_map(|l| l.trim().strip_prefix('[')?.strip_suffix(']').map(str::to_string))
+        .filter_map(|l| {
+            l.trim()
+                .strip_prefix('[')?
+                .strip_suffix(']')
+                .map(str::to_string)
+        })
         .filter(|s| s != "options")
         .map(|s| {
             let official = OFFICIAL.contains(&s.as_str());
-            Repo { name: s, url: String::new(), official }
+            Repo {
+                name: s,
+                url: String::new(),
+                official,
+            }
         })
         .collect()
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -415,7 +496,10 @@ Install Reason  : Installed as a dependency of app
         let lib = deps.iter().find(|d| d.name == "lib").unwrap();
         assert!(app.direct, "explicit ⇒ direct/root");
         assert!(!lib.direct);
-        assert_eq!(app.resolved_url.as_deref(), Some("https://github.com/o/app"));
+        assert_eq!(
+            app.resolved_url.as_deref(),
+            Some("https://github.com/o/app")
+        );
         // `lib` is a real dep edge; `libfoo.so` dropped, `glibc` not installed → dropped.
         assert_eq!(lib.parents, vec![("app".to_string(), "1.2-1".to_string())]);
         // unsigned (High) + install-script (Info) on app; lib is signed/clean.
@@ -433,7 +517,12 @@ Install Reason  : Installed as a dependency of app
         assert!(none[0].label.starts_with("foreign-package"));
 
         // Orphaned + out-of-date + unpopular AUR package → all three on top.
-        let bad = AurPkg { name: "x".into(), maintainer: None, out_of_date: Some(1), num_votes: Some(3) };
+        let bad = AurPkg {
+            name: "x".into(),
+            maintainer: None,
+            out_of_date: Some(1),
+            num_votes: Some(3),
+        };
         let sigs = foreign_signals(Some(&bad));
         let labels: Vec<&str> = sigs.iter().map(|s| s.label.as_str()).collect();
         assert!(labels.iter().any(|l| l.contains("aur-orphaned")));
@@ -441,7 +530,12 @@ Install Reason  : Installed as a dependency of app
         assert!(labels.iter().any(|l| l.contains("aur-unpopular")));
 
         // Healthy AUR package → foreign-package only (maintained, popular, current).
-        let good = AurPkg { name: "y".into(), maintainer: Some("dev".into()), out_of_date: None, num_votes: Some(500) };
+        let good = AurPkg {
+            name: "y".into(),
+            maintainer: Some("dev".into()),
+            out_of_date: None,
+            num_votes: Some(500),
+        };
         assert_eq!(foreign_signals(Some(&good)).len(), 1);
     }
 

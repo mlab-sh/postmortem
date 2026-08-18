@@ -25,10 +25,16 @@ pub(super) fn analyze_recipe(name: &str, code: &str, ext: &str) -> Vec<SysSignal
 
     // Piping a download straight into a shell/interpreter during install — the
     // clearest install-time remote-code-execution tell.
-    let pipe = regex::Regex::new(r"(?i)(curl|wget|fetch)\b[^\n|]*\|\s*(sudo\s+)?(sh|bash|zsh|ruby|python)")
-        .expect("static regex");
+    let pipe = regex::Regex::new(
+        r"(?i)(curl|wget|fetch)\b[^\n|]*\|\s*(sudo\s+)?(sh|bash|zsh|ruby|python)",
+    )
+    .expect("static regex");
     if pipe.is_match(code) {
-        sigs.push(SysSignal::new("install-remote-exec (pipe to shell)", Severity::High, 40));
+        sigs.push(SysSignal::new(
+            "install-remote-exec (pipe to shell)",
+            Severity::High,
+            40,
+        ));
     }
     sigs
 }
@@ -42,16 +48,21 @@ fn finding_to_signal(f: &crate::model::Finding) -> SysSignal {
         Severity::Low => 10,
         Severity::Info => 0,
     };
-    let label =
-        format!("install-{} ({})", f.category.as_str(), crate::analyze::util::snippet(&f.detail, 40));
+    let label = format!(
+        "install-{} ({})",
+        f.category.as_str(),
+        crate::analyze::util::snippet(&f.detail, 40)
+    );
     SysSignal::new(label, f.severity, points)
 }
 
 /// Write a recipe to a fresh temp dir as `recipe.<ext>`, so the directory-oriented
 /// analyzers pick it up by extension. Returns the dir (caller removes it).
 fn stage_recipe(name: &str, code: &str, ext: &str) -> Option<std::path::PathBuf> {
-    let safe: String =
-        name.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    let safe: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
     let dir = std::env::temp_dir().join(format!("postmortem-recipe-{}-{safe}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
     std::fs::write(dir.join(format!("recipe.{ext}")), code).ok()?;
@@ -73,7 +84,6 @@ pub(super) fn host_domain(url: &str) -> Option<String> {
     Some(labels[labels.len() - 2..].join("."))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,8 +101,10 @@ mod tests {
               end
             end
         "#;
-        let labels: Vec<String> =
-            analyze_recipe("evil", ruby, "rb").into_iter().map(|s| s.label).collect();
+        let labels: Vec<String> = analyze_recipe("evil", ruby, "rb")
+            .into_iter()
+            .map(|s| s.label)
+            .collect();
         assert!(
             labels.iter().any(|l| l.contains("install-remote-exec")),
             "curl|bash pipe flagged: {labels:?}"
@@ -107,13 +119,25 @@ mod tests {
               url "https://github.com/o/r/archive/1.0.tar.gz"
               def install; bin.install "ok"; end
             end"#;
-        assert!(analyze_recipe("ok", clean, "rb").is_empty(), "clean recipe is quiet");
+        assert!(
+            analyze_recipe("ok", clean, "rb").is_empty(),
+            "clean recipe is quiet"
+        );
     }
 
     #[test]
     fn host_domain_extracts_registrable() {
-        assert_eq!(host_domain("https://dl.google.com/chrome/x.dmg").as_deref(), Some("google.com"));
-        assert_eq!(host_domain("https://github.com/o/r/releases/x").as_deref(), Some("github.com"));
-        assert_eq!(host_domain("https://cryptomator.org/").as_deref(), Some("cryptomator.org"));
+        assert_eq!(
+            host_domain("https://dl.google.com/chrome/x.dmg").as_deref(),
+            Some("google.com")
+        );
+        assert_eq!(
+            host_domain("https://github.com/o/r/releases/x").as_deref(),
+            Some("github.com")
+        );
+        assert_eq!(
+            host_domain("https://cryptomator.org/").as_deref(),
+            Some("cryptomator.org")
+        );
     }
 }

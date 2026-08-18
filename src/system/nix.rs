@@ -41,8 +41,10 @@ pub fn nix_inventory(opts: Opts) -> Result<Inventory> {
 
     // Each store path → its (name, version) key (output suffix folded into version
     // so distinct outputs stay distinct nodes).
-    let key_of: HashMap<&str, (String, String)> =
-        closure.iter().map(|p| (p.as_str(), parse_store_name(store_basename(p)))).collect();
+    let key_of: HashMap<&str, (String, String)> = closure
+        .iter()
+        .map(|p| (p.as_str(), parse_store_name(store_basename(p))))
+        .collect();
 
     // Reference edges → parent adjacency (only within the closure).
     let mut parents: HashMap<String, Vec<DepRef>> = HashMap::new();
@@ -54,7 +56,10 @@ pub fn nix_inventory(opts: Opts) -> Result<Inventory> {
                 continue; // drop self-references and out-of-closure edges
             }
             if let Some(child) = key_of.get(r.as_str()) {
-                parents.entry(child.0.clone()).or_default().push(parent.clone());
+                parents
+                    .entry(child.0.clone())
+                    .or_default()
+                    .push(parent.clone());
             }
         }
     }
@@ -67,9 +72,10 @@ pub fn nix_inventory(opts: Opts) -> Result<Inventory> {
             Some(i) => {
                 !i.ultimate
                     && i.ca.is_none()
-                    && !i.signatures.iter().any(|s| {
-                        s.split(':').next().is_some_and(|k| trusted.contains(k))
-                    })
+                    && !i
+                        .signatures
+                        .iter()
+                        .any(|s| s.split(':').next().is_some_and(|k| trusted.contains(k)))
             }
             None => false,
         }
@@ -113,7 +119,14 @@ pub fn nix_inventory(opts: Opts) -> Result<Inventory> {
     let direct = deps.iter().filter(|d| d.direct).count();
     let summary = format!("{} store path(s) ({direct} in profiles)", deps.len());
     let notes = nix_notes();
-    Ok(Inventory { manager: "nix", deps, repos: nix_substituters(), signals, summary, notes })
+    Ok(Inventory {
+        manager: "nix",
+        deps,
+        repos: nix_substituters(),
+        signals,
+        summary,
+        notes,
+    })
 }
 
 /// The store paths installed into the profile generations: for every current
@@ -144,7 +157,9 @@ fn nix_profile_roots() -> Vec<String> {
     }
     let mut roots = std::collections::HashSet::new();
     for prof in profiles {
-        let Ok(store) = std::fs::canonicalize(&prof) else { continue };
+        let Ok(store) = std::fs::canonicalize(&prof) else {
+            continue;
+        };
         for r in nix_references(&store.to_string_lossy()) {
             roots.insert(r);
         }
@@ -159,7 +174,12 @@ fn nix_references(path: &str) -> Vec<String> {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().map(str::to_string).collect())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(str::to_string)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -171,7 +191,10 @@ fn nix_closure(roots: &[String]) -> Vec<String> {
     if !out.status.success() {
         return Vec::new();
     }
-    String::from_utf8_lossy(&out.stdout).lines().map(str::to_string).collect()
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 /// `nix path-info --json` over the closure → `path → info` (references, signatures,
@@ -181,16 +204,20 @@ fn nix_path_info(paths: &[String]) -> HashMap<String, NixPathInfo> {
     let mut out = HashMap::new();
     for chunk in paths.chunks(256) {
         let res = Command::new("nix")
-            .args(["--extra-experimental-features", "nix-command", "path-info", "--json", "--sigs"])
+            .args([
+                "--extra-experimental-features",
+                "nix-command",
+                "path-info",
+                "--json",
+                "--sigs",
+            ])
             .args(chunk)
             .output();
         let Ok(res) = res else { continue };
         if !res.status.success() {
             continue;
         }
-        if let Ok(map) =
-            serde_json::from_slice::<HashMap<String, NixPathInfo>>(&res.stdout)
-        {
+        if let Ok(map) = serde_json::from_slice::<HashMap<String, NixPathInfo>>(&res.stdout) {
             out.extend(map);
         }
     }
@@ -235,7 +262,9 @@ fn nix_notes() -> Vec<String> {
         }
     }
     if extra_caches > 0 {
-        warnings.push(format!("{extra_caches} extra binary cache(s) configured beyond cache.nixos.org"));
+        warnings.push(format!(
+            "{extra_caches} extra binary cache(s) configured beyond cache.nixos.org"
+        ));
     }
     warnings
 }
@@ -251,7 +280,11 @@ fn nix_substituters() -> Vec<Repo> {
                 for url in v.split_whitespace() {
                     if seen.insert(url.to_string()) {
                         let official = url.contains("cache.nixos.org");
-                        repos.push(Repo { name: url.to_string(), url: String::new(), official });
+                        repos.push(Repo {
+                            name: url.to_string(),
+                            url: String::new(),
+                            official,
+                        });
                     }
                 }
             }
@@ -269,11 +302,17 @@ fn nix_substituters() -> Vec<Repo> {
 
 /// The `nix.conf` lines from the system and user configs (best-effort).
 fn nix_conf_lines() -> Vec<String> {
-    ["/etc/nix/nix.conf", &format!("{}/.config/nix/nix.conf", std::env::var("HOME").unwrap_or_default())]
-        .iter()
-        .filter_map(|p| std::fs::read_to_string(p).ok())
-        .flat_map(|t| t.lines().map(str::to_string).collect::<Vec<_>>())
-        .collect()
+    [
+        "/etc/nix/nix.conf",
+        &format!(
+            "{}/.config/nix/nix.conf",
+            std::env::var("HOME").unwrap_or_default()
+        ),
+    ]
+    .iter()
+    .filter_map(|p| std::fs::read_to_string(p).ok())
+    .flat_map(|t| t.lines().map(str::to_string).collect::<Vec<_>>())
+    .collect()
 }
 
 /// A `key = value` line from `nix.conf` → its value, if the key matches.
@@ -293,15 +332,20 @@ fn store_basename(path: &str) -> &str {
 /// unique per store path.
 fn parse_store_name(base: &str) -> (String, String) {
     // The hash is 32 chars followed by '-'.
-    let rest = if base.len() > 33 && base.as_bytes()[32] == b'-' { &base[33..] } else { base };
+    let rest = if base.len() > 33 && base.as_bytes()[32] == b'-' {
+        &base[33..]
+    } else {
+        base
+    };
     let parts: Vec<&str> = rest.split('-').collect();
-    match parts.iter().position(|p| p.starts_with(|c: char| c.is_ascii_digit())) {
+    match parts
+        .iter()
+        .position(|p| p.starts_with(|c: char| c.is_ascii_digit()))
+    {
         Some(i) if i > 0 => (parts[..i].join("-"), parts[i..].join("-")),
         _ => (rest.to_string(), String::new()),
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -311,11 +355,26 @@ mod tests {
     fn nix_store_name_parses() {
         let h = "8gdgwydsf6gia9j178nymxwm2bl0z3m3"; // 32-char hash
         // version starts at the first digit-leading component; output folds in.
-        assert_eq!(parse_store_name(&format!("{h}-curl-8.20.0-bin")), ("curl".into(), "8.20.0-bin".into()));
-        assert_eq!(parse_store_name(&format!("{h}-nss-cacert-3.123")), ("nss-cacert".into(), "3.123".into()));
-        assert_eq!(parse_store_name(&format!("{h}-gcc-15.2.0-lib")), ("gcc".into(), "15.2.0-lib".into()));
-        assert_eq!(parse_store_name(&format!("{h}-aws-c-mqtt-0.13.3")), ("aws-c-mqtt".into(), "0.13.3".into()));
+        assert_eq!(
+            parse_store_name(&format!("{h}-curl-8.20.0-bin")),
+            ("curl".into(), "8.20.0-bin".into())
+        );
+        assert_eq!(
+            parse_store_name(&format!("{h}-nss-cacert-3.123")),
+            ("nss-cacert".into(), "3.123".into())
+        );
+        assert_eq!(
+            parse_store_name(&format!("{h}-gcc-15.2.0-lib")),
+            ("gcc".into(), "15.2.0-lib".into())
+        );
+        assert_eq!(
+            parse_store_name(&format!("{h}-aws-c-mqtt-0.13.3")),
+            ("aws-c-mqtt".into(), "0.13.3".into())
+        );
         // No version component → all name.
-        assert_eq!(parse_store_name(&format!("{h}-hello")), ("hello".into(), String::new()));
+        assert_eq!(
+            parse_store_name(&format!("{h}-hello")),
+            ("hello".into(), String::new())
+        );
     }
 }

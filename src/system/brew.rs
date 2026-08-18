@@ -6,13 +6,18 @@
 //! beyond the official `homebrew/*` taps bypasses core review, so it is both a
 //! provenance signal and the trigger for static-analyzing the install recipe.
 
-use super::*;
 use super::recipe::{analyze_recipe, host_domain};
+use super::*;
 
 /// Download hosts that are legitimate release mirrors, so a cask downloading
 /// from them while its homepage is elsewhere is normal (not a redirect tell).
-const TRUSTED_DL_HOSTS: &[&str] =
-    &["github.com", "gitlab.com", "codeberg.org", "sourceforge.net", "bitbucket.org"];
+const TRUSTED_DL_HOSTS: &[&str] = &[
+    "github.com",
+    "gitlab.com",
+    "codeberg.org",
+    "sourceforge.net",
+    "bitbucket.org",
+];
 
 /// One configured Homebrew tap (a source repo backing installable packages).
 pub struct Tap {
@@ -24,7 +29,6 @@ pub struct Tap {
     /// An official `homebrew/*` tap (core-reviewed).
     pub official: bool,
 }
-
 
 #[derive(Deserialize, Default)]
 struct BrewOut {
@@ -114,11 +118,18 @@ pub fn brew_inventory() -> Result<Inventory> {
         .output()
         .context("running `brew info --json=v2 --installed`")?;
     if !out.status.success() {
-        anyhow::bail!("`brew info` failed: {}", String::from_utf8_lossy(&out.stderr).trim());
+        anyhow::bail!(
+            "`brew info` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     let (taps, tap_remote) = read_tap_info();
-    let Parsed { deps, casks, mut signals, third_party } =
-        analyze(&out.stdout, &tap_remote).context("parsing brew JSON")?;
+    let Parsed {
+        deps,
+        casks,
+        mut signals,
+        third_party,
+    } = analyze(&out.stdout, &tap_remote).context("parsing brew JSON")?;
 
     // Static-analyze the install recipe of each third-party package (its brew
     // Ruby) — the untrusted install code. Core/official recipes are skipped.
@@ -130,14 +141,28 @@ pub fn brew_inventory() -> Result<Inventory> {
 
     // Version drift is a separate `brew outdated` query, merged into the signals.
     for (name, (installed, current)) in read_outdated() {
-        signals.entry(name).or_default().push(outdated_signal(&installed, &current));
+        signals
+            .entry(name)
+            .or_default()
+            .push(outdated_signal(&installed, &current));
     }
     let summary = format!("{} formula(e) + {casks} cask(s)", deps.len() - casks);
     let repos = taps
         .into_iter()
-        .map(|t| Repo { name: t.name, url: t.remote, official: t.official })
+        .map(|t| Repo {
+            name: t.name,
+            url: t.remote,
+            official: t.official,
+        })
         .collect();
-    Ok(Inventory { manager: "homebrew", deps, repos, signals, summary, notes: Vec::new() })
+    Ok(Inventory {
+        manager: "homebrew",
+        deps,
+        repos,
+        signals,
+        summary,
+        notes: Vec::new(),
+    })
 }
 
 /// The output of [`analyze`]: the packages (formulae forest + cask roots), the
@@ -164,14 +189,20 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> 
     let version: HashMap<&str, &str> = parsed
         .formulae
         .iter()
-        .filter_map(|f| f.installed.first().map(|i| (f.name.as_str(), i.version.as_str())))
+        .filter_map(|f| {
+            f.installed
+                .first()
+                .map(|i| (f.name.as_str(), i.version.as_str()))
+        })
         .collect();
 
     // Invert declared-direct edges into a parent map: dep → its declaring
     // formulae. tree::build re-inverts this into the child forest.
     let mut parents: HashMap<String, Vec<DepRef>> = HashMap::new();
     for f in &parsed.formulae {
-        let Some(inst) = f.installed.first() else { continue };
+        let Some(inst) = f.installed.first() else {
+            continue;
+        };
         for rd in &inst.runtime_dependencies {
             if rd.declared_directly && version.contains_key(rd.full_name.as_str()) {
                 parents
@@ -184,7 +215,9 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> 
 
     let mut deps = Vec::with_capacity(parsed.formulae.len() + parsed.casks.len());
     for f in &parsed.formulae {
-        let Some(inst) = f.installed.first() else { continue };
+        let Some(inst) = f.installed.first() else {
+            continue;
+        };
         // Third-party tap → provenance signal + carry the tap's remote so the
         // resolver assesses the tap repo instead of reporting "no repository",
         // and mark it for install-recipe analysis.
@@ -244,7 +277,11 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> 
         }
         deps.push(Dependency {
             name: c.token.clone(),
-            version: c.installed.clone().or_else(|| c.version.clone()).unwrap_or_default(),
+            version: c
+                .installed
+                .clone()
+                .or_else(|| c.version.clone())
+                .unwrap_or_default(),
             ecosystem: Ecosystem::Brew,
             direct: true, // casks are always user-installed
             scope: Scope::Prod,
@@ -257,7 +294,12 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> 
         });
     }
 
-    Ok(Parsed { deps, casks, signals, third_party })
+    Ok(Parsed {
+        deps,
+        casks,
+        signals,
+        third_party,
+    })
 }
 
 /// The provenance signal for a package installed from a non-official tap.
@@ -269,7 +311,6 @@ fn third_party_tap(tap: &str) -> SysSignal {
 fn deprecated_signal() -> SysSignal {
     SysSignal::new("deprecated", Severity::Medium, 20)
 }
-
 
 /// The formula installs a launchd/systemd service — it runs automatically at
 /// boot/login. Higher attack surface; informational (many are legitimate).
@@ -292,16 +333,21 @@ fn is_official_bottle(root_url: &str) -> bool {
 /// for. `None` for an https remote on a known code host.
 fn tap_remote_signal(remote: &str) -> Option<SysSignal> {
     if remote.starts_with("http://") {
-        return Some(SysSignal::new("insecure-tap-remote (http)", Severity::High, 40));
+        return Some(SysSignal::new(
+            "insecure-tap-remote (http)",
+            Severity::High,
+            40,
+        ));
     }
     match host_domain(remote) {
-        Some(host) if !TRUSTED_DL_HOSTS.contains(&host.as_str()) => {
-            Some(SysSignal::new(format!("exotic-tap-host ({host})"), Severity::Low, 10))
-        }
+        Some(host) if !TRUSTED_DL_HOSTS.contains(&host.as_str()) => Some(SysSignal::new(
+            format!("exotic-tap-host ({host})"),
+            Severity::Low,
+            10,
+        )),
         _ => None,
     }
 }
-
 
 /// Cask-specific risk signals derived from its metadata: the download-and-run
 /// surface a cask carries that a source-built formula doesn't.
@@ -310,19 +356,28 @@ fn cask_signals(c: &Cask) -> Vec<SysSignal> {
 
     // An unverified download — brew runs whatever bytes arrive, no integrity pin.
     if c.sha256.as_deref() == Some("no_check") {
-        out.push(SysSignal::new("unverified-download (sha256 :no_check)", Severity::High, 40));
+        out.push(SysSignal::new(
+            "unverified-download (sha256 :no_check)",
+            Severity::High,
+            40,
+        ));
     }
     if let Some(url) = &c.url {
         if url.starts_with("http://") {
             out.push(SysSignal::new("insecure-url (http)", Severity::High, 40));
         }
         // Download host unrelated to the homepage and not a known release mirror.
-        if let (Some(home), Some(dl)) =
-            (c.homepage.as_deref().and_then(host_domain), host_domain(url))
-            && dl != home
+        if let (Some(home), Some(dl)) = (
+            c.homepage.as_deref().and_then(host_domain),
+            host_domain(url),
+        ) && dl != home
             && !TRUSTED_DL_HOSTS.contains(&dl.as_str())
         {
-            out.push(SysSignal::new(format!("download-host-mismatch ({dl})"), Severity::Low, 10));
+            out.push(SysSignal::new(
+                format!("download-host-mismatch ({dl})"),
+                Severity::Low,
+                10,
+            ));
         }
     }
     // A pkg/installer artifact runs an installer (elevated) rather than a plain
@@ -376,7 +431,6 @@ fn read_outdated() -> HashMap<String, (String, String)> {
         .collect()
 }
 
-
 /// Fetch a package's Homebrew recipe (its Ruby) via `brew cat` and static-analyze
 /// it. Only called for third-party packages — the untrusted install code.
 fn analyze_install_code(name: &str, is_cask: bool) -> Vec<SysSignal> {
@@ -402,7 +456,8 @@ fn brew_cat(name: &str, is_cask: bool) -> Option<String> {
 /// A cask artifact that runs an installer (`pkg`/`installer`) rather than just
 /// dropping an `.app`.
 fn is_installer_artifact(a: &serde_json::Value) -> bool {
-    a.as_object().is_some_and(|o| o.contains_key("pkg") || o.contains_key("installer"))
+    a.as_object()
+        .is_some_and(|o| o.contains_key("pkg") || o.contains_key("installer"))
 }
 
 /// `brew tap-info --json --installed` → the configured taps with their **real**
@@ -418,7 +473,10 @@ fn read_tap_info() -> (Vec<Tap>, HashMap<String, String>) {
         #[serde(default)]
         official: bool,
     }
-    let Ok(out) = Command::new("brew").args(["tap-info", "--json", "--installed"]).output() else {
+    let Ok(out) = Command::new("brew")
+        .args(["tap-info", "--json", "--installed"])
+        .output()
+    else {
         return (Vec::new(), HashMap::new());
     };
     if !out.status.success() {
@@ -434,7 +492,11 @@ fn read_tap_info() -> (Vec<Tap>, HashMap<String, String>) {
         {
             remotes.insert(t.name.clone(), r.clone());
         }
-        taps.push(Tap { name: t.name, remote: t.remote.unwrap_or_default(), official: t.official });
+        taps.push(Tap {
+            name: t.name,
+            remote: t.remote.unwrap_or_default(),
+            official: t.official,
+        });
     }
     (taps, remotes)
 }
@@ -443,7 +505,6 @@ fn read_tap_info() -> (Vec<Tap>, HashMap<String, String>) {
 fn is_official_tap(tap: &str) -> bool {
     tap.starts_with("homebrew/")
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -477,7 +538,12 @@ mod tests {
             "sn0walice/sshm".to_string(),
             "https://github.com/Sn0wAlice/sshm".to_string(),
         )]);
-        let Parsed { deps, casks, signals, .. } = analyze(json, &tap_remote).unwrap();
+        let Parsed {
+            deps,
+            casks,
+            signals,
+            ..
+        } = analyze(json, &tap_remote).unwrap();
         assert_eq!(deps.len(), 2);
         assert_eq!(casks, 0);
         let app = deps.iter().find(|d| d.name == "app").unwrap();
@@ -488,9 +554,16 @@ mod tests {
         assert_eq!(lib.parents, vec![("app".to_string(), "1.2.0".to_string())]);
         assert!(app.parents.is_empty());
         // Third-party tap → provenance signal + its real remote for the resolver.
-        assert_eq!(app.resolved_url.as_deref(), Some("https://github.com/Sn0wAlice/sshm"));
+        assert_eq!(
+            app.resolved_url.as_deref(),
+            Some("https://github.com/Sn0wAlice/sshm")
+        );
         assert_eq!(lib.resolved_url, None);
-        assert!(signals["app"].iter().any(|s| s.label.contains("third-party-tap")));
+        assert!(
+            signals["app"]
+                .iter()
+                .any(|s| s.label.contains("third-party-tap"))
+        );
         assert!(!signals.contains_key("lib"));
     }
 
@@ -506,11 +579,19 @@ mod tests {
               "artifacts": [ { "pkg": ["x.pkg"] }, { "uninstall": [] } ] }
           ]
         }"#;
-        let Parsed { deps, casks, signals, .. } = analyze(json, &HashMap::new()).unwrap();
+        let Parsed {
+            deps,
+            casks,
+            signals,
+            ..
+        } = analyze(json, &HashMap::new()).unwrap();
         assert_eq!(casks, 1);
         let risky = deps.iter().find(|d| d.name == "risky").unwrap();
         assert!(risky.direct, "casks are user-installed roots");
-        assert_eq!(risky.resolved_url.as_deref(), Some("https://cdn.evil.test/app.dmg"));
+        assert_eq!(
+            risky.resolved_url.as_deref(),
+            Some("https://cdn.evil.test/app.dmg")
+        );
         let labels: Vec<&str> = signals["risky"].iter().map(|s| s.label.as_str()).collect();
         assert!(labels.iter().any(|l| l.contains("unverified-download")));
         assert!(labels.iter().any(|l| l.contains("download-host-mismatch")));
@@ -536,7 +617,10 @@ mod tests {
           ]
         }"#;
         let Parsed { signals, .. } = analyze(json, &HashMap::new()).unwrap();
-        assert!(!signals.contains_key("ok"), "verified github cask has no offline signals");
+        assert!(
+            !signals.contains_key("ok"),
+            "verified github cask has no offline signals"
+        );
     }
 
     #[test]
@@ -554,16 +638,30 @@ mod tests {
               "bottle": { "stable": { "root_url": "https://binaries.evil.test/bottles" } } }
           ]
         }"#;
-        let remote = HashMap::from([("evil/tap".to_string(), "http://git.evil.test/evil/tap".to_string())]);
+        let remote = HashMap::from([(
+            "evil/tap".to_string(),
+            "http://git.evil.test/evil/tap".to_string(),
+        )]);
         let Parsed { signals, .. } = analyze(json, &remote).unwrap();
 
         let svc: Vec<&str> = signals["svc"].iter().map(|s| s.label.as_str()).collect();
         assert!(svc.iter().any(|l| l.contains("installs-service")));
-        assert!(!svc.iter().any(|l| l.contains("unofficial-bottle")), "official bottle is clean");
+        assert!(
+            !svc.iter().any(|l| l.contains("unofficial-bottle")),
+            "official bottle is clean"
+        );
 
         let rogue: Vec<&str> = signals["rogue"].iter().map(|s| s.label.as_str()).collect();
-        assert!(rogue.iter().any(|l| l.contains("unofficial-bottle (evil.test)")));
-        assert!(rogue.iter().any(|l| l.contains("insecure-tap-remote (http)")));
+        assert!(
+            rogue
+                .iter()
+                .any(|l| l.contains("unofficial-bottle (evil.test)"))
+        );
+        assert!(
+            rogue
+                .iter()
+                .any(|l| l.contains("insecure-tap-remote (http)"))
+        );
     }
 
     #[test]
@@ -575,9 +673,21 @@ mod tests {
                 { "version": "1.0.0", "installed_on_request": true, "runtime_dependencies": [] } ] }
           ]
         }"#;
-        let remote = HashMap::from([("sn0walice/x".to_string(), "https://github.com/o/x".to_string())]);
-        let Parsed { deps, signals, third_party, .. } = analyze(json, &remote).unwrap();
-        assert_eq!(third_party, vec![("app".to_string(), false)], "flagged for recipe analysis");
+        let remote = HashMap::from([(
+            "sn0walice/x".to_string(),
+            "https://github.com/o/x".to_string(),
+        )]);
+        let Parsed {
+            deps,
+            signals,
+            third_party,
+            ..
+        } = analyze(json, &remote).unwrap();
+        assert_eq!(
+            third_party,
+            vec![("app".to_string(), false)],
+            "flagged for recipe analysis"
+        );
         let mut forest = tree::build("brew", &["brew".to_string()], &deps, None);
         annotate(&mut forest, &signals);
         let app = &forest.roots[0];

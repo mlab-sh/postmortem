@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
-use crate::model::{Dependency, Ecosystem, Scope, LicenseSource};
+use crate::model::{Dependency, Ecosystem, LicenseSource, Scope};
 
 pub fn parse_any(manifest: &Path, lockfile: Option<&Path>) -> Result<Vec<Dependency>> {
     if let Some(lf) = lockfile {
@@ -62,7 +62,11 @@ impl PoetryPkg {
             if groups.is_empty() {
                 return Scope::Prod;
             }
-            return if groups.iter().all(|g| is_dev_group(g)) { Scope::Dev } else { Scope::Prod };
+            return if groups.iter().all(|g| is_dev_group(g)) {
+                Scope::Dev
+            } else {
+                Scope::Prod
+            };
         }
         match self.category.as_deref() {
             Some(c) if is_dev_group(c) => Scope::Dev,
@@ -74,12 +78,15 @@ impl PoetryPkg {
 /// Group names that mean "not shipped". `main` (poetry's production group) and
 /// anything unrecognised are treated as production.
 fn is_dev_group(group: &str) -> bool {
-    matches!(group.to_ascii_lowercase().as_str(), "dev" | "development" | "test" | "tests" | "lint" | "docs")
+    matches!(
+        group.to_ascii_lowercase().as_str(),
+        "dev" | "development" | "test" | "tests" | "lint" | "docs"
+    )
 }
 
 fn parse_poetry(path: &Path) -> Result<Vec<Dependency>> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let lock: PoetryLock = toml::from_str(&text)
         .with_context(|| format!("parsing {} as poetry.lock", path.display()))?;
 
@@ -93,7 +100,11 @@ fn parse_poetry(path: &Path) -> Result<Vec<Dependency>> {
             if other.name == pkg.name {
                 continue;
             }
-            if other.dependencies.keys().any(|k| norm(k) == norm(&pkg.name)) {
+            if other
+                .dependencies
+                .keys()
+                .any(|k| norm(k) == norm(&pkg.name))
+            {
                 parents.push((other.name.clone(), other.version.clone()));
             }
         }
@@ -138,8 +149,7 @@ struct PipfileEntry {
 }
 
 fn parse_pipfile_lock(path: &Path) -> Result<Vec<Dependency>> {
-    let bytes = std::fs::read(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     let lock: PipfileLock = serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing {} as Pipfile.lock", path.display()))?;
     // `default` / `develop` are pipenv's own fully-resolved split, so the scope
@@ -171,8 +181,8 @@ fn parse_pipfile_lock(path: &Path) -> Result<Vec<Dependency>> {
 }
 
 fn parse_requirements(path: &Path) -> Result<Vec<Dependency>> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading {}", path.display()))?;
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     // A bare requirements file carries no scope metadata at all; the filename is
     // the only signal Python's conventions give us.
     let scope = requirements_scope(path);
@@ -184,11 +194,21 @@ fn parse_requirements(path: &Path) -> Result<Vec<Dependency>> {
             continue;
         }
         let (name, version) = if let Some((n, v)) = line.split_once("==") {
-            (n.trim().to_string(), v.split([';', ' ']).next().unwrap_or(v).trim().to_string())
+            (
+                n.trim().to_string(),
+                v.split([';', ' ']).next().unwrap_or(v).trim().to_string(),
+            )
         } else if let Some((n, v)) = line.split_once(">=") {
             (n.trim().to_string(), format!(">={}", v.trim()))
         } else {
-            (line.split([';', '[']).next().unwrap_or(line).trim().to_string(), "unspecified".to_string())
+            (
+                line.split([';', '['])
+                    .next()
+                    .unwrap_or(line)
+                    .trim()
+                    .to_string(),
+                "unspecified".to_string(),
+            )
         };
         if name.is_empty() || !seen.insert(norm(&name)) {
             continue;
@@ -257,7 +277,10 @@ mod tests {
         let deps = parse_requirements(&p).unwrap();
         assert_eq!(deps.len(), 3);
         assert!(deps.iter().any(|d| d.name == "ctx" && d.version == "0.2.6"));
-        assert!(deps.iter().all(|d| d.scope == Scope::Prod), "plain requirements.txt ships");
+        assert!(
+            deps.iter().all(|d| d.scope == Scope::Prod),
+            "plain requirements.txt ships"
+        );
     }
 
     #[test]
@@ -306,7 +329,11 @@ mod tests {
         assert_eq!(pkg(&["dev", "test"]).scope(), Scope::Dev);
         // Belonging to a production group anywhere means it ships.
         assert_eq!(pkg(&["main", "dev"]).scope(), Scope::Prod);
-        assert_eq!(pkg(&["custom"]).scope(), Scope::Prod, "unknown groups are not dev");
+        assert_eq!(
+            pkg(&["custom"]).scope(),
+            Scope::Prod,
+            "unknown groups are not dev"
+        );
     }
 
     #[test]
@@ -335,7 +362,13 @@ mod tests {
         .unwrap();
         let deps = parse_pipfile_lock(&p).unwrap();
         assert_eq!(deps.len(), 2);
-        assert_eq!(deps.iter().find(|d| d.name == "requests").unwrap().scope, Scope::Prod);
-        assert_eq!(deps.iter().find(|d| d.name == "pytest").unwrap().scope, Scope::Dev);
+        assert_eq!(
+            deps.iter().find(|d| d.name == "requests").unwrap().scope,
+            Scope::Prod
+        );
+        assert_eq!(
+            deps.iter().find(|d| d.name == "pytest").unwrap().scope,
+            Scope::Dev
+        );
     }
 }

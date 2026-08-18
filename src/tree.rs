@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use owo_colors::OwoColorize;
 use serde::Serialize;
 
-use crate::model::{Dependency, DepRef, Severity};
+use crate::model::{DepRef, Dependency, Severity};
 use crate::resolve::Resolution;
 
 /// Amber/orange for the "inactive"/suspicious tier (true-color; degrades gracefully).
@@ -149,7 +149,10 @@ fn build_with_roots(
     for d in deps {
         let child = (d.name.clone(), d.version.clone());
         for parent in &d.parents {
-            children.entry(parent.clone()).or_default().push(child.clone());
+            children
+                .entry(parent.clone())
+                .or_default()
+                .push(child.clone());
         }
     }
     for kids in children.values_mut() {
@@ -475,8 +478,11 @@ fn render_vulns(packages: &[crate::vuln::VulnPackage]) {
     };
     println!(
         "\n{}  {}",
-        format!("🛡 {total} known vulnerabilit{}", if total == 1 { "y" } else { "ies" })
-            .bold(),
+        format!(
+            "🛡 {total} known vulnerabilit{}",
+            if total == 1 { "y" } else { "ies" }
+        )
+        .bold(),
         source.dimmed()
     );
 
@@ -518,17 +524,27 @@ pub fn render_diagnostics(diags: &[crate::model::Diagnostic]) {
     }
     println!(
         "\n{}",
-        format!("⚠ {} graph diagnostic(s) — results may be incomplete", diags.len())
-            .yellow()
-            .bold()
+        format!(
+            "⚠ {} graph diagnostic(s) — results may be incomplete",
+            diags.len()
+        )
+        .yellow()
+        .bold()
     );
     for d in diags {
         let tag = match d.kind.as_str() {
             "parse_failed" => "parse-failed".red().bold().to_string(),
-            "replace_directive" => "replace".truecolor(ORANGE.0, ORANGE.1, ORANGE.2).to_string(),
+            "replace_directive" => "replace"
+                .truecolor(ORANGE.0, ORANGE.1, ORANGE.2)
+                .to_string(),
             _ => d.kind.replace('_', "-").dimmed().to_string(),
         };
-        println!("  {} {}  {}", format!("[{}]", d.ecosystem).dimmed(), tag, d.message);
+        println!(
+            "  {} {}  {}",
+            format!("[{}]", d.ecosystem).dimmed(),
+            tag,
+            d.message
+        );
     }
 }
 
@@ -554,7 +570,11 @@ fn render_recap(tree: &Tree) {
                 if node.signals.iter().any(|s| s.starts_with("outdated")) {
                     c.outdated += 1;
                 }
-                if node.signals.iter().any(|s| s.starts_with("installs-service")) {
+                if node
+                    .signals
+                    .iter()
+                    .any(|s| s.starts_with("installs-service"))
+                {
                     c.services += 1;
                 }
             } else {
@@ -678,13 +698,20 @@ fn risk_color(risk: u8) -> Option<Severity> {
 
 fn dep_color(dep: u8) -> Option<Severity> {
     // dep uses blue for "bad tree"; reuse Low as a marker the painter maps.
-    if dep >= BLUE_DEP_THRESHOLD { Some(Severity::Low) } else { None }
+    if dep >= BLUE_DEP_THRESHOLD {
+        Some(Severity::Low)
+    } else {
+        None
+    }
 }
 
 fn paint_score(n: u8, sev: Option<Severity>) -> String {
     match sev {
         Some(Severity::Critical) | Some(Severity::High) => n.to_string().red().bold().to_string(),
-        Some(Severity::Medium) => n.to_string().truecolor(ORANGE.0, ORANGE.1, ORANGE.2).to_string(),
+        Some(Severity::Medium) => n
+            .to_string()
+            .truecolor(ORANGE.0, ORANGE.1, ORANGE.2)
+            .to_string(),
         Some(Severity::Low) => n.to_string().blue().to_string(),
         _ => n.to_string().dimmed().to_string(),
     }
@@ -723,7 +750,11 @@ fn render_node(node: &Node, prefix: &str, is_last: bool, scored: bool) {
     let connector = if is_last { "└── " } else { "├── " };
     // The name takes the node's color: red/orange if it's itself risky, blue if
     // it's clean but drags in a bad tree — so problem nodes pop out.
-    let mut label = format!("{}{}", paint(&node.name, node), format!("@{}", node.version).dimmed());
+    let mut label = format!(
+        "{}{}",
+        paint(&node.name, node),
+        format!("@{}", node.version).dimmed()
+    );
     if let Some(stars) = node.stars {
         label.push_str(&format!(" {}", format!("★{stars}").dimmed()));
     }
@@ -801,7 +832,10 @@ fn render_flagged(tree: &Tree) {
     let mut rows: Vec<(&(String, String), &Flag)> = flagged.iter().collect();
     rows.sort_by(|(ka, a), (kb, b)| b.severity.cmp(&a.severity).then_with(|| ka.cmp(kb)));
 
-    println!("\n{}", format!("⚠ {} flagged package(s)", flagged.len()).bold());
+    println!(
+        "\n{}",
+        format!("⚠ {} flagged package(s)", flagged.len()).bold()
+    );
     for ((name, version), flag) in rows {
         let repo = flag.repo.as_deref().unwrap_or("—");
         println!(
@@ -830,7 +864,11 @@ mod tests {
             truncated: false,
             repo: None,
             stars: None,
-            signals: if sev.is_some() { vec!["low-stars".into()] } else { vec![] },
+            signals: if sev.is_some() {
+                vec!["low-stars".into()]
+            } else {
+                vec![]
+            },
             severity: sev,
             risk: sev.map(|_| 30),
             dep: None,
@@ -844,7 +882,13 @@ mod tests {
         Tree {
             root: "proj".into(),
             ecosystems: vec!["node".into()],
-            stats: Stats { total: 0, direct: 0, transitive: 0, max_depth: 0, deduped: 0 },
+            stats: Stats {
+                total: 0,
+                direct: 0,
+                transitive: 0,
+                max_depth: 0,
+                deduped: 0,
+            },
             diagnostics: Vec::new(),
             vulnerabilities: Vec::new(),
             scored: false,
@@ -856,7 +900,11 @@ mod tests {
     fn dep_score_aggregates_and_dedups() {
         // clean root -> 3 distinct flagged deps (High, High, Medium) = 10+10+5
         let a = n("a", Some(Severity::High), vec![]);
-        let b = n("b", Some(Severity::High), vec![n("a", Some(Severity::High), vec![])]); // dup a
+        let b = n(
+            "b",
+            Some(Severity::High),
+            vec![n("a", Some(Severity::High), vec![])],
+        ); // dup a
         let c = n("c", Some(Severity::Medium), vec![]);
         let root = n("root", None, vec![a, b, c]);
         let mut t = tree_of(vec![root]);
@@ -878,7 +926,11 @@ mod tests {
         let nice = n("@napi-rs/nice", Some(Severity::High), kids);
         let mut t = tree_of(vec![nice]);
         score(&mut t);
-        assert_eq!(t.roots[0].dep, Some(0), "family splits should not count as deps");
+        assert_eq!(
+            t.roots[0].dep,
+            Some(0),
+            "family splits should not count as deps"
+        );
     }
 
     #[test]
@@ -889,7 +941,11 @@ mod tests {
         parent.repo = Some("acme/mono".into());
         let mut t = tree_of(vec![parent]);
         score(&mut t);
-        assert_eq!(t.roots[0].dep, Some(0), "same repo => same module => not a dep");
+        assert_eq!(
+            t.roots[0].dep,
+            Some(0),
+            "same repo => same module => not a dep"
+        );
     }
 
     #[test]
@@ -910,16 +966,26 @@ mod tests {
         // Either soft signal alone, or both together → soft.
         assert!(soft_tint(&["installs-service (runs at boot/login)".into()]));
         assert!(soft_tint(&["outdated (1.0 → 1.1)".into()]));
-        assert!(soft_tint(&["outdated (a → b)".into(), "installs-service (x)".into()]));
+        assert!(soft_tint(&[
+            "outdated (a → b)".into(),
+            "installs-service (x)".into()
+        ]));
         // Any non-soft signal alongside disqualifies it.
-        assert!(!soft_tint(&["installs-service (x)".into(), "stale (100d idle)".into()]));
+        assert!(!soft_tint(&[
+            "installs-service (x)".into(),
+            "stale (100d idle)".into()
+        ]));
         assert!(!soft_tint(&["no-repository".into()]));
         assert!(!soft_tint(&[]));
     }
 
     #[test]
     fn project_scores_aggregate_over_all_roots() {
-        let r1 = n("r1", Some(Severity::High), vec![n("x", Some(Severity::Medium), vec![])]);
+        let r1 = n(
+            "r1",
+            Some(Severity::High),
+            vec![n("x", Some(Severity::Medium), vec![])],
+        );
         let r2 = n("r2", None, vec![n("y", Some(Severity::High), vec![])]);
         let mut t = tree_of(vec![r1, r2]);
         score(&mut t);

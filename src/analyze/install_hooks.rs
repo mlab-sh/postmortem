@@ -16,8 +16,18 @@ use crate::analyze::util;
 use crate::model::{Category, Finding, Severity};
 
 const SUSPICIOUS_SCRIPT_PATTERNS: &[&str] = &[
-    "curl ", "wget ", "node -e", "sh -c", "eval", "base64",
-    "child_process", "https.get", "exec(", "spawn(", "powershell", "cmd /c",
+    "curl ",
+    "wget ",
+    "node -e",
+    "sh -c",
+    "eval",
+    "base64",
+    "child_process",
+    "https.get",
+    "exec(",
+    "spawn(",
+    "powershell",
+    "cmd /c",
 ];
 
 #[derive(Debug, Deserialize, Default)]
@@ -35,8 +45,12 @@ pub fn scan_node(node_modules: &Path, out: &mut Vec<Finding>) {
         if pkg_json.file_name().and_then(|s| s.to_str()) != Some("package.json") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&pkg_json) else { continue };
-        let Ok(parsed) = serde_json::from_str::<PkgJson>(&text) else { continue };
+        let Ok(text) = std::fs::read_to_string(&pkg_json) else {
+            continue;
+        };
+        let Ok(parsed) = serde_json::from_str::<PkgJson>(&text) else {
+            continue;
+        };
         let dep = parsed
             .name
             .clone()
@@ -44,19 +58,39 @@ pub fn scan_node(node_modules: &Path, out: &mut Vec<Finding>) {
             .unwrap_or_else(|| pkg_json.display().to_string());
         let version = parsed.version.clone().unwrap_or_default();
 
-        for hook in ["preinstall", "install", "postinstall", "preuninstall", "postuninstall"] {
-            let Some(cmd) = parsed.scripts.get(hook) else { continue };
+        for hook in [
+            "preinstall",
+            "install",
+            "postinstall",
+            "preuninstall",
+            "postuninstall",
+        ] {
+            let Some(cmd) = parsed.scripts.get(hook) else {
+                continue;
+            };
             let suspicious = SUSPICIOUS_SCRIPT_PATTERNS
                 .iter()
                 .any(|p| cmd.to_lowercase().contains(&p.to_lowercase()));
-            let severity = if suspicious { Severity::High } else { Severity::Medium };
+            let severity = if suspicious {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
             out.push(Finding {
-                dependency: if version.is_empty() { dep.clone() } else { format!("{dep}@{version}") },
+                dependency: if version.is_empty() {
+                    dep.clone()
+                } else {
+                    format!("{dep}@{version}")
+                },
                 severity,
                 category: Category::InstallHook,
                 detail: format!(
                     "npm `{hook}` script defined{}",
-                    if suspicious { " — references network/exec primitives" } else { "" }
+                    if suspicious {
+                        " — references network/exec primitives"
+                    } else {
+                        ""
+                    }
                 ),
                 location: Some(pkg_json.display().to_string()),
                 evidence: Some(util::snippet(cmd, 160)),
@@ -67,9 +101,20 @@ pub fn scan_node(node_modules: &Path, out: &mut Vec<Finding>) {
 }
 
 const PY_SUSPICIOUS_IN_SETUP: &[&str] = &[
-    "subprocess", "os.system", "os.popen", "exec(", "eval(", "base64",
-    "urllib", "requests.", "socket.", "compile(", "marshal.loads",
-    "__import__", "getattr(", "os.environ",
+    "subprocess",
+    "os.system",
+    "os.popen",
+    "exec(",
+    "eval(",
+    "base64",
+    "urllib",
+    "requests.",
+    "socket.",
+    "compile(",
+    "marshal.loads",
+    "__import__",
+    "getattr(",
+    "os.environ",
 ];
 
 pub fn scan_python(root: &Path, out: &mut Vec<Finding>) {
@@ -77,7 +122,9 @@ pub fn scan_python(root: &Path, out: &mut Vec<Finding>) {
         if setup_py.file_name().and_then(|s| s.to_str()) != Some("setup.py") {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&setup_py) else { continue };
+        let Ok(text) = std::fs::read_to_string(&setup_py) else {
+            continue;
+        };
         let hits: Vec<&&str> = PY_SUSPICIOUS_IN_SETUP
             .iter()
             .filter(|p| text.contains(**p))
@@ -85,8 +132,8 @@ pub fn scan_python(root: &Path, out: &mut Vec<Finding>) {
         if hits.is_empty() {
             continue;
         }
-        let dep = util::python_pkg_from_path(&setup_py)
-            .unwrap_or_else(|| setup_py.display().to_string());
+        let dep =
+            util::python_pkg_from_path(&setup_py).unwrap_or_else(|| setup_py.display().to_string());
         let severity = if hits.len() >= 3 {
             Severity::Critical
         } else if hits.len() >= 2 {

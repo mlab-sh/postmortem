@@ -27,7 +27,9 @@ pub fn annotate(findings: &mut [Finding]) {
         if f.category != Category::Ioc {
             continue;
         }
-        let Some(ev) = f.evidence.as_deref() else { continue };
+        let Some(ev) = f.evidence.as_deref() else {
+            continue;
+        };
         let url = match f.detail.as_str() {
             "embedded URL" => host_of(ev).map(|h| format!("{MLAB}/domain/{h}")),
             "embedded IPv4 address" => Some(format!("{MLAB}/ip/{ev}")),
@@ -84,7 +86,10 @@ mod tests {
     fn ipv4_link() {
         let mut fs = vec![ioc("embedded IPv4 address", "172.226.148.47")];
         annotate(&mut fs);
-        assert_eq!(fs[0].enrich_url.as_deref(), Some("https://mlab.sh/ip/172.226.148.47"));
+        assert_eq!(
+            fs[0].enrich_url.as_deref(),
+            Some("https://mlab.sh/ip/172.226.148.47")
+        );
     }
 
     #[test]
@@ -101,12 +106,18 @@ mod tests {
     fn domain_link() {
         let mut fs = vec![ioc("embedded domain name", "lessentiel.lu")];
         annotate(&mut fs);
-        assert_eq!(fs[0].enrich_url.as_deref(), Some("https://mlab.sh/domain/lessentiel.lu"));
+        assert_eq!(
+            fs[0].enrich_url.as_deref(),
+            Some("https://mlab.sh/domain/lessentiel.lu")
+        );
     }
 
     #[test]
     fn url_becomes_domain_link() {
-        let mut fs = vec![ioc("embedded URL", "https://drop.malicious.invalid/upload?x=1")];
+        let mut fs = vec![ioc(
+            "embedded URL",
+            "https://drop.malicious.invalid/upload?x=1",
+        )];
         annotate(&mut fs);
         assert_eq!(
             fs[0].enrich_url.as_deref(),
@@ -118,7 +129,10 @@ mod tests {
     fn url_with_port_strips_port() {
         let mut fs = vec![ioc("embedded URL", "http://evil.tk:8080/path")];
         annotate(&mut fs);
-        assert_eq!(fs[0].enrich_url.as_deref(), Some("https://mlab.sh/domain/evil.tk"));
+        assert_eq!(
+            fs[0].enrich_url.as_deref(),
+            Some("https://mlab.sh/domain/evil.tk")
+        );
     }
 
     #[test]
@@ -133,8 +147,14 @@ mod tests {
     #[test]
     fn wallet_link_uses_unified_crypto_route() {
         let mut fs = vec![
-            ioc("Bitcoin address — extremely unusual in dependency code", "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2"),
-            ioc("Ethereum address — extremely unusual in dependency code", "0xd90e2f925da726b50c4ed8d0fb90ad053324f31b"),
+            ioc(
+                "Bitcoin address — extremely unusual in dependency code",
+                "1BvBMSEYstWetqTFn5Au4m4GFg7xJaNVN2",
+            ),
+            ioc(
+                "Ethereum address — extremely unusual in dependency code",
+                "0xd90e2f925da726b50c4ed8d0fb90ad053324f31b",
+            ),
         ];
         annotate(&mut fs);
         assert_eq!(

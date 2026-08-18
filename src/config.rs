@@ -152,7 +152,11 @@ impl IgnoreRule {
         if let Some(p) = &self.path {
             parts.push(format!("path={p}"));
         }
-        if parts.is_empty() { "(empty rule)".into() } else { parts.join(" ") }
+        if parts.is_empty() {
+            "(empty rule)".into()
+        } else {
+            parts.join(" ")
+        }
     }
 }
 
@@ -212,6 +216,29 @@ pub struct Suppression {
     pub status: Status,
 }
 
+/// npm's `allowScripts` approvals, as suppressions.
+///
+/// They are not in `postmortem.conf` — npm writes them into `package.json` —
+/// but they suppress the same way and rot the same way, so a listing that left
+/// them out would understate what the project has waved through. They carry no
+/// expiry: npm records a name, not a version or a date, so an approval granted
+/// once holds for every future release of that package.
+pub fn script_approvals(root: &std::path::Path) -> Vec<Suppression> {
+    crate::scripts::read_approvals(root)
+        .into_iter()
+        // `read_approvals` also yields the last path segment of a spec so it can
+        // be matched; listing both would double-count the same approval.
+        .filter(|spec| !spec.contains('/') || spec.starts_with('@'))
+        .map(|spec| Suppression {
+            source: "allowScripts",
+            target: spec,
+            reason: Some("npm approve-scripts — this package may run install code".into()),
+            expires: None,
+            status: Status::Permanent,
+        })
+        .collect()
+}
+
 /// Every suppression the config declares, in one list.
 ///
 /// The blunt forms (`skip_categories`, `skip_dependencies`) cannot carry an
@@ -261,10 +288,10 @@ pub fn suppressions(cfg: &Config, today: NaiveDate) -> Vec<Suppression> {
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
-        let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading {}", path.display()))?;
-        let cfg: Config = toml::from_str(&text)
-            .with_context(|| format!("parsing {}", path.display()))?;
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let cfg: Config =
+            toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         Ok(cfg)
     }
 
@@ -308,10 +335,16 @@ impl Config {
             .collect();
 
         let before = findings.len();
-        let findings: Vec<Finding> =
-            findings.into_iter().filter(|f| !self.should_drop(f, today)).collect();
+        let findings: Vec<Finding> = findings
+            .into_iter()
+            .filter(|f| !self.should_drop(f, today))
+            .collect();
         let suppressed = before - findings.len();
-        Applied { findings, suppressed, expired }
+        Applied {
+            findings,
+            suppressed,
+            expired,
+        }
     }
 
     fn should_drop(&self, f: &Finding, today: NaiveDate) -> bool {
@@ -323,7 +356,11 @@ impl Config {
         {
             return true;
         }
-        if self.skip_dependencies.iter().any(|d| dep_matches(d, &f.dependency)) {
+        if self
+            .skip_dependencies
+            .iter()
+            .any(|d| dep_matches(d, &f.dependency))
+        {
             return true;
         }
         for rule in &self.ignores {
@@ -447,10 +484,13 @@ mod tests {
             skip_categories: vec![Category::Ioc],
             ..Default::default()
         };
-        let (kept, sup) = apply(&cfg, vec![
-            finding(Category::Ioc, "foo", Severity::High, ""),
-            finding(Category::Obfuscation, "foo", Severity::High, ""),
-        ]);
+        let (kept, sup) = apply(
+            &cfg,
+            vec![
+                finding(Category::Ioc, "foo", Severity::High, ""),
+                finding(Category::Obfuscation, "foo", Severity::High, ""),
+            ],
+        );
         assert_eq!(kept.len(), 1);
         assert_eq!(sup, 1);
         assert_eq!(kept[0].category, Category::Obfuscation);
@@ -462,10 +502,13 @@ mod tests {
             skip_dependencies: vec!["foo".into()],
             ..Default::default()
         };
-        let (kept, _) = apply(&cfg, vec![
-            finding(Category::Ioc, "foo@1.2.3", Severity::High, ""),
-            finding(Category::Ioc, "foobar", Severity::High, ""),
-        ]);
+        let (kept, _) = apply(
+            &cfg,
+            vec![
+                finding(Category::Ioc, "foo@1.2.3", Severity::High, ""),
+                finding(Category::Ioc, "foobar", Severity::High, ""),
+            ],
+        );
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].dependency, "foobar");
     }
@@ -476,10 +519,13 @@ mod tests {
             skip_dependencies: vec!["foo@1.2.3".into()],
             ..Default::default()
         };
-        let (kept, _) = apply(&cfg, vec![
-            finding(Category::Ioc, "foo@1.2.3", Severity::High, ""),
-            finding(Category::Ioc, "foo@2.0.0", Severity::High, ""),
-        ]);
+        let (kept, _) = apply(
+            &cfg,
+            vec![
+                finding(Category::Ioc, "foo@1.2.3", Severity::High, ""),
+                finding(Category::Ioc, "foo@2.0.0", Severity::High, ""),
+            ],
+        );
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].dependency, "foo@2.0.0");
     }
@@ -490,10 +536,13 @@ mod tests {
             min_severity: Some(Severity::High),
             ..Default::default()
         };
-        let (kept, _) = apply(&cfg, vec![
-            finding(Category::Ioc, "foo", Severity::Medium, ""),
-            finding(Category::Ioc, "foo", Severity::High, ""),
-        ]);
+        let (kept, _) = apply(
+            &cfg,
+            vec![
+                finding(Category::Ioc, "foo", Severity::Medium, ""),
+                finding(Category::Ioc, "foo", Severity::High, ""),
+            ],
+        );
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].severity, Severity::High);
     }
@@ -507,10 +556,13 @@ mod tests {
             }],
             ..Default::default()
         };
-        let (kept, _) = apply(&cfg, vec![
-            finding(Category::Ioc, "x", Severity::High, "/a/b/test/c.js"),
-            finding(Category::Ioc, "x", Severity::High, "/a/b/src/c.js"),
-        ]);
+        let (kept, _) = apply(
+            &cfg,
+            vec![
+                finding(Category::Ioc, "x", Severity::High, "/a/b/test/c.js"),
+                finding(Category::Ioc, "x", Severity::High, "/a/b/src/c.js"),
+            ],
+        );
         assert_eq!(kept.len(), 1);
         assert!(kept[0].location.as_ref().unwrap().contains("/src/"));
     }
@@ -525,14 +577,17 @@ mod tests {
             }],
             ..Default::default()
         };
-        let (kept, _) = apply(&cfg, vec![
-            // matches both → dropped
-            finding(Category::Obfuscation, "uglify-js", Severity::High, ""),
-            // wrong category → kept
-            finding(Category::Ioc, "uglify-js", Severity::High, ""),
-            // wrong dep → kept
-            finding(Category::Obfuscation, "elsewhere", Severity::High, ""),
-        ]);
+        let (kept, _) = apply(
+            &cfg,
+            vec![
+                // matches both → dropped
+                finding(Category::Obfuscation, "uglify-js", Severity::High, ""),
+                // wrong category → kept
+                finding(Category::Ioc, "uglify-js", Severity::High, ""),
+                // wrong dep → kept
+                finding(Category::Obfuscation, "elsewhere", Severity::High, ""),
+            ],
+        );
         assert_eq!(kept.len(), 2);
     }
 
@@ -542,7 +597,10 @@ mod tests {
             ignores: vec![IgnoreRule::default()],
             ..Default::default()
         };
-        let (kept, sup) = apply(&cfg, vec![finding(Category::Ioc, "foo", Severity::High, "")]);
+        let (kept, sup) = apply(
+            &cfg,
+            vec![finding(Category::Ioc, "foo", Severity::High, "")],
+        );
         assert_eq!(kept.len(), 1);
         assert_eq!(sup, 0);
     }
@@ -565,9 +623,15 @@ mod tests {
 
     #[test]
     fn a_future_date_is_active_with_days_left() {
-        assert_eq!(expiry_status(Some("2026-08-20"), today()), Status::Active(3));
+        assert_eq!(
+            expiry_status(Some("2026-08-20"), today()),
+            Status::Active(3)
+        );
         // The last day still counts — an exception expires *after* its date.
-        assert_eq!(expiry_status(Some("2026-08-17"), today()), Status::Active(0));
+        assert_eq!(
+            expiry_status(Some("2026-08-17"), today()),
+            Status::Active(0)
+        );
     }
 
     #[test]
@@ -583,14 +647,28 @@ mod tests {
         // A typo must not grant a permanent exemption.
         let st = expiry_status(Some("next tuesday"), today());
         assert!(matches!(st, Status::Invalid(_)));
-        assert!(!st.is_effective(), "an unusable date must not keep suppressing");
+        assert!(
+            !st.is_effective(),
+            "an unusable date must not keep suppressing"
+        );
     }
 
     #[test]
     fn an_expired_rule_stops_suppressing_and_is_reported() {
         // The whole point of the date: what nobody renewed resurfaces.
-        let cfg = Config { ignores: vec![rule("uglify-js", Some("2026-08-16"))], ..Default::default() };
-        let a = cfg.apply(vec![finding(Category::Obfuscation, "uglify-js", Severity::High, "")], today());
+        let cfg = Config {
+            ignores: vec![rule("uglify-js", Some("2026-08-16"))],
+            ..Default::default()
+        };
+        let a = cfg.apply(
+            vec![finding(
+                Category::Obfuscation,
+                "uglify-js",
+                Severity::High,
+                "",
+            )],
+            today(),
+        );
         assert_eq!(a.findings.len(), 1, "the finding must come back");
         assert_eq!(a.suppressed, 0);
         assert_eq!(a.expired.len(), 1);
@@ -599,8 +677,19 @@ mod tests {
 
     #[test]
     fn a_live_rule_still_suppresses() {
-        let cfg = Config { ignores: vec![rule("uglify-js", Some("2026-12-31"))], ..Default::default() };
-        let a = cfg.apply(vec![finding(Category::Obfuscation, "uglify-js", Severity::High, "")], today());
+        let cfg = Config {
+            ignores: vec![rule("uglify-js", Some("2026-12-31"))],
+            ..Default::default()
+        };
+        let a = cfg.apply(
+            vec![finding(
+                Category::Obfuscation,
+                "uglify-js",
+                Severity::High,
+                "",
+            )],
+            today(),
+        );
         assert!(a.findings.is_empty());
         assert_eq!(a.suppressed, 1);
         assert!(a.expired.is_empty());
@@ -608,8 +697,19 @@ mod tests {
 
     #[test]
     fn an_invalid_date_also_stops_suppressing() {
-        let cfg = Config { ignores: vec![rule("uglify-js", Some("soon"))], ..Default::default() };
-        let a = cfg.apply(vec![finding(Category::Obfuscation, "uglify-js", Severity::High, "")], today());
+        let cfg = Config {
+            ignores: vec![rule("uglify-js", Some("soon"))],
+            ..Default::default()
+        };
+        let a = cfg.apply(
+            vec![finding(
+                Category::Obfuscation,
+                "uglify-js",
+                Severity::High,
+                "",
+            )],
+            today(),
+        );
         assert_eq!(a.findings.len(), 1);
         assert_eq!(a.expired.len(), 1);
         assert!(a.expired[0].contains("invalid"), "got {:?}", a.expired);
@@ -649,9 +749,11 @@ mod tests {
         assert!(ign.target.contains("uglify-js"));
 
         // The blunt forms cannot carry a date, so they are permanent by nature.
-        assert!(items
-            .iter()
-            .filter(|s| s.source.starts_with("skip_"))
-            .all(|s| s.status == Status::Permanent));
+        assert!(
+            items
+                .iter()
+                .filter(|s| s.source.starts_with("skip_"))
+                .all(|s| s.status == Status::Permanent)
+        );
     }
 }

@@ -11,6 +11,7 @@ mod enrich;
 mod fix;
 mod gate;
 mod gochi;
+mod hook;
 mod human;
 mod inspect;
 mod license;
@@ -22,15 +23,17 @@ mod report;
 mod resolve;
 mod sbom;
 mod scope;
+mod scripts;
 mod semver;
 mod settings;
 mod system;
 mod timeline;
 mod tree;
 mod typosquat;
-mod why;
 mod ui;
 mod vuln;
+mod watch;
+mod why;
 
 use std::path::{Path, PathBuf};
 
@@ -47,6 +50,9 @@ fn main() -> Result<()> {
         cli::Command::Audit(args) => run_audit(args),
         cli::Command::Licenses(args) => run_licenses(args),
         cli::Command::Fix(args) => run_fix(args),
+        cli::Command::Scripts(args) => run_scripts(args),
+        cli::Command::Hook(args) => run_hook(args),
+        cli::Command::Watch(args) => run_watch(args),
         cli::Command::Timeline(args) => run_timeline(args),
         cli::Command::Allowlist(args) => run_allowlist(args),
         cli::Command::Cache(args) => run_cache(args),
@@ -74,25 +80,28 @@ fn run_fix(args: cli::FixArgs) -> Result<()> {
     else {
         anyhow::bail!("no supported ecosystem detected at {}", root.display());
     };
-
     let settings = settings::Settings::load_or_warn();
     let net = settings.network.clone();
-    let (agent, cache, token) = (vuln::agent(&net), cache::Cache::open(), settings.vuln_token());
+    let (agent, cache, token) = (
+        vuln::agent(&net),
+        cache::Cache::open(),
+        settings.vuln_token(),
+    );
     let scan_url = vuln::scan_url(&net);
-
     let loader = gochi::Loader::spinner("gochi looking up advisories", ui.animating());
     let mut vulns = Vec::new();
     let mut unscannable = Vec::new();
     for d in &detected {
         match mlab_target(d) {
-            Some((lock, fmt)) => match vuln::scan(&agent, &cache, token.as_deref(), lock, fmt, &scan_url)
-            {
-                Ok(mut v) => vulns.append(&mut v),
-                Err(e) => {
-                    loader.finish(gochi::Mood::Bad, "advisory lookup failed");
-                    return Err(e).with_context(|| format!("scanning {}", d.name()));
+            Some((lock, fmt)) => {
+                match vuln::scan(&agent, &cache, token.as_deref(), lock, fmt, &scan_url) {
+                    Ok(mut v) => vulns.append(&mut v),
+                    Err(e) => {
+                        loader.finish(gochi::Mood::Bad, "advisory lookup failed");
+                        return Err(e).with_context(|| format!("scanning {}", d.name()));
+                    }
                 }
-            },
+            }
             // An ecosystem the advisory API cannot read is not a clean one, and
             // a plan that silently omitted it would read as "nothing to fix".
             None => unscannable.push(d.name().to_string()),
@@ -100,10 +109,13 @@ fn run_fix(args: cli::FixArgs) -> Result<()> {
     }
     let plan = fix::plan(&deps, &vulns);
     loader.finish(
-        if plan.is_empty() { gochi::Mood::Happy } else { gochi::Mood::Alert },
+        if plan.is_empty() {
+            gochi::Mood::Happy
+        } else {
+            gochi::Mood::Alert
+        },
         format!("{} package(s) to fix", plan.remedies.len()),
     );
-
     if args.json {
         let out = serde_json::to_string_pretty(&fix::to_json(&plan, &root.display().to_string()))?;
         cli::OutputTarget::resolve_named(args.output.as_deref(), "fix", "json").write(&out)?;
@@ -119,6 +131,171 @@ fn run_fix(args: cli::FixArgs) -> Result<()> {
     }
 
     if !args.no_fail && !plan.is_empty() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// `postmortem hook <action>` — manage the git pre-commit hook.
+fn run_hook(args: cli::HookArgs) -> Result<()> {
+    use owo_colors::OwoColorize;
+    let root = args
+        .path
+        .canonicalize()
+        .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
+    match args.action {
+        cli::HookAction::Status => {
+            let st = hook::state(&root)?;
+            hook::render_status(&root, &st);
+        }
+        cli::HookAction::Install(i) => {
+            let p = hook::install(&root, &i.run, i.force)?;
+            gochi::say(
+                gochi::Mood::Happy,
+                format!("pre-commit hook written to {}", p.display()),
+            );
+            println!(
+                "  {}",
+                format!("it runs `postmortem {}` when a lockfile is staged", i.run).dimmed()
+            );
+            // Said at install time, not buried in docs: this is the moment
+            // somebody forms an expectation about what they are protected from.
+            println!(
+                "  {}",
+                "this does not stop a malicious install script — that already ran; it stops \
+                 the bad lockfile reaching the rest of the team."
+                    .dimmed()
+            );
+        }
+        cli::HookAction::Uninstall => {
+            if hook::uninstall(&root)? {
+                gochi::say(gochi::Mood::Happy, "pre-commit hook removed");
+            } else {
+                gochi::say(gochi::Mood::Idle, "no postmortem hook was installed");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `postmortem watch <path>` — re-run a scan whenever a lockfile changes.
+///
+/// A feedback loop, not a gate: it reacts after an install has finished. Runs
+/// until interrupted, or until `--max-runs`.
+fn run_watch(args: cli::WatchArgs) -> Result<()> {
+    use owo_colors::OwoColorize;
+    let root = args
+        .path
+        .canonicalize()
+        .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
+    let present = watch::present(&root);
+    println!(
+        "{}  {}",
+        "watch".bold(),
+        root.display().to_string().dimmed()
+    );
+    if present.is_empty() {
+        println!(
+            "
+  {}",
+            "no lockfile or manifest here — nothing to react to".yellow()
+        );
+    } else {
+        println!(
+            "
+  {} {}",
+            "watching".dimmed(),
+            present.join(", ")
+        );
+    }
+    println!(
+        "  {}
+",
+        "reacts after an install finishes — it does not withhold anything (see `postmortem scripts`)"
+            .dimmed()
+    );
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("postmortem"));
+    let argv: Vec<String> = args.run.split_whitespace().map(str::to_string).collect();
+    let mut prev = watch::fingerprint(&root);
+    let mut runs = 0u32;
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(args.interval.max(1)));
+        let now = watch::fingerprint(&root);
+        let changed = watch::changed(&prev, &now);
+        prev = now;
+        if changed.is_empty() {
+            continue;
+        }
+
+        let names: Vec<String> = changed
+            .iter()
+            .filter_map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .collect();
+        println!("{}", format!("── {} changed", names.join(", ")).bold());
+
+        // The child inherits stdout/stderr, so its output lands inline. Its exit
+        // status is reported rather than acted on: a watch that stopped on the
+        // first finding would be useless for the loop it exists to serve.
+        let status = std::process::Command::new(&exe)
+            .args(&argv)
+            .current_dir(&root)
+            .status();
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => println!(
+                "{}",
+                format!("── exited {}", s.code().unwrap_or(-1)).yellow()
+            ),
+            Err(e) => println!("{}", format!("── could not run: {e}").red()),
+        }
+        println!();
+        runs += 1;
+        if args.max_runs.is_some_and(|m| runs >= m) {
+            return Ok(());
+        }
+    }
+}
+
+/// `postmortem scripts <path>` — which dependencies execute code at install
+/// time, whether each is approved, and what its script does.
+///
+/// Fully offline: which packages run code comes from the lockfile, and what the
+/// scripts do comes from the analyzers reading whatever is on disk.
+fn run_scripts(args: cli::ScriptsArgs) -> Result<()> {
+    let ui = ui::Ui::new(!args.no_progress);
+    let root = args
+        .path
+        .canonicalize()
+        .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
+    let Some((detected, deps, _)) =
+        detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))?
+    else {
+        anyhow::bail!("no supported ecosystem detected at {}", root.display());
+    };
+
+    // Which packages run code: from the lockfile, so this works uninstalled.
+    let mut with_scripts = std::collections::BTreeSet::new();
+    for d in &detected {
+        if let detect::Detected::Node { lockfile, .. } = d {
+            with_scripts.extend(scripts::lockfile_install_scripts(lockfile));
+        }
+    }
+    // What those scripts do: needs the code, which may not be there.
+    let findings = analyze::run_all(&detected, &deps, &ui);
+    let code_scanned = analyze::scans_dependency_code(&detected);
+    let approvals = scripts::read_approvals(&root);
+    let report = scripts::build(&deps, &with_scripts, &approvals, &findings, code_scanned);
+    if args.json {
+        let out =
+            serde_json::to_string_pretty(&scripts::to_json(&report, &root.display().to_string()))?;
+        cli::OutputTarget::resolve_named(args.output.as_deref(), "scripts", "json").write(&out)?;
+    } else {
+        scripts::render(&report, &args.path.display().to_string());
+    }
+
+    // A flagged script always fails; merely-pending only when asked, since a
+    // fresh project has everything pending and that is not a finding.
+    if report.flagged() > 0 || (args.fail_on_pending && report.pending() > 0) {
         std::process::exit(1);
     }
     Ok(())
@@ -144,7 +321,6 @@ fn run_timeline(args: cli::TimelineArgs) -> Result<()> {
                 .find(|d| d.name == args.package && d.ecosystem == model::Ecosystem::Node)
                 .map(|d| d.version.clone())
         });
-
     let mut settings = settings::Settings::load_or_warn();
     let tokens = resolve::Tokens {
         github: settings.resolve_github_token()?,
@@ -153,7 +329,6 @@ fn run_timeline(args: cli::TimelineArgs) -> Result<()> {
     };
     let resolver =
         resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network);
-
     let phase = ui.phase(format!("fetching {} history", args.package));
     let Some(doc) = resolver.packument(&args.package)? else {
         phase.abandon();
@@ -161,7 +336,6 @@ fn run_timeline(args: cli::TimelineArgs) -> Result<()> {
     };
     let t = timeline::build(&doc, &args.package, installed.as_deref());
     phase.done(format!("{} release(s)", t.releases.len()));
-
     if args.json {
         let out = serde_json::to_string_pretty(&timeline::to_json(&t))?;
         cli::OutputTarget::resolve_named(args.output.as_deref(), "timeline", "json").write(&out)?;
@@ -190,9 +364,12 @@ fn run_allowlist(args: cli::AllowlistArgs) -> Result<()> {
         Some(p) => config::Config::load(p)?,
         None => config::Config::default(),
     };
-
     let today = chrono::Local::now().date_naive();
     let mut items = config::suppressions(&cfg, today);
+    // npm's script approvals live in package.json, not in postmortem.conf, but
+    // they suppress the same way — omitting them would understate what the
+    // project has waved through.
+    items.extend(config::script_approvals(&root));
     if args.expired {
         items.retain(|s| s.status.is_lapsed());
     }
@@ -203,7 +380,6 @@ fn run_allowlist(args: cli::AllowlistArgs) -> Result<()> {
         config::Status::Active(d) => (2, *d),
         config::Status::Permanent => (3, 0),
     });
-
     let lapsed = items.iter().filter(|s| s.status.is_lapsed()).count();
     let soon = args.expiring_in.map(|w| {
         items
@@ -211,12 +387,10 @@ fn run_allowlist(args: cli::AllowlistArgs) -> Result<()> {
             .filter(|s| matches!(s.status, config::Status::Active(d) if d <= w))
             .count()
     });
-
     let where_ = cfg_path
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| format!("{} (no postmortem.conf)", root.display()));
-
     if args.json {
         let doc = serde_json::json!({
             "schema_version": 1,
@@ -232,10 +406,7 @@ fn run_allowlist(args: cli::AllowlistArgs) -> Result<()> {
                 "reason": s.reason,
                 "expires": s.expires,
                 "status": match &s.status {
-                    config::Status::Permanent => "permanent".to_string(),
-                    config::Status::Active(_) => "active".to_string(),
-                    config::Status::Expired(_) => "expired".to_string(),
-                    config::Status::Invalid(_) => "invalid".to_string(),
+                    config::Status::Permanent => "permanent".to_string(), config::Status::Active(_) => "active".to_string(), config::Status::Expired(_) => "expired".to_string(), config::Status::Invalid(_) => "invalid".to_string(),
                 },
                 "days_left": match &s.status {
                     config::Status::Active(d) => Some(*d),
@@ -244,7 +415,8 @@ fn run_allowlist(args: cli::AllowlistArgs) -> Result<()> {
             })).collect::<Vec<_>>(),
         });
         let out = serde_json::to_string_pretty(&doc)?;
-        cli::OutputTarget::resolve_named(args.output.as_deref(), "allowlist", "json").write(&out)?;
+        cli::OutputTarget::resolve_named(args.output.as_deref(), "allowlist", "json")
+            .write(&out)?;
     } else {
         render_allowlist(&items, &where_, lapsed, soon, args.expiring_in);
     }
@@ -264,7 +436,6 @@ fn render_allowlist(
     window: Option<i64>,
 ) {
     use owo_colors::OwoColorize;
-
     println!("{}  {}", "allowlist".bold(), where_.dimmed());
     if items.is_empty() {
         println!();
@@ -275,20 +446,31 @@ fn render_allowlist(
     println!();
     for s in items {
         let (mark, state) = match &s.status {
-            config::Status::Invalid(raw) => {
-                ("✗".red().to_string(), format!("invalid date {raw:?}").red().to_string())
-            }
-            config::Status::Expired(d) => {
-                ("✗".red().to_string(), format!("expired {d}").red().to_string())
-            }
+            config::Status::Invalid(raw) => (
+                "✗".red().to_string(),
+                format!("invalid date {raw:?}").red().to_string(),
+            ),
+            config::Status::Expired(d) => (
+                "✗".red().to_string(),
+                format!("expired {d}").red().to_string(),
+            ),
             config::Status::Active(d) if window.is_some_and(|w| *d <= w) => (
                 "!".truecolor(255, 165, 0).to_string(),
                 format!("{d}d left").truecolor(255, 165, 0).to_string(),
             ),
-            config::Status::Active(d) => ("·".dimmed().to_string(), format!("{d}d left").dimmed().to_string()),
-            config::Status::Permanent => ("·".dimmed().to_string(), "no expiry".dimmed().to_string()),
+            config::Status::Active(d) => (
+                "·".dimmed().to_string(),
+                format!("{d}d left").dimmed().to_string(),
+            ),
+            config::Status::Permanent => {
+                ("·".dimmed().to_string(), "no expiry".dimmed().to_string())
+            }
         };
-        println!("  {mark} {:<18} {:<40} {state}", s.source.dimmed(), s.target);
+        println!(
+            "  {mark} {:<18} {:<40} {state}",
+            s.source.dimmed(),
+            s.target
+        );
         if let Some(r) = &s.reason {
             println!("      {}", r.dimmed());
         }
@@ -310,7 +492,10 @@ fn render_allowlist(
     {
         println!("{}", format!("· {n} more lapse within {w} days").dimmed());
     }
-    let permanent = items.iter().filter(|s| s.status == config::Status::Permanent).count();
+    let permanent = items
+        .iter()
+        .filter(|s| s.status == config::Status::Permanent)
+        .count();
     if permanent > 0 {
         println!(
             "{}",
@@ -375,15 +560,16 @@ fn run_cache(args: cli::CacheArgs) -> Result<()> {
 /// The `cache info` view: one line per namespace, then the totals.
 fn render_cache_info(stats: &cache::CacheStats) {
     use owo_colors::OwoColorize;
-
     let where_ = stats
         .root
         .as_ref()
         .map(|r| r.display().to_string())
         .unwrap_or_else(|| "(no cache directory)".into());
     println!("{}  {}", "cache".bold(), where_.dimmed());
-    println!("{}", format!("record format v{}", cache::FORMAT_VERSION).dimmed());
-
+    println!(
+        "{}",
+        format!("record format v{}", cache::FORMAT_VERSION).dimmed()
+    );
     if stats.namespaces.is_empty() {
         println!("\n  {}", "empty".dimmed());
         return;
@@ -400,17 +586,27 @@ fn render_cache_info(stats: &cache::CacheStats) {
     for ns in &stats.namespaces {
         // Pad before colouring: ANSI escapes count toward a format width, so
         // `{:>8}` on an already-coloured string misaligns the column.
-        let stale = if ns.stale > 0 { ns.stale.to_string() } else { "-".to_string() };
+        let stale = if ns.stale > 0 {
+            ns.stale.to_string()
+        } else {
+            "-".to_string()
+        };
         let stale = format!("{stale:>8}");
-        let stale =
-            if ns.stale > 0 { stale.truecolor(255, 165, 0).to_string() } else { stale.dimmed().to_string() };
+        let stale = if ns.stale > 0 {
+            stale.truecolor(255, 165, 0).to_string()
+        } else {
+            stale.dimmed().to_string()
+        };
         println!(
             "  {:<14} {:>8}  {:>9}  {}  {}",
             ns.name,
             ns.entries,
             human_bytes(ns.bytes),
             stale,
-            ns.newest.map(age_label).unwrap_or_else(|| "-".into()).dimmed(),
+            ns.newest
+                .map(age_label)
+                .unwrap_or_else(|| "-".into())
+                .dimmed(),
         );
     }
 
@@ -421,7 +617,6 @@ fn render_cache_info(stats: &cache::CacheStats) {
         stats.oldest().map(age_label).unwrap_or_else(|| "-".into()),
         stats.newest().map(age_label).unwrap_or_else(|| "-".into()),
     );
-
     if stats.stale() > 0 {
         println!(
             "\n{}",
@@ -482,7 +677,11 @@ fn run_diff(args: cli::DiffArgs) -> Result<()> {
                 );
             }
             let m = &sides.meta;
-            let fork = m.head_repo.as_deref().map(|r| format!(" [{r}]")).unwrap_or_default();
+            let fork = m
+                .head_repo
+                .as_deref()
+                .map(|r| format!(" [{r}]"))
+                .unwrap_or_default();
             let (ol, nl) = (
                 format!("{} ({})", m.base_ref, short(&m.base_sha)),
                 format!("{}{fork} ({})", m.head_ref, short(&m.head_sha)),
@@ -532,11 +731,12 @@ fn run_diff(args: cli::DiffArgs) -> Result<()> {
         let subject: Vec<model::Dependency> = new
             .iter()
             .filter(|d| {
-                introduced.iter().any(|(e, n, v)| *e == d.ecosystem && *n == d.name && *v == d.version)
+                introduced
+                    .iter()
+                    .any(|(e, n, v)| *e == d.ecosystem && *n == d.name && *v == d.version)
             })
             .cloned()
             .collect();
-
         let mut settings = settings::Settings::load_or_warn();
         let resolutions = if args.online && !subject.is_empty() {
             let tokens = resolve::Tokens {
@@ -556,8 +756,11 @@ fn run_diff(args: cli::DiffArgs) -> Result<()> {
         let mut vulns = Vec::new();
         if args.vulns {
             let net = settings.network.clone();
-            let (agent, cache, token) =
-                (vuln::agent(&net), cache::Cache::open(), settings.vuln_token());
+            let (agent, cache, token) = (
+                vuln::agent(&net),
+                cache::Cache::open(),
+                settings.vuln_token(),
+            );
             let scan_url = vuln::scan_url(&net);
             let new_root = new_path.canonicalize().unwrap_or_else(|_| new_path.clone());
             if let Ok(detected) = detect::detect_target(&new_root) {
@@ -607,13 +810,10 @@ fn run_licenses(args: cli::LicensesArgs) -> Result<()> {
     }
 
     // Policy: config first, CLI flags additive on top.
-    let cfg_path = args
-        .config
-        .clone()
-        .or_else(|| {
-            let c = root.join(config::DEFAULT_FILENAME);
-            c.is_file().then_some(c)
-        });
+    let cfg_path = args.config.clone().or_else(|| {
+        let c = root.join(config::DEFAULT_FILENAME);
+        c.is_file().then_some(c)
+    });
     let file_policy = match &cfg_path {
         Some(p) => config::Config::load(p)?.license,
         None => config::LicenseConfig::default(),
@@ -623,16 +823,20 @@ fn run_licenses(args: cli::LicensesArgs) -> Result<()> {
         allow: [file_policy.allow, args.allow.clone()].concat(),
         fail_on_unknown: file_policy.fail_on_unknown || args.fail_on_unknown,
     };
-
     let inventory = license::inventory(&deps);
     let violations = license::evaluate(&deps, &policy);
-
     if args.json {
         let doc = license::inventory_json(&inventory, &violations, &deps);
         let out = serde_json::to_string_pretty(&doc)?;
         cli::OutputTarget::resolve_named(args.output.as_deref(), "licenses", "json").write(&out)?;
     } else {
-        render_licenses(&inventory, &violations, &deps, args.unknown_only, args.packages);
+        render_licenses(
+            &inventory,
+            &violations,
+            &deps,
+            args.unknown_only,
+            args.packages,
+        );
     }
 
     if !violations.is_empty() {
@@ -651,8 +855,10 @@ fn render_licenses(
 ) {
     use owo_colors::OwoColorize;
     const ORANGE: (u8, u8, u8) = (255, 165, 0);
-
-    let unknown = inventory.iter().find(|b| b.label == "(unknown)").map_or(0, |b| b.packages.len());
+    let unknown = inventory
+        .iter()
+        .find(|b| b.label == "(unknown)")
+        .map_or(0, |b| b.packages.len());
     println!(
         "{}  {}",
         "licenses".bold(),
@@ -660,11 +866,15 @@ fn render_licenses(
     );
 
     // Which labels the policy rejected, so they can be marked in the listing.
-    let denied: std::collections::HashSet<&str> =
-        violations.iter().filter_map(|v| v.license.as_deref()).collect();
-
+    let denied: std::collections::HashSet<&str> = violations
+        .iter()
+        .filter_map(|v| v.license.as_deref())
+        .collect();
     let shown: Vec<&license::Bucket> = if unknown_only {
-        inventory.iter().filter(|b| b.label == "(unknown)").collect()
+        inventory
+            .iter()
+            .filter(|b| b.label == "(unknown)")
+            .collect()
     } else {
         inventory.iter().collect()
     };
@@ -674,7 +884,12 @@ fn render_licenses(
     }
 
     println!();
-    let width = shown.iter().map(|b| b.label.chars().count()).max().unwrap_or(10).clamp(10, 40);
+    let width = shown
+        .iter()
+        .map(|b| b.label.chars().count())
+        .max()
+        .unwrap_or(10)
+        .clamp(10, 40);
     for b in &shown {
         let count = b.packages.len();
         let label = if b.label == "(unknown)" {
@@ -730,7 +945,10 @@ fn render_licenses(
         );
     }
     if violations.len() > 20 {
-        println!("  {}", format!("… and {} more", violations.len() - 20).dimmed());
+        println!(
+            "  {}",
+            format!("… and {} more", violations.len() - 20).dimmed()
+        );
     }
 }
 
@@ -746,7 +964,10 @@ fn license_resolver(_ui: &ui::Ui) -> Result<resolve::Resolver> {
         gitlab: settings.gitlab_token(),
         codeberg: settings.codeberg_token(),
     };
-    Ok(resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network).with_licenses(true))
+    Ok(
+        resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network)
+            .with_licenses(true),
+    )
 }
 
 /// `postmortem sbom <path>` — resolve the project and emit a CycloneDX 1.5 SBOM.
@@ -764,7 +985,10 @@ fn run_sbom(args: cli::SbomArgs) -> Result<()> {
         let resolutions = license_resolver(&ui)?.resolve_all(&deps, &ui);
         resolve::apply_licenses(&mut deps, &resolutions);
     }
-    let name = root.file_name().and_then(|s| s.to_str()).unwrap_or("project");
+    let name = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("project");
     let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let bom = sbom::cyclonedx(name, &deps, &timestamp);
     let out = serde_json::to_string_pretty(&bom)?;
@@ -780,12 +1004,12 @@ fn run_why(args: cli::WhyArgs) -> Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
-    let Some((detected, deps, _)) = detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))?
+    let Some((detected, deps, _)) =
+        detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))?
     else {
         anyhow::bail!("no supported ecosystem detected at {}", root.display());
     };
     let label = args.path.display().to_string();
-
     if args.blast {
         // The behavioural half needs the offline analyzers; the positional half
         // does not, so a failure there would still leave a useful answer — but
@@ -802,7 +1026,8 @@ fn run_why(args: cli::WhyArgs) -> Result<()> {
         };
         if args.json {
             let out = serde_json::to_string_pretty(&blast::to_json(&b, &label))?;
-            cli::OutputTarget::resolve_named(args.output.as_deref(), "blast", "json").write(&out)?;
+            cli::OutputTarget::resolve_named(args.output.as_deref(), "blast", "json")
+                .write(&out)?;
         } else {
             blast::render(&b, &label);
         }
@@ -827,7 +1052,9 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
         .path
         .canonicalize()
         .with_context(|| format!("cannot resolve path {}", args.path.display()))?;
-    let Some((detected, mut deps, diags)) = detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))? else {
+    let Some((detected, mut deps, diags)) =
+        detect_and_parse(&root, &ui, &cli::OmitSet::scopes(&args.omit))?
+    else {
         std::process::exit(2);
     };
 
@@ -842,7 +1069,11 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
             Some(p) => config::Config::load(p)?,
             None => {
                 let c = root.join(config::DEFAULT_FILENAME);
-                if c.is_file() { config::Config::load(&c)? } else { config::Config::default() }
+                if c.is_file() {
+                    config::Config::load(&c)?
+                } else {
+                    config::Config::default()
+                }
             }
         };
         let applied = cfg.apply(f, chrono::Local::now().date_naive());
@@ -852,7 +1083,6 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
         applied.findings
     };
     let count = |sev: model::Severity| findings.iter().filter(|f| f.severity == sev).count();
-
     let mut summary = audit::AuditSummary {
         ecosystems: detected.iter().map(|e| e.name().to_string()).collect(),
         total_deps: deps.len(),
@@ -871,7 +1101,6 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
     let ecosystems: Vec<String> = detected.iter().map(|e| e.name().to_string()).collect();
     let mut forest = tree::build(&root.display().to_string(), &ecosystems, &deps, None);
     forest.diagnostics = diags;
-
     let mut settings = settings::Settings::load_or_warn();
     if args.online {
         let tokens = resolve::Tokens {
@@ -881,8 +1110,8 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
         };
         let resolver =
             resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network)
-            .with_languages(args.languages)
-            .with_licenses(true);
+                .with_languages(args.languages)
+                .with_licenses(true);
         let resolutions = resolver.resolve_all(&deps, &ui);
         resolve::apply_licenses(&mut deps, &resolutions);
         tree::enrich(&mut forest, &resolutions);
@@ -890,12 +1119,16 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
     }
     if args.vulns {
         let net = settings.network.clone();
-        let (agent, cache, token) =
-            (vuln::agent(&net), cache::Cache::open(), settings.vuln_token());
+        let (agent, cache, token) = (
+            vuln::agent(&net),
+            cache::Cache::open(),
+            settings.vuln_token(),
+        );
         let scan_url = vuln::scan_url(&net);
         for d in &detected {
             if let Some((lock, fmt)) = mlab_target(d)
-                && let Ok(mut v) = vuln::scan(&agent, &cache, token.as_deref(), lock, fmt, &scan_url)
+                && let Ok(mut v) =
+                    vuln::scan(&agent, &cache, token.as_deref(), lock, fmt, &scan_url)
             {
                 forest.vulnerabilities.append(&mut v);
             }
@@ -992,21 +1225,25 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
 
     let ui = ui::Ui::new(!args.no_progress);
     let managers = system::detect();
-
     system::render_detected(&managers);
 
     // Use the first available manager we have a backend for. On a machine with
     // several (Homebrew alongside apt, say) the detection order in
     // `system::KNOWN` decides; `--repos` and the tree then describe that one.
-    let Some(backend) =
-        managers.iter().find(|m| m.available && m.implemented).map(|m| m.name)
+    let Some(backend) = managers
+        .iter()
+        .find(|m| m.available && m.implemented)
+        .map(|m| m.name)
     else {
         eprintln!("no supported system package manager found.");
         std::process::exit(2);
     };
 
     // gochi rides the (indeterminate) load while the manager is read.
-    let opts = system::Opts { online: args.online, force_aur: args.force_aur };
+    let opts = system::Opts {
+        online: args.online,
+        force_aur: args.force_aur,
+    };
     let loader = gochi::Loader::spinner("gochi reading installed packages", ui.animating());
     let inv = match system::inventory(backend, opts) {
         Ok(inv) => {
@@ -1023,7 +1260,10 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
     // many caveats stays readable instead of collapsing into one run-on line.
     if !inv.notes.is_empty() {
         use owo_colors::OwoColorize;
-        let header = format!("{} trust caveat(s) — review before trusting this inventory", inv.notes.len());
+        let header = format!(
+            "{} trust caveat(s) — review before trusting this inventory",
+            inv.notes.len()
+        );
         eprintln!("  {}  {}", gochi::Mood::Alert.paint(), header.yellow());
         for note in &inv.notes {
             eprintln!("         {} {}", "-".dimmed(), note.yellow());
@@ -1036,7 +1276,12 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
         return Ok(());
     }
 
-    let eco = inv.deps.first().map(|d| d.ecosystem.as_str()).unwrap_or(backend).to_string();
+    let eco = inv
+        .deps
+        .first()
+        .map(|d| d.ecosystem.as_str())
+        .unwrap_or(backend)
+        .to_string();
     let mut forest = tree::build(inv.manager, &[eco], &inv.deps, args.depth);
 
     // `--online`: resolve each formula's repo reputation through the shared
@@ -1058,8 +1303,8 @@ fn run_system(args: cli::SystemArgs) -> Result<()> {
         };
         let resolver =
             resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network)
-            .with_languages(args.languages)
-            .with_licenses(true);
+                .with_languages(args.languages)
+                .with_licenses(true);
         let resolutions = resolver.resolve_all(&inv.deps, &ui);
         tree::enrich(&mut forest, &resolutions);
     }
@@ -1165,13 +1410,19 @@ fn scan_system_vulns(
     // no release needed (Arch is rolling).
     if eco == model::Ecosystem::Pacman {
         let loader = gochi::Loader::spinner(
-            format!("gochi querying the Arch Security Tracker for {} packages", inv.deps.len()),
+            format!(
+                "gochi querying the Arch Security Tracker for {} packages",
+                inv.deps.len()
+            ),
             ui.animating(),
         );
         match archsec::scan(&vuln::agent(net), &inv.deps, &net.endpoints.arch_security()) {
             Ok(mut v) => {
                 forest.vulnerabilities.append(&mut v);
-                loader.finish(gochi::Mood::from_risk(0, 0, vuln_count(forest)), vuln_summary(forest));
+                loader.finish(
+                    gochi::Mood::from_risk(0, 0, vuln_count(forest)),
+                    vuln_summary(forest),
+                );
             }
             Err(e) => {
                 loader.finish(gochi::Mood::Alert, "vuln scan failed");
@@ -1200,7 +1451,6 @@ fn scan_system_vulns(
             }
         },
     };
-
     let Some(osv_eco) = osv::osv_ecosystem(eco, &release) else {
         // Actionable guidance for the dnf backends OSV doesn't index directly.
         let hint = match (eco, release.id.as_str()) {
@@ -1225,7 +1475,6 @@ fn scan_system_vulns(
         });
         return;
     };
-
     let token = settings.vuln_token();
     if token.is_none() {
         eprintln!(
@@ -1234,7 +1483,10 @@ fn scan_system_vulns(
         );
     }
     let loader = gochi::Loader::spinner(
-        format!("gochi querying vuln.mlab.sh for {} {osv_eco} packages", inv.deps.len()),
+        format!(
+            "gochi querying vuln.mlab.sh for {} {osv_eco} packages",
+            inv.deps.len()
+        ),
         ui.animating(),
     );
     match osv::scan(
@@ -1276,7 +1528,10 @@ fn vuln_summary(forest: &tree::Tree) -> String {
         return "no known vulnerabilities".into();
     }
     let pkgs = forest.vulnerabilities.len();
-    format!("{n} known vulnerabilit{} in {pkgs} package(s)", if n == 1 { "y" } else { "ies" })
+    format!(
+        "{n} known vulnerabilit{} in {pkgs} package(s)",
+        if n == 1 { "y" } else { "ies" }
+    )
 }
 
 /// gochi's closing verdict for a static scan: a mood + a severity breakdown, or
@@ -1295,10 +1550,20 @@ fn scan_verdict(findings: &[model::Finding]) -> (gochi::Mood, String) {
     }
     let total = crit + high + med + low;
     if total == 0 {
-        return (gochi::Mood::Happy, "clean — no malicious patterns found".into());
+        return (
+            gochi::Mood::Happy,
+            "clean — no malicious patterns found".into(),
+        );
     }
-    let mood = if crit + high > 0 { gochi::Mood::Bad } else { gochi::Mood::Alert };
-    (mood, format!("{total} finding(s): {crit} critical · {high} high · {med} medium · {low} low"))
+    let mood = if crit + high > 0 {
+        gochi::Mood::Bad
+    } else {
+        gochi::Mood::Alert
+    };
+    (
+        mood,
+        format!("{total} finding(s): {crit} critical · {high} high · {med} medium · {low} low"),
+    )
 }
 
 /// Compact byte count: `0 B`, `4.2 KB`, `1.3 MB`.
@@ -1319,39 +1584,69 @@ fn human_bytes(n: u64) -> String {
 
 /// A branded, at-a-glance overview. This is intentionally a *start* — richer,
 /// per-command help still lives behind `--help` / `<command> --help`.
+/// `postmortem help` — the overview a newcomer reads first.
+///
+/// Grouped by the question each command answers rather than listed flat: at
+/// sixteen commands an alphabetical list tells you nothing about where to start.
 fn print_overview() {
     use owo_colors::OwoColorize;
+
+    /// One command row, padded before colouring — ANSI escapes count toward a
+    /// format width, so `{:<9}` on a coloured string misaligns the column.
+    fn cmd(name: &str, what: &str) {
+        println!("  {} {what}", format!("{name:<9}").cyan());
+    }
+
     println!("{} {}", "postmortem".bold(), env!("CARGO_PKG_VERSION").dimmed());
     println!("{}", "Supply-chain security scanner for the code you depend on.".dimmed());
+    println!("{}", "No telemetry. Offline unless you pass --online or --vulns.".dimmed());
     println!();
     println!("{}", "USAGE".bold());
     println!("  postmortem <command> [options]");
-    println!();
-    println!("{}", "COMMANDS".bold());
-    println!("  {}   Scan one or more project directories for malicious dependencies", "scan".cyan());
-    println!("  {}   Resolve the dependency tree from the lockfiles ({} for repo stats)", "tree".cyan(), "--online".dimmed());
-    println!("  {}  One-shot graded health check ({}/{} deepen it)", "audit".cyan(), "--online".dimmed(), "--vulns".dimmed());
-    println!("  {}    Explain why a package is installed (its dependency paths)", "why".cyan());
-    println!("  {}   Compare two project states: added / removed / changed dependencies", "diff".cyan());
-    println!("  {}   Export the dependency graph as a CycloneDX SBOM", "sbom".cyan());
-    println!("  {}  Manage the on-disk cache used by {}", "cache".cyan(), "tree --online".dimmed());
-    println!("  {} Audit OS package managers ({} for repo stats)", "system".cyan(), "--online".dimmed());
-    println!("  {}   Show this overview", "help".cyan());
-    println!();
-    println!("{}", "ECOSYSTEMS".bold());
+
+    println!("\n{}", "LOOK FOR PROBLEMS".bold());
+    cmd("scan", "malicious code in your dependencies' source");
+    cmd("tree", &format!("the dependency graph {}", "(--online, --vulns, --human)".dimmed()));
+    cmd("audit", "one graded verdict: malware + risk + CVEs");
+    cmd("system", "your machine's OS packages (brew, apt, dnf, pacman, nix, apk)");
+
+    println!("\n{}", "UNDERSTAND ONE THING".bold());
+    cmd("why", &format!("why a package is here {}", "(--blast: what a compromise reaches)".dimmed()));
+    cmd("timeline", "a package's history: handovers, install scripts, repo moves");
+    cmd("diff", &format!("what a change pulls in {}", "(also takes a GitHub PR URL)".dimmed()));
+    cmd("scripts", "which dependencies execute code at install time");
+
+    println!("\n{}", "DECIDE AND ACT".bold());
+    cmd("fix", "the minimum upgrade that clears the known CVEs");
+    cmd("licenses", "license inventory, with a deny / allow policy");
+    cmd("allowlist", "every suppression you have, and what has lapsed");
+
+    println!("\n{}", "PUT IT IN YOUR WORKFLOW".bold());
+    cmd("sbom", "export the graph as a CycloneDX 1.5 SBOM");
+    cmd("hook", "the git pre-commit hook for staged dependency changes");
+    cmd("watch", "re-scan whenever a lockfile changes");
+    cmd("cache", "inspect and clear the cache the online paths use");
+    cmd("help", "show this overview");
+
+    println!("\n{}", "ECOSYSTEMS".bold());
     println!("  {}", "node · python · rust · ruby · php · go · java".dimmed());
-    println!();
-    println!("{}", "EXAMPLES".bold());
-    println!("  postmortem scan .");
-    println!("  postmortem scan ./service-a ./service-b");
-    println!("  postmortem scan . --json -o report.json");
-    println!("  postmortem scan . --sarif        {}", "# GitHub Code Scanning".dimmed());
-    println!("  postmortem tree . --depth 2      {}", "# dependency forest".dimmed());
-    println!("  postmortem tree . --online --vulns {}", "# reputation + CVEs".dimmed());
-    println!();
+    println!("  {}", "and your machine: brew · pacman · apt · dnf · nix · apk".dimmed());
+
+    println!("\n{}", "EXAMPLES".bold());
+    let ex = |c: &str, note: &str| println!("  {c:<44}{}", note.dimmed());
+    ex("postmortem scan .", "# malicious code, offline");
+    ex("postmortem audit . --online --vulns", "# one verdict");
+    ex("postmortem tree . --omit dev", "# only what ships");
+    ex("postmortem tree . --online --human", "# who controls your tree");
+    ex("postmortem fix .", "# how to clear the CVEs");
+    ex("postmortem scripts .", "# what runs on install");
+    ex("postmortem diff <github-pr-url> --online", "# what does this PR pull in");
+    ex("postmortem timeline event-stream", "# when did it change hands");
+
     println!(
-        "Run {} for the full flag reference.",
-        "postmortem scan --help".cyan()
+        "\nRun {} for a command's flags, or read the manual at {}",
+        "postmortem <command> --help".cyan(),
+        "github.com/mlab-sh/postmortem/wiki".cyan()
     );
 }
 
@@ -1367,7 +1662,6 @@ fn run_scan(args: cli::ScanArgs) -> Result<()> {
     }
 
     let ui = ui::Ui::new(!args.no_progress);
-
     let mut any_detected = false;
     let mut gate_tripped = false;
     for path in &args.paths {
@@ -1383,7 +1677,10 @@ fn run_scan(args: cli::ScanArgs) -> Result<()> {
                 any_detected = true;
                 gate_tripped |= tripped;
             }
-            None => ui.note(format!("no supported ecosystem detected at {}", root.display())),
+            None => ui.note(format!(
+                "no supported ecosystem detected at {}",
+                root.display()
+            )),
         }
     }
 
@@ -1414,14 +1711,15 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
         );
     }
     if args.allow_multiple && !machine {
-        eprintln!("note: --allow-multiple only affects --json/--sarif/--html; the terminal view already renders every target");
+        eprintln!(
+            "note: --allow-multiple only affects --json/--sarif/--html; the terminal view already renders every target"
+        );
     }
 
     let ui = ui::Ui::new(!args.no_progress);
 
     // Online resolution shares one resolver (and its cache/token) across paths.
     let mut settings = settings::Settings::load_or_warn();
-
     let resolver = if args.online {
         gochi::greet(ui.animating()); // gochi says hi before the token prompt
         let github = settings.resolve_github_token()?;
@@ -1438,9 +1736,11 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
             gitlab: settings.gitlab_token(),
             codeberg: settings.codeberg_token(),
         };
-        Some(resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network)
-            .with_languages(args.languages)
-            .with_licenses(true))
+        Some(
+            resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network)
+                .with_languages(args.languages)
+                .with_licenses(true),
+        )
     } else {
         None
     };
@@ -1453,11 +1753,15 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
                  Set VULN_MLAB_TOKEN or vuln_token in ~/.postmortem/config.yml."
             );
         }
-        Some((vuln::agent(&settings.network), cache::Cache::open(), settings.vuln_token(), vuln::scan_url(&settings.network)))
+        Some((
+            vuln::agent(&settings.network),
+            cache::Cache::open(),
+            settings.vuln_token(),
+            vuln::scan_url(&settings.network),
+        ))
     } else {
         None
     };
-
     let today = chrono::Local::now().date_naive();
     let mut any_detected = false;
     let mut gate_tripped = false;
@@ -1483,7 +1787,10 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
         let parsed = match detect_and_parse(&target, &ui, &cli::OmitSet::scopes(&args.omit)) {
             Ok(Some(p)) => p,
             Ok(None) => {
-                ui.note(format!("no supported ecosystem detected at {}", target.display()));
+                ui.note(format!(
+                    "no supported ecosystem detected at {}",
+                    target.display()
+                ));
                 continue;
             }
             // An explicit file target that can't be resolved is a configuration
@@ -1496,11 +1803,9 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
         };
         let (detected, mut deps, diags) = parsed;
         any_detected = true;
-
         let ecosystems: Vec<String> = detected.iter().map(|e| e.name().to_string()).collect();
         let mut forest = tree::build(&root.display().to_string(), &ecosystems, &deps, args.depth);
         forest.diagnostics = diags;
-
         if let Some(resolver) = &resolver {
             let resolutions = resolver.resolve_all(&deps, &ui);
             resolve::apply_licenses(&mut deps, &resolutions);
@@ -1528,20 +1833,23 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
         }
 
         if let Some((agent, cache, token, scan_url)) = &vuln_ctx {
-            let loader =
-                gochi::Loader::spinner("gochi querying vuln.mlab.sh for advisories", ui.animating());
+            let loader = gochi::Loader::spinner(
+                "gochi querying vuln.mlab.sh for advisories",
+                ui.animating(),
+            );
             for d in &detected {
                 loader.step(format!("gochi checking {} advisories", d.name()));
                 match mlab_target(d) {
-                    Some((lock, fmt)) => match vuln::scan(agent, cache, token.as_deref(), lock, fmt, scan_url)
-                    {
-                        Ok(mut v) => forest.vulnerabilities.append(&mut v),
-                        Err(e) => forest.diagnostics.push(model::Diagnostic {
-                            ecosystem: d.name().into(),
-                            kind: "vuln_scan_failed".into(),
-                            message: format!("vuln scan failed: {e:#}"),
-                        }),
-                    },
+                    Some((lock, fmt)) => {
+                        match vuln::scan(agent, cache, token.as_deref(), lock, fmt, scan_url) {
+                            Ok(mut v) => forest.vulnerabilities.append(&mut v),
+                            Err(e) => forest.diagnostics.push(model::Diagnostic {
+                                ecosystem: d.name().into(),
+                                kind: "vuln_scan_failed".into(),
+                                message: format!("vuln scan failed: {e:#}"),
+                            }),
+                        }
+                    }
                     None => forest.diagnostics.push(model::Diagnostic {
                         ecosystem: d.name().into(),
                         kind: "vuln_unsupported".into(),
@@ -1549,7 +1857,10 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
                     }),
                 }
             }
-            loader.finish(gochi::Mood::from_risk(0, 0, vuln_count(&forest)), vuln_summary(&forest));
+            loader.finish(
+                gochi::Mood::from_risk(0, 0, vuln_count(&forest)),
+                vuln_summary(&forest),
+            );
         }
 
         // Machine formats are written once, after every target is resolved, so
@@ -1628,7 +1939,8 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
                 true => report::sarif::render_trees(&machine_trees)?,
                 false => report::sarif::render_tree(&machine_trees[0])?,
             };
-            cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "sarif").write(&out)?;
+            cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "sarif")
+                .write(&out)?;
         }
     }
 
@@ -1717,24 +2029,42 @@ fn build_gate_policy(
 }
 
 /// Detected ecosystems, parsed dependencies, and any diagnostics.
-type ParsedProject = (Vec<detect::Detected>, Vec<model::Dependency>, Vec<model::Diagnostic>);
+type ParsedProject = (
+    Vec<detect::Detected>,
+    Vec<model::Dependency>,
+    Vec<model::Diagnostic>,
+);
 
 /// Map a detected ecosystem to the lockfile + mlab `format` its vuln API
 /// accepts, or `None` when mlab doesn't support that format (pnpm/yarn, poetry/
 /// Pipfile, Java).
 pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)> {
-    let base = |p: &Path| p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+    let base = |p: &Path| {
+        p.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string()
+    };
     match d {
-        detect::Detected::Node { lockfile, .. } => {
-            matches!(base(lockfile).as_str(), "package-lock.json" | "npm-shrinkwrap.json")
-                .then_some((lockfile.as_path(), "npm"))
-        }
+        detect::Detected::Node { lockfile, .. } => matches!(
+            base(lockfile).as_str(),
+            "package-lock.json" | "npm-shrinkwrap.json"
+        )
+        .then_some((lockfile.as_path(), "npm")),
         detect::Detected::Rust { lockfile, .. } => Some((lockfile.as_path(), "cargo")),
         detect::Detected::Php { lockfile, .. } => Some((lockfile.as_path(), "composer")),
         detect::Detected::Ruby { lockfile, .. } => Some((lockfile.as_path(), "gem")),
-        detect::Detected::Go { lockfile: Some(go_sum), .. } => Some((go_sum.as_path(), "go")),
-        detect::Detected::Python { lockfile, manifest, .. } => {
-            if lockfile.as_ref().is_some_and(|p| base(p) == "requirements.txt") {
+        detect::Detected::Go {
+            lockfile: Some(go_sum),
+            ..
+        } => Some((go_sum.as_path(), "go")),
+        detect::Detected::Python {
+            lockfile, manifest, ..
+        } => {
+            if lockfile
+                .as_ref()
+                .is_some_and(|p| base(p) == "requirements.txt")
+            {
                 lockfile.as_deref().map(|p| (p, "pip"))
             } else if base(manifest) == "requirements.txt" {
                 Some((manifest.as_path(), "pip"))
@@ -1784,20 +2114,24 @@ fn detect_and_parse(
             .collect::<Vec<_>>()
             .join(", ")
     ));
-
     let parse_phase = ui.phase("parsing dependencies");
     let mut deps = Vec::new();
     let mut diags: Vec<model::Diagnostic> = Vec::new();
     let mut diag = |eco: &str, kind: &str, message: String| {
         parse_phase.note(format!("warn: {message}"));
-        diags.push(model::Diagnostic { ecosystem: eco.into(), kind: kind.into(), message });
+        diags.push(model::Diagnostic {
+            ecosystem: eco.into(),
+            kind: kind.into(),
+            message,
+        });
     };
-
     for eco in &detected {
         parse_phase.set(format!("parsing {} manifest", eco.name()));
         match eco {
             // Dispatch Node by lockfile flavor: npm (JSON), pnpm (YAML), yarn (v1/berry).
-            detect::Detected::Node { manifest, lockfile, .. } => {
+            detect::Detected::Node {
+                manifest, lockfile, ..
+            } => {
                 let fname = lockfile.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 let parsed = match fname {
                     "pnpm-lock.yaml" => parsers::pnpm::parse(lockfile),
@@ -1806,34 +2140,56 @@ fn detect_and_parse(
                 };
                 match parsed {
                     Ok(mut d) => deps.append(&mut d),
-                    Err(e) => diag("node", "parse_failed", format!("{fname} parse failed: {e:#}")),
+                    Err(e) => diag(
+                        "node",
+                        "parse_failed",
+                        format!("{fname} parse failed: {e:#}"),
+                    ),
                 }
             }
-            detect::Detected::Python { manifest, lockfile, .. } => {
-                match parsers::python::parse_any(manifest, lockfile.as_deref()) {
-                    Ok(mut d) => deps.append(&mut d),
-                    Err(e) => diag("python", "parse_failed", format!("python parse failed: {e:#}")),
-                }
-            }
-            detect::Detected::Rust { manifest, lockfile, .. } => {
-                match parsers::rust::parse_lockfile(lockfile, Some(manifest)) {
-                    Ok(mut d) => deps.append(&mut d),
-                    Err(e) => diag("rust", "parse_failed", format!("Cargo.lock parse failed: {e:#}")),
-                }
-            }
-            detect::Detected::Ruby { manifest, lockfile, .. } => {
-                match parsers::ruby::parse_lockfile(lockfile, manifest.as_deref()) {
-                    Ok(mut d) => deps.append(&mut d),
-                    Err(e) => diag("ruby", "parse_failed", format!("Gemfile.lock parse failed: {e:#}")),
-                }
-            }
-            detect::Detected::Php { manifest, lockfile, .. } => {
-                match parsers::php::parse_lockfile(lockfile, manifest.as_deref()) {
-                    Ok(mut d) => deps.append(&mut d),
-                    Err(e) => diag("php", "parse_failed", format!("composer.lock parse failed: {e:#}")),
-                }
-            }
-            detect::Detected::Go { manifest, lockfile, .. } => {
+            detect::Detected::Python {
+                manifest, lockfile, ..
+            } => match parsers::python::parse_any(manifest, lockfile.as_deref()) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "python",
+                    "parse_failed",
+                    format!("python parse failed: {e:#}"),
+                ),
+            },
+            detect::Detected::Rust {
+                manifest, lockfile, ..
+            } => match parsers::rust::parse_lockfile(lockfile, Some(manifest)) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "rust",
+                    "parse_failed",
+                    format!("Cargo.lock parse failed: {e:#}"),
+                ),
+            },
+            detect::Detected::Ruby {
+                manifest, lockfile, ..
+            } => match parsers::ruby::parse_lockfile(lockfile, manifest.as_deref()) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "ruby",
+                    "parse_failed",
+                    format!("Gemfile.lock parse failed: {e:#}"),
+                ),
+            },
+            detect::Detected::Php {
+                manifest, lockfile, ..
+            } => match parsers::php::parse_lockfile(lockfile, manifest.as_deref()) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "php",
+                    "parse_failed",
+                    format!("composer.lock parse failed: {e:#}"),
+                ),
+            },
+            detect::Detected::Go {
+                manifest, lockfile, ..
+            } => {
                 match parsers::go::parse(manifest, lockfile.as_deref()) {
                     Ok(mut d) => deps.append(&mut d),
                     Err(e) => diag("go", "parse_failed", format!("go.mod parse failed: {e:#}")),
@@ -1848,14 +2204,22 @@ fn detect_and_parse(
                     diag(
                         "go",
                         "replace_directive",
-                        format!("go.mod replaces {from} => {to} (module redirected — verify the target)"),
+                        format!(
+                            "go.mod replaces {from} => {to} (module redirected — verify the target)"
+                        ),
                     );
                 }
             }
-            detect::Detected::Java { manifest, lockfile, .. } => {
+            detect::Detected::Java {
+                manifest, lockfile, ..
+            } => {
                 match parsers::java::parse(manifest.as_deref(), lockfile.as_deref()) {
                     Ok(mut d) => deps.append(&mut d),
-                    Err(e) => diag("java", "parse_failed", format!("JVM manifest/lockfile parse failed: {e:#}")),
+                    Err(e) => diag(
+                        "java",
+                        "parse_failed",
+                        format!("JVM manifest/lockfile parse failed: {e:#}"),
+                    ),
                 }
                 diag(
                     "java",
@@ -1869,7 +2233,6 @@ fn detect_and_parse(
     // of the graph before any filtering, so `--omit dev` acts on real reachability
     // rather than on what happened to be listed under devDependencies.
     scope::propagate(&mut deps);
-
     if omit.is_empty() {
         parse_phase.done(format!("parsed {} dependencies", deps.len()));
     } else {
@@ -1880,7 +2243,10 @@ fn detect_and_parse(
             .collect();
         deps = scope::apply_omit(deps, omit);
         let removed = before - deps.len();
-        let detail = format!("{removed} of {before} dependencies omitted ({})", dropped.join(", "));
+        let detail = format!(
+            "{removed} of {before} dependencies omitted ({})",
+            dropped.join(", ")
+        );
         parse_phase.done(format!("parsed {} dependencies — {detail}", deps.len()));
         // Also record it as a diagnostic. The progress UI is suppressed when
         // stderr isn't a TTY, so in CI the summary above never prints — and a
@@ -1934,25 +2300,29 @@ fn scan_path(target: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<
                 c
             }
             Err(e) => {
-                ui.note(format!("warn: failed to load config {}: {e:#}", p.display()));
+                ui.note(format!(
+                    "warn: failed to load config {}: {e:#}",
+                    p.display()
+                ));
                 config::Config::default()
             }
         },
         None => config::Config::default(),
     };
     let config = config.merge_cli(&args.skip_category, args.min_severity);
-
     let raw_findings = if args.skip_analyze {
         Vec::new()
     } else {
         let f = analyze::run_all(&detected, &deps, ui);
         analyze::drop_test_iocs(f, args.allow_test_files, root)
     };
-
     let applied = config.apply(raw_findings, chrono::Local::now().date_naive());
     let mut findings = applied.findings;
     if applied.suppressed > 0 {
-        ui.note(format!("config suppressed {} finding(s)", applied.suppressed));
+        ui.note(format!(
+            "config suppressed {} finding(s)",
+            applied.suppressed
+        ));
     }
     // Lapsed rules go to stderr unconditionally — the progress UI is suppressed
     // off-TTY, and an exception nobody renewed must be visible in CI too.
@@ -1975,7 +2345,6 @@ fn scan_path(target: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<
         dependencies: deps,
         findings,
     };
-
     match args.format() {
         cli::Format::Terminal => {
             report::terminal::render(&report, !args.no_deps);

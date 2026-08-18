@@ -1,8 +1,8 @@
 //! Alpine `apk` backend — the installed DB as a capability graph, the explicit
 //! `world` set as roots, and the repo-level provenance behind them.
 
-use super::*;
 use super::recipe::analyze_recipe;
+use super::*;
 
 // --- apk backend (Alpine) ----------------------------------------------------
 
@@ -51,13 +51,22 @@ pub fn apk_inventory(opts: Opts) -> Result<Inventory> {
     let repos = apk_repos();
     let third = repos.iter().filter(|r| !r.official).count();
     let notes = if third > 0 {
-        vec![format!("{third} third-party apk repo(s) configured (outside the official Alpine archives)")]
+        vec![format!(
+            "{third} third-party apk repo(s) configured (outside the official Alpine archives)"
+        )]
     } else {
         Vec::new()
     };
     let direct = deps.iter().filter(|d| d.direct).count();
     let summary = format!("{} package(s) ({direct} in world)", deps.len());
-    Ok(Inventory { manager: "apk", deps, repos, signals, summary, notes })
+    Ok(Inventory {
+        manager: "apk",
+        deps,
+        repos,
+        signals,
+        summary,
+        notes,
+    })
 }
 
 /// The explicitly-requested (direct) set from `/etc/apk/world` (version
@@ -86,7 +95,9 @@ fn apk_graph(db: &str, world: &std::collections::HashSet<String>) -> Vec<Depende
         let (mut name, mut version, mut url) = (String::new(), String::new(), String::new());
         let (mut depends, mut provides) = (Vec::new(), Vec::new());
         for line in block.lines() {
-            let Some((k, v)) = line.split_once(':') else { continue };
+            let Some((k, v)) = line.split_once(':') else {
+                continue;
+            };
             match k {
                 "P" => name = v.to_string(),
                 "V" => version = v.to_string(),
@@ -97,25 +108,40 @@ fn apk_graph(db: &str, world: &std::collections::HashSet<String>) -> Vec<Depende
             }
         }
         if !name.is_empty() {
-            pkgs.push(P { name, version, url, depends, provides });
+            pkgs.push(P {
+                name,
+                version,
+                url,
+                depends,
+                provides,
+            });
         }
     }
 
     // capability → a providing package (its own name + everything in `p:`).
     let mut provider: HashMap<String, String> = HashMap::new();
     for p in &pkgs {
-        provider.entry(p.name.clone()).or_insert_with(|| p.name.clone());
+        provider
+            .entry(p.name.clone())
+            .or_insert_with(|| p.name.clone());
         for cap in &p.provides {
-            provider.entry(cap.clone()).or_insert_with(|| p.name.clone());
+            provider
+                .entry(cap.clone())
+                .or_insert_with(|| p.name.clone());
         }
     }
     let mut parents: HashMap<String, Vec<DepRef>> = HashMap::new();
     for p in &pkgs {
         let mut seen = std::collections::HashSet::new();
         for d in &p.depends {
-            let Some(child) = provider.get(d) else { continue };
+            let Some(child) = provider.get(d) else {
+                continue;
+            };
             if child != &p.name && seen.insert(child.clone()) {
-                parents.entry(child.clone()).or_default().push((p.name.clone(), p.version.clone()));
+                parents
+                    .entry(child.clone())
+                    .or_default()
+                    .push((p.name.clone(), p.version.clone()));
             }
         }
     }
@@ -161,7 +187,11 @@ fn apk_repos() -> Vec<Repo> {
                     // A line may carry a leading `@tag`; the URL is the last token.
                     let url = l.split_whitespace().next_back()?;
                     let official = url.contains("alpinelinux.org");
-                    Some(Repo { name: url.to_string(), url: String::new(), official })
+                    Some(Repo {
+                        name: url.to_string(),
+                        url: String::new(),
+                        official,
+                    })
                 })
                 .collect()
         })
@@ -190,13 +220,14 @@ fn apk_scripts() -> Vec<(String, String)> {
             continue;
         };
         if body.status.success() {
-            out.push((member.to_string(), String::from_utf8_lossy(&body.stdout).into_owned()));
+            out.push((
+                member.to_string(),
+                String::from_utf8_lossy(&body.stdout).into_owned(),
+            ));
         }
     }
     out
 }
-
-
 
 #[cfg(test)]
 mod tests {
@@ -204,11 +235,23 @@ mod tests {
 
     #[test]
     fn apk_dep_token_strips() {
-        assert_eq!(apk_dep_token("musl>=1.2.3_git20230424").as_deref(), Some("musl"));
+        assert_eq!(
+            apk_dep_token("musl>=1.2.3_git20230424").as_deref(),
+            Some("musl")
+        );
         assert_eq!(apk_dep_token("libapk=3.0.6-r0").as_deref(), Some("libapk"));
-        assert_eq!(apk_dep_token("ca-certificates-bundle").as_deref(), Some("ca-certificates-bundle"));
-        assert_eq!(apk_dep_token("so:libc.musl-aarch64.so.1").as_deref(), Some("so:libc.musl-aarch64.so.1"));
-        assert_eq!(apk_dep_token("cmd:apk=3.0.6-r0").as_deref(), Some("cmd:apk"));
+        assert_eq!(
+            apk_dep_token("ca-certificates-bundle").as_deref(),
+            Some("ca-certificates-bundle")
+        );
+        assert_eq!(
+            apk_dep_token("so:libc.musl-aarch64.so.1").as_deref(),
+            Some("so:libc.musl-aarch64.so.1")
+        );
+        assert_eq!(
+            apk_dep_token("cmd:apk=3.0.6-r0").as_deref(),
+            Some("cmd:apk")
+        );
         assert_eq!(apk_dep_token("foo@edge").as_deref(), Some("foo"));
         assert_eq!(apk_dep_token("!conflict"), None); // conflict marker dropped
     }

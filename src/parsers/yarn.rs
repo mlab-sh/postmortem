@@ -12,7 +12,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use serde_yaml::Value;
 
-use crate::model::{DepRef, Dependency, Ecosystem, Scope, LicenseSource};
+use crate::model::{DepRef, Dependency, Ecosystem, LicenseSource, Scope};
 
 pub fn parse(manifest: &Path, lockfile: &Path) -> Result<Vec<Dependency>> {
     let text = std::fs::read_to_string(lockfile)
@@ -21,7 +21,8 @@ pub fn parse(manifest: &Path, lockfile: &Path) -> Result<Vec<Dependency>> {
     // Berry lockfiles are YAML and carry a `__metadata` block; classic v1 is a
     // bespoke text format.
     let entries = if text.contains("__metadata") {
-        parse_berry(&text).with_context(|| format!("parsing {} as a Berry yarn.lock", lockfile.display()))?
+        parse_berry(&text)
+            .with_context(|| format!("parsing {} as a Berry yarn.lock", lockfile.display()))?
     } else {
         parse_v1(&text)
     };
@@ -53,18 +54,19 @@ fn assemble(entries: Vec<Entry>, manifest: &Path) -> Vec<Dependency> {
     // Pass 1: create every node with its metadata (before any edge can).
     let mut acc: BTreeMap<DepRef, Dependency> = BTreeMap::new();
     for e in &entries {
-        acc.entry((e.name.clone(), e.version.clone())).or_insert_with(|| Dependency {
-            name: e.name.clone(),
-            version: e.version.clone(),
-            ecosystem: Ecosystem::Node,
-            direct: false,
-            scope: Scope::Prod,
-            licenses: Vec::new(),
-            license_source: LicenseSource::Unknown,
-            resolved_url: e.resolved.clone(),
-            integrity: e.integrity.clone(),
-            parents: Vec::new(),
-        });
+        acc.entry((e.name.clone(), e.version.clone()))
+            .or_insert_with(|| Dependency {
+                name: e.name.clone(),
+                version: e.version.clone(),
+                ecosystem: Ecosystem::Node,
+                direct: false,
+                scope: Scope::Prod,
+                licenses: Vec::new(),
+                license_source: LicenseSource::Unknown,
+                resolved_url: e.resolved.clone(),
+                integrity: e.integrity.clone(),
+                parents: Vec::new(),
+            });
     }
     // Pass 2: add parent edges (nodes already exist, so metadata is preserved).
     for e in &entries {
@@ -195,7 +197,9 @@ fn entry_from_v1(header: &str, body: &[String]) -> Option<Entry> {
         } else if in_deps {
             // `foo "^1.0.0"` / `"@scope/foo" "^1.0.0"`
             match t.split_once(' ') {
-                Some((n, r)) => deps.push((unquote(n.trim()).to_string(), unquote(r.trim()).to_string())),
+                Some((n, r)) => {
+                    deps.push((unquote(n.trim()).to_string(), unquote(r.trim()).to_string()))
+                }
                 None => in_deps = false,
             }
         }
@@ -235,7 +239,9 @@ fn parse_berry(text: &str) -> Result<Vec<Entry>> {
             .and_then(Value::as_mapping)
             .map(|m| {
                 m.iter()
-                    .filter_map(|(dn, dr)| Some((dn.as_str()?.to_string(), dr.as_str()?.to_string())))
+                    .filter_map(|(dn, dr)| {
+                        Some((dn.as_str()?.to_string(), dr.as_str()?.to_string()))
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -247,7 +253,10 @@ fn parse_berry(text: &str) -> Result<Vec<Entry>> {
             descriptors,
             name,
             version: version.to_string(),
-            resolved: v.get("resolution").and_then(Value::as_str).map(String::from),
+            resolved: v
+                .get("resolution")
+                .and_then(Value::as_str)
+                .map(String::from),
             integrity: v.get("checksum").and_then(Value::as_str).map(String::from),
             deps,
         });
@@ -290,9 +299,18 @@ mod tests {
 
     #[test]
     fn split_descriptor_scoped_and_protocol() {
-        assert_eq!(split_descriptor("lodash@^4.17.21"), ("lodash".into(), "^4.17.21".into()));
-        assert_eq!(split_descriptor("@babel/core@^7.0.0"), ("@babel/core".into(), "^7.0.0".into()));
-        assert_eq!(split_descriptor("lodash@npm:^4"), ("lodash".into(), "npm:^4".into()));
+        assert_eq!(
+            split_descriptor("lodash@^4.17.21"),
+            ("lodash".into(), "^4.17.21".into())
+        );
+        assert_eq!(
+            split_descriptor("@babel/core@^7.0.0"),
+            ("@babel/core".into(), "^7.0.0".into())
+        );
+        assert_eq!(
+            split_descriptor("lodash@npm:^4"),
+            ("lodash".into(), "npm:^4".into())
+        );
     }
 
     #[test]
@@ -311,10 +329,13 @@ cookie@0.5.0:
   resolved "https://registry.yarnpkg.com/cookie/-/cookie-0.5.0.tgz#def"
   integrity sha512-bbb
 "#;
-        let d = write("v1", &[
-            ("yarn.lock", lock),
-            ("package.json", r#"{"dependencies":{"express":"^4.18.2"}}"#),
-        ]);
+        let d = write(
+            "v1",
+            &[
+                ("yarn.lock", lock),
+                ("package.json", r#"{"dependencies":{"express":"^4.18.2"}}"#),
+            ],
+        );
         let deps = parse(&d.join("package.json"), &d.join("yarn.lock")).unwrap();
         let _ = std::fs::remove_dir_all(&d);
 
@@ -325,7 +346,11 @@ cookie@0.5.0:
 
         let cookie = deps.iter().find(|d| d.name == "cookie").unwrap();
         assert!(!cookie.direct);
-        assert!(cookie.parents.contains(&("express".into(), "4.18.2".into())));
+        assert!(
+            cookie
+                .parents
+                .contains(&("express".into(), "4.18.2".into()))
+        );
     }
 
     #[test]
@@ -343,17 +368,24 @@ cookie@0.5.0:
   resolution: "cookie@npm:0.5.0"
   checksum: bbb
 "#;
-        let d = write("berry", &[
-            ("yarn.lock", lock),
-            ("package.json", r#"{"dependencies":{"express":"^4.18.2"}}"#),
-        ]);
+        let d = write(
+            "berry",
+            &[
+                ("yarn.lock", lock),
+                ("package.json", r#"{"dependencies":{"express":"^4.18.2"}}"#),
+            ],
+        );
         let deps = parse(&d.join("package.json"), &d.join("yarn.lock")).unwrap();
         let _ = std::fs::remove_dir_all(&d);
 
         let express = deps.iter().find(|d| d.name == "express").unwrap();
         assert!(express.direct, "express should be direct");
         let cookie = deps.iter().find(|d| d.name == "cookie").unwrap();
-        assert!(cookie.parents.contains(&("express".into(), "4.18.2".into())));
+        assert!(
+            cookie
+                .parents
+                .contains(&("express".into(), "4.18.2".into()))
+        );
     }
 
     #[test]
@@ -413,6 +445,9 @@ both@^1.0.0:
         );
         let deps = parse(&d.join("package.json"), &d.join("yarn.lock")).unwrap();
         let _ = std::fs::remove_dir_all(&d);
-        assert_eq!(deps.iter().find(|x| x.name == "both").unwrap().scope, Scope::Prod);
+        assert_eq!(
+            deps.iter().find(|x| x.name == "both").unwrap().scope,
+            Scope::Prod
+        );
     }
 }

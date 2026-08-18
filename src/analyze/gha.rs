@@ -39,9 +39,13 @@ const INJECTABLE: &[&str] = &[
 
 /// Is this path a workflow file (`…/.github/workflows/*.yml|yaml`)?
 fn is_workflow(path: &Path) -> bool {
-    let comps: Vec<String> =
-        path.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect();
-    comps.windows(2).any(|w| w[0] == ".github" && w[1] == "workflows")
+    let comps: Vec<String> = path
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
+        .collect();
+    comps
+        .windows(2)
+        .any(|w| w[0] == ".github" && w[1] == "workflows")
 }
 
 pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
@@ -49,8 +53,14 @@ pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
         if !is_workflow(&path) {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
-        let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("workflow").to_string();
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("workflow")
+            .to_string();
         let mk = |severity: Severity, detail: String| Finding {
             dependency: name.clone(),
             severity,
@@ -83,24 +93,35 @@ pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
 
         // File-level: over-scoped token.
         if text.contains("write-all") {
-            out.push(mk(Severity::Medium,
-                "`permissions: write-all` — the GITHUB_TOKEN is over-scoped for the whole workflow".into()));
+            out.push(mk(
+                Severity::Medium,
+                "`permissions: write-all` — the GITHUB_TOKEN is over-scoped for the whole workflow"
+                    .into(),
+            ));
         }
 
         // Line-level checks.
         for line in text.lines() {
             let l = line.trim();
-            if let Some(spec) = l.strip_prefix("- uses:").or_else(|| l.strip_prefix("uses:"))
+            if let Some(spec) = l
+                .strip_prefix("- uses:")
+                .or_else(|| l.strip_prefix("uses:"))
                 && let Some((action, severity, why)) = uses_risk(spec.trim())
             {
                 out.push(mk(severity, format!("action `{action}` {why}")));
             }
             if l.starts_with("runs-on:") && line.contains("self-hosted") {
-                out.push(mk(Severity::Medium,
-                    "`runs-on: self-hosted` — untrusted workflow code runs inside your network".into()));
+                out.push(mk(
+                    Severity::Medium,
+                    "`runs-on: self-hosted` — untrusted workflow code runs inside your network"
+                        .into(),
+                ));
             }
             if (line.contains("curl ") || line.contains("wget "))
-                && (line.contains("| sh") || line.contains("|sh") || line.contains("| bash") || line.contains("|bash"))
+                && (line.contains("| sh")
+                    || line.contains("|sh")
+                    || line.contains("| bash")
+                    || line.contains("|bash"))
             {
                 out.push(mk(Severity::High,
                     "pipes a remote script straight to a shell (`curl … | sh`) — the Codecov pattern".into()));
@@ -112,7 +133,12 @@ pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
 /// Classify a `uses:` action reference. `None` when it's SHA-pinned, local
 /// (`./`) or a docker image — the safe forms.
 fn uses_risk(spec: &str) -> Option<(String, Severity, &'static str)> {
-    let spec = spec.split('#').next().unwrap_or(spec).trim().trim_matches(|c| c == '"' || c == '\'');
+    let spec = spec
+        .split('#')
+        .next()
+        .unwrap_or(spec)
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'');
     if spec.starts_with("./") || spec.starts_with("docker://") {
         return None;
     }
@@ -121,11 +147,22 @@ fn uses_risk(spec: &str) -> Option<(String, Severity, &'static str)> {
         return None; // commit-SHA pinned — the recommended form
     }
     let owner = action.split('/').next().unwrap_or("");
-    let branchy = matches!(reference, "main" | "master" | "develop" | "dev" | "latest" | "head" | "HEAD");
+    let branchy = matches!(
+        reference,
+        "main" | "master" | "develop" | "dev" | "latest" | "head" | "HEAD"
+    );
     if branchy {
-        Some((action.into(), Severity::Medium, "is pinned to a mutable branch — trivially repointed (the tj-actions vector); pin a commit SHA"))
+        Some((
+            action.into(),
+            Severity::Medium,
+            "is pinned to a mutable branch — trivially repointed (the tj-actions vector); pin a commit SHA",
+        ))
     } else if !matches!(owner, "actions" | "github") {
-        Some((action.into(), Severity::Low, "is a third-party action not pinned to a commit SHA (a tag is repointable)"))
+        Some((
+            action.into(),
+            Severity::Low,
+            "is a third-party action not pinned to a commit SHA (a tag is repointable)",
+        ))
     } else {
         None // an official action on a version tag — common, low risk
     }
@@ -159,8 +196,13 @@ mod tests {
         assert!(has("expression injection"));
         assert!(has("Codecov"));
         assert!(has("pull_request_target"));
-        assert!(!out.iter().any(|f| f.location.as_deref().is_some_and(|l| l.ends_with("clean.yml"))),
-            "the SHA-pinned clean workflow is not flagged");
+        assert!(
+            !out.iter().any(|f| f
+                .location
+                .as_deref()
+                .is_some_and(|l| l.ends_with("clean.yml"))),
+            "the SHA-pinned clean workflow is not flagged"
+        );
         let _ = fs::remove_dir_all(&tmp);
     }
 }

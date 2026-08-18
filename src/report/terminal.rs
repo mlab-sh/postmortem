@@ -9,10 +9,7 @@ pub fn render(report: &Report, show_deps: bool) {
         "postmortem".bold(),
         format!("scan of {}", report.root).dimmed()
     );
-    println!(
-        "ecosystems: {}",
-        report.ecosystems.join(", ").cyan()
-    );
+    println!("ecosystems: {}", report.ecosystems.join(", ").cyan());
 
     let direct = report.dependencies.iter().filter(|d| d.direct).count();
     println!(
@@ -44,11 +41,8 @@ pub fn render(report: &Report, show_deps: bool) {
             let parents = if d.parents.is_empty() {
                 "-".to_string()
             } else {
-                let mut p: Vec<String> = d
-                    .parents
-                    .iter()
-                    .map(|(n, v)| format!("{n}@{v}"))
-                    .collect();
+                let mut p: Vec<String> =
+                    d.parents.iter().map(|(n, v)| format!("{n}@{v}")).collect();
                 p.sort();
                 if p.len() > 3 {
                     let extra = p.len() - 3;
