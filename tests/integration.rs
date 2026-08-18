@@ -906,6 +906,7 @@ fn tree_depth_truncates() {
 
 #[test]
 fn tree_online_is_wired_without_touching_the_network() {
+    // hermetic-by-construction: this is the test's whole point — see below.
     // The rust fixture has zero node dependencies, so `--online` exercises the
     // wiring (token resolution, resolver construction, empty resolution pass)
     // without making any HTTP call — keeping the test hermetic.
@@ -1705,13 +1706,25 @@ fn sbom_emits_valid_cyclonedx_license_shapes() {
 // layered policy now does too.
 
 fn audit_cmd(fixture_name: &str, args: &[&str]) -> (i32, String) {
-    let out = Command::new(bin())
-        .arg("audit")
+    audit_cmd_in(fixture_name, args, None)
+}
+
+/// `audit_cmd`, optionally under a private `$HOME` — used when the invocation
+/// takes a network path and the test points it at a stub.
+fn audit_cmd_in(
+    fixture_name: &str,
+    args: &[&str],
+    home: Option<&std::path::Path>,
+) -> (i32, String) {
+    let mut cmd = Command::new(bin());
+    cmd.arg("audit")
         .arg(fixture(fixture_name))
         .args(args)
-        .arg("--no-progress")
-        .output()
-        .expect("postmortem binary did not run");
+        .arg("--no-progress");
+    if let Some(h) = home {
+        cmd.env("HOME", h);
+    }
+    let out = cmd.output().expect("postmortem binary did not run");
     let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
     s.push_str(&String::from_utf8_lossy(&out.stderr));
     (out.status.code().unwrap_or(-1), strip_ansi(&s))
@@ -1797,7 +1810,9 @@ fn audit_reads_the_gate_table_from_a_config() {
 fn audit_gate_flags_are_accepted_alongside_the_data_they_need() {
     // With `--online` present the thresholds are evaluated rather than rejected;
     // the clean fixture scores 0, so nothing trips and the run passes.
-    let (exit, out) = audit_cmd("clean-node", &["--online", "--max-high", "0"]);
+    let stub = stub_advisory_api(NO_ADVISORIES);
+    let home = home_pointing_at(&stub, "audit-gate");
+    let (exit, out) = audit_cmd_in("clean-node", &["--online", "--max-high", "0"], Some(&home));
     assert_eq!(exit, 0, "got: {out}");
     assert!(
         out.contains("gate PASS"),
@@ -1812,13 +1827,21 @@ fn audit_gate_flags_are_accepted_alongside_the_data_they_need() {
 // anything. These pin the shapes.
 
 fn json_of(cmd_args: &[&str]) -> Value {
-    let out = Command::new(bin())
-        .args(cmd_args)
+    json_of_in(cmd_args, None)
+}
+
+/// `json_of`, optionally under a private `$HOME` — used when the command reaches
+/// the advisory API and the test points it at a stub.
+fn json_of_in(cmd_args: &[&str], home: Option<&std::path::Path>) -> Value {
+    let mut cmd = Command::new(bin());
+    cmd.args(cmd_args)
         .args(["--json", "-o", "-", "--no-progress"])
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("postmortem binary did not run");
+        .stderr(Stdio::piped());
+    if let Some(h) = home {
+        cmd.env("HOME", h);
+    }
+    let out = cmd.output().expect("postmortem binary did not run");
     serde_json::from_slice(&out.stdout).unwrap_or_else(|e| {
         panic!(
             "invalid JSON: {e}\n{}",
@@ -1856,6 +1879,8 @@ fn audit_json_distinguishes_unchecked_layers_from_clean_ones() {
 fn audit_json_reports_whether_the_gate_ran() {
     // A configured policy that passes is `false`, never `null` — the difference
     // between "checked and fine" and "never checked".
+    let stub = stub_advisory_api(NO_ADVISORIES);
+    let home = home_pointing_at(&stub, "audit-json");
     let out = Command::new(bin())
         .args(["audit", fixture("clean-node").to_str().unwrap()])
         .args([
@@ -1867,6 +1892,7 @@ fn audit_json_reports_whether_the_gate_ran() {
             "-",
             "--no-progress",
         ])
+        .env("HOME", &home)
         .stdout(Stdio::piped())
         .output()
         .expect("postmortem binary did not run");
@@ -1966,6 +1992,8 @@ fn tree_html_is_a_self_contained_document() {
 
 #[test]
 fn tree_html_says_what_it_could_not_assess() {
+    // hermetic-by-construction: runs offline and asserts the rendered HTML names
+    // the flags that would fill the gaps. No flag is passed, so nothing is fetched.
     // Offline, an empty risk table would read as "we looked and found nothing".
     let out = Command::new(bin())
         .args(["tree", fixture("clean-node").to_str().unwrap()])
@@ -2059,11 +2087,14 @@ fn diff_json_keeps_the_three_change_sets() {
 #[test]
 fn diff_accepts_the_assessment_flags() {
     // `--online`/`--vulns` must parse and not change the offline classification.
+    let stub = stub_advisory_api(NO_ADVISORIES);
+    let home = home_pointing_at(&stub, "diff-flags");
     let out = Command::new(bin())
         .arg("diff")
         .arg(fixture("clean-node"))
         .arg(fixture("scoped-node"))
         .args(["--vulns", "--json", "-o", "-", "--no-progress"])
+        .env("HOME", &home)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -2078,15 +2109,130 @@ fn diff_accepts_the_assessment_flags() {
 // without a network. These pin the command's contract: the exit code, the clean
 // case, and that nothing is ever written.
 
+// --- hermetic advisory API ------------------------------------------------------
+//
+// `fix` always queries the advisory API — it cannot compute a remediation without
+// advisories, and refusing to answer beats inventing "nothing to fix". That makes
+// any `fix` test that reaches the real service non-hermetic: two of them did, and
+// on CI they failed with `mlab rate limit reached` rather than on anything about
+// `fix`.
+//
+// So the tests stand up a stub on loopback and point postmortem at it through the
+// `network.endpoints.vuln` override, which is the same knob a corporate mirror
+// uses. No new dependency: a `TcpListener` and a thread are enough.
+
+/// A loopback HTTP server answering every request with `body`, for as many
+/// requests as arrive until it is dropped. Returns its base URL.
+struct StubApi {
+    base: String,
+    _thread: std::thread::JoinHandle<()>,
+}
+
+fn stub_advisory_api(body: &'static str) -> StubApi {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let port = listener.local_addr().unwrap().port();
+    let thread = std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            use std::io::{Read, Write};
+            // The request body is the whole lockfile, so it arrives across
+            // several reads. It must be drained completely before answering:
+            // closing with unread bytes still in the receive buffer makes the
+            // kernel send an RST, and the client then fails to read our response
+            // — intermittently, depending on timing.
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let mut want: Option<usize> = None;
+            loop {
+                let Ok(n) = stream.read(&mut chunk) else {
+                    break;
+                };
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if want.is_none()
+                    && let Some(hdr_end) =
+                        buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
+                {
+                    let headers = String::from_utf8_lossy(&buf[..hdr_end]).to_lowercase();
+                    let len = headers
+                        .lines()
+                        .find_map(|l| l.strip_prefix("content-length:"))
+                        .and_then(|v| v.trim().parse::<usize>().ok())
+                        .unwrap_or(0);
+                    want = Some(hdr_end + len);
+                }
+                if want.is_some_and(|w| buf.len() >= w) {
+                    break;
+                }
+            }
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+            let _ = stream.shutdown(std::net::Shutdown::Write);
+        }
+    });
+    StubApi {
+        base: format!("http://127.0.0.1:{port}"),
+        _thread: thread,
+    }
+}
+
+/// A throwaway `$HOME` whose config points **every** outbound endpoint at
+/// `stub`, so a test cannot reach the real internet by using a path its author
+/// did not think about.
+fn home_pointing_at(stub: &StubApi, tag: &str) -> PathBuf {
+    let home = tmp_home(tag);
+    let b = &stub.base;
+    let endpoints = [
+        "vuln",
+        "npm",
+        "pypi",
+        "crates",
+        "rubygems",
+        "packagist",
+        "deps_dev",
+        "github",
+        "github_raw",
+        "gitlab",
+        "codeberg",
+    ]
+    .iter()
+    .map(|k| format!("    {k}: \"{b}\"\n"))
+    .collect::<String>();
+    std::fs::write(
+        home.join(".postmortem").join("config.yml"),
+        format!("network:\n  endpoints:\n{endpoints}"),
+    )
+    .unwrap();
+    home
+}
+
+/// An advisory response that parses cleanly and reports nothing affected.
+const NO_ADVISORIES: &str = r#"{"packages":[],"results":[]}"#;
+
 #[test]
 fn fix_on_a_project_without_advisories_exits_zero() {
+    let stub = stub_advisory_api(NO_ADVISORIES);
+    let home = home_pointing_at(&stub, "fix-clean");
     let out = Command::new(bin())
         .arg("fix")
         .arg(fixture("clean-node"))
         .arg("--no-progress")
+        .env("HOME", &home)
         .output()
         .expect("postmortem binary did not run");
-    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let s = strip_ansi(&String::from_utf8_lossy(&out.stdout));
     assert!(s.contains("no known vulnerabilities"), "got: {s}");
 }
@@ -2111,10 +2257,13 @@ fn fix_never_writes_to_the_project() {
         })
         .collect();
 
+    let stub = stub_advisory_api(NO_ADVISORIES);
+    let home = home_pointing_at(&stub, "fix-ro");
     let _ = Command::new(bin())
         .arg("fix")
         .arg(&dir)
         .arg("--no-progress")
+        .env("HOME", &home)
         .output();
 
     let after: Vec<(String, u64)> = std::fs::read_dir(&dir)
@@ -2133,7 +2282,12 @@ fn fix_never_writes_to_the_project() {
 
 #[test]
 fn fix_json_has_a_summary_even_when_empty() {
-    let v = json_of(&["fix", fixture("clean-node").to_str().unwrap()]);
+    let stub = stub_advisory_api(NO_ADVISORIES);
+    let home = home_pointing_at(&stub, "fix-json");
+    let v = json_of_in(
+        &["fix", fixture("clean-node").to_str().unwrap()],
+        Some(&home),
+    );
     assert_eq!(v["schema_version"], 1);
     assert_eq!(v["summary"]["packages"], 0);
     assert_eq!(v["summary"]["advisories"], 0);
@@ -2142,10 +2296,13 @@ fn fix_json_has_a_summary_even_when_empty() {
 
 #[test]
 fn fix_rejects_a_project_it_cannot_parse() {
+    let stub = stub_advisory_api(NO_ADVISORIES);
+    let home = home_pointing_at(&stub, "fix-unparsable");
     let out = Command::new(bin())
         .arg("fix")
         .arg(fixture("README.md"))
         .arg("--no-progress")
+        .env("HOME", &home)
         .output()
         .expect("postmortem binary did not run");
     assert_ne!(out.status.code(), Some(0));
@@ -2394,6 +2551,8 @@ fn blast_does_not_change_the_default_why_output() {
 
 #[test]
 fn human_requires_online_and_says_why() {
+    // hermetic-by-construction: asserts on the *error text*, which is produced
+    // before any request — the command refuses precisely because it is offline.
     // Nothing in a lockfile names who can publish, so an offline maintainer
     // graph would be empty for a reason the user could not guess.
     let (exit, out) = run(&["tree", fixture("clean-node").to_str().unwrap(), "--human"]);
@@ -2643,5 +2802,50 @@ fn every_test_path_lives_under_the_committed_fixtures() {
         "test paths outside tests/fixtures/ are not committed and will fail on a \
          clean checkout:\n  {}",
         bad.join("\n  ")
+    );
+}
+
+#[test]
+fn no_test_reaches_the_real_network() {
+    // Five tests once did. They passed locally and on a warm cache, then failed
+    // on CI with `mlab rate limit reached` — and worse, the ones that "passed"
+    // were quietly spending the rate limit the others needed. A test that
+    // depends on a remote service is not testing what its name says.
+    //
+    // Any test driving a network-capable path must run under a private `$HOME`
+    // pointed at a stub (see `home_pointing_at`). A test that genuinely exercises
+    // the wiring without issuing a request opts out with the marker below.
+    const OPT_OUT: &str = "hermetic-by-construction";
+    let markers = [
+        format!("{}{}", '"', "--online"),
+        format!("{}{}", '"', "--vulns"),
+        format!(".arg({}fix{})", '"', '"'),
+    ];
+    let src = include_str!("integration.rs");
+
+    let mut offenders = Vec::new();
+    for block in src.split("#[test]").skip(1) {
+        let body = block.split("\n#[").next().unwrap_or(block);
+        let name = body
+            .lines()
+            .find_map(|l| l.trim().strip_prefix("fn "))
+            .map(|l| l.split('(').next().unwrap_or(l).to_string())
+            .unwrap_or_else(|| "<unnamed>".into());
+        // This guard's own body names the markers it looks for.
+        if name == "no_test_reaches_the_real_network" {
+            continue;
+        }
+        let touches_network = markers.iter().any(|m| body.contains(m.as_str()));
+        let is_isolated = body.contains("home_pointing_at") || body.contains(OPT_OUT);
+        if touches_network && !is_isolated {
+            offenders.push(name);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these tests take a network path without a stubbed $HOME:\n  {}\n\
+         Wrap them with `home_pointing_at(&stub_advisory_api(NO_ADVISORIES), tag)`, or \
+         mark them `{OPT_OUT}` if they provably issue no request.",
+        offenders.join("\n  ")
     );
 }
