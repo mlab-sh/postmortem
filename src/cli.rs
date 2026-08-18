@@ -80,6 +80,10 @@ pub enum Command {
     /// minimum upgrade per package, and where to make it.
     Fix(FixArgs),
 
+    /// Lay a package's release history out in order: when it changed hands,
+    /// when an install script appeared, when its repository moved.
+    Timeline(TimelineArgs),
+
     /// List every suppression the project declares — gate allowlist, ignore
     /// rules, skips — with how long each has left to run.
     Allowlist(AllowlistArgs),
@@ -95,6 +99,34 @@ pub enum Command {
 
     /// Show an overview of postmortem: what it does and the available commands.
     Help,
+}
+
+/// Arguments for `postmortem timeline <package>`.
+#[derive(Args, Debug)]
+pub struct TimelineArgs {
+    /// The package whose history to lay out. npm only — it is the one registry
+    /// publishing a per-version history rather than a current view.
+    pub package: String,
+
+    /// Project directory used to mark which version you have installed.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+
+    /// List every release, including those that changed nothing.
+    #[arg(long)]
+    pub all: bool,
+
+    /// Emit the history as JSON instead of the terminal view.
+    #[arg(long)]
+    pub json: bool,
+
+    /// Write output to file. Pass `-` to force stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Disable the animated progress UI.
+    #[arg(long)]
+    pub no_progress: bool,
 }
 
 /// Arguments for `postmortem allowlist <path>`.

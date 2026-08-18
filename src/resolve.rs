@@ -647,6 +647,17 @@ impl Resolver {
         Ok(Some(meta))
     }
 
+    /// The raw npm packument for a package — its whole publish history.
+    ///
+    /// Deliberately **not** cached. Everything else read from a packument is
+    /// derived per `(name, version)` and immutable once published, but a history
+    /// gains an entry every time someone publishes; a cached copy would go quiet
+    /// exactly when a new release is the thing worth seeing.
+    pub fn packument(&self, name: &str) -> Result<Option<serde_json::Value>> {
+        let url = format!("{}/{}", self.endpoints.npm(), name);
+        self.get_json(&url, &[])
+    }
+
     /// Starjacking check (npm): a package linking to a **popular** GitHub repo
     /// (≥ [`STARJACK_MIN_STARS`]) that doesn't actually declare it is borrowing
     /// that repo's stars. Conservative — fires only when the repo's own

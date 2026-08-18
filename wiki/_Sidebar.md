@@ -12,6 +12,7 @@
 - [diff](Diff)
 - [sbom](Sbom)
 - [system](System)
+- [timeline](Timeline)
 - [allowlist](Allowlist)
 - [cache](Cache)
 
