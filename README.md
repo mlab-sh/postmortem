@@ -134,6 +134,8 @@ cd postmortem && cargo build --release
 **Ecosystems:** Node (npm / pnpm / yarn), Python, Rust, Ruby, PHP, Go, and
 Java / Kotlin. Source-code scanning additionally covers C, C++, and Perl.
 
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
+
 ## Documentation
 
 The full manual lives in the

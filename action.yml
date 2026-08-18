@@ -24,7 +24,7 @@ inputs:
       postmortem release tag to run (must include the tree CI gate, i.e. >= the
       release that shipped --max-*/--fail-on-vuln; the `paths` input needs
       >= v2.1.2, which added --allow-multiple). Pin this.
-    default: v2.1.2
+    default: v2.2.0
   online:
     description: Resolve repositories and score reputation/identity (network).
     default: "true"

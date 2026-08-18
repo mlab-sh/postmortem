@@ -74,7 +74,7 @@ impl fmt::Display for Platform {
 
 /// The one install snippet, shared by every template.
 ///
-/// `{version}` is the tag (`v2.1.2`) and `{num}` the bare number (`2.1.2`) —
+/// `{version}` is the tag (`v2.2.0`) and `{num}` the bare number (`2.2.0`) —
 /// the release assets use both. Kept identical to the GitHub Action's install
 /// step; if the release layout changes, this and `action.yml` are the two places
 /// to update, and the tests below assert they agree.
