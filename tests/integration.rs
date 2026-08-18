@@ -2410,7 +2410,7 @@ fn human_requires_online_and_says_why() {
 #[test]
 fn scripts_finds_install_scripts_from_the_lockfile_alone() {
     // npm records `hasInstallScript`, so the decision list works uninstalled.
-    let (exit, out) = run(&["scripts", "tests/realrepo/Capsule"]);
+    let (exit, out) = run(&["scripts", fixture("pending-scripts").to_str().unwrap()]);
     assert_eq!(exit, 0, "pending alone does not fail: {out}");
     assert!(out.contains("bcrypt"), "got: {out}");
     assert!(out.contains("pending"), "got: {out}");
@@ -2425,9 +2425,11 @@ fn scripts_fails_on_a_hostile_script_but_not_on_mere_pending() {
     let (exit, out) = run(&["scripts", fixture("malicious-node").to_str().unwrap()]);
     assert_eq!(exit, 1, "a flagged script fails: {out}");
 
-    let (exit, _) = run(&["scripts", "tests/realrepo/Capsule"]);
+    let pending = fixture("pending-scripts");
+    let pending = pending.to_str().unwrap();
+    let (exit, _) = run(&["scripts", pending]);
     assert_eq!(exit, 0);
-    let (exit, _) = run(&["scripts", "tests/realrepo/Capsule", "--fail-on-pending"]);
+    let (exit, _) = run(&["scripts", pending, "--fail-on-pending"]);
     assert_eq!(exit, 1, "pending fails only when asked");
 }
 
@@ -2607,4 +2609,39 @@ fn run_bare(args: &[&str]) -> (i32, String) {
     let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
     s.push_str(&String::from_utf8_lossy(&out.stderr));
     (out.status.code().unwrap_or(-1), strip_ansi(&s))
+}
+
+#[test]
+fn every_test_path_lives_under_the_committed_fixtures() {
+    // Two `scripts` tests once pointed at `tests/realrepo/Capsule`, a real
+    // checkout matched by `realrepo` in .gitignore. They passed on the machine
+    // that had it and failed on every clean checkout, including CI — the worst
+    // shape of test bug, because the suite looked green to the person who wrote
+    // it. This walks this file's own source and refuses any `tests/` path that
+    // is not a committed fixture.
+    let src = include_str!("integration.rs");
+    // Built at runtime so this test's own source does not contain the literal
+    // it searches for, which would make it flag itself.
+    let needle = format!("{}{}/", '"', "tests");
+    let prefix = format!("{}/fixtures/", "tests");
+    let mut bad = Vec::new();
+    for (i, line) in src.lines().enumerate() {
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(at) = rest.find(&needle) {
+            rest = &rest[at + 1..];
+            let path: String = rest.chars().take_while(|c| *c != '"').collect();
+            if !path.starts_with(&prefix) {
+                bad.push(format!("line {}: {path}", i + 1));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "test paths outside tests/fixtures/ are not committed and will fail on a \
+         clean checkout:\n  {}",
+        bad.join("\n  ")
+    );
 }
