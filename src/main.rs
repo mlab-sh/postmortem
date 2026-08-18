@@ -3,6 +3,7 @@ mod archsec;
 mod audit;
 mod blast;
 mod cache;
+mod ci;
 mod cli;
 mod config;
 mod detect;
@@ -55,6 +56,7 @@ fn main() -> Result<()> {
         cli::Command::Watch(args) => run_watch(args),
         cli::Command::Timeline(args) => run_timeline(args),
         cli::Command::Allowlist(args) => run_allowlist(args),
+        cli::Command::Ci(a) => run_ci(a),
         cli::Command::Cache(args) => run_cache(args),
         cli::Command::System(args) => run_system(args),
         cli::Command::Help => {
@@ -1047,6 +1049,7 @@ fn run_why(args: cli::WhyArgs) -> Result<()> {
 /// `postmortem audit <path>` — unify the static scan, dependency inventory, and
 /// (opt-in) online reputation + known vulns into one graded verdict.
 fn run_audit(args: cli::AuditArgs) -> Result<()> {
+    let started = chrono::Utc::now();
     let ui = ui::Ui::new(!args.no_progress);
     let root = args
         .path
@@ -1192,7 +1195,16 @@ fn run_audit(args: cli::AuditArgs) -> Result<()> {
     }
 
     let gate_tripped = policy.is_active().then(|| outcome.tripped());
-    if args.json {
+    if args.gitlab {
+        let plan = fix::plan(&deps, &forest.vulnerabilities);
+        let out = report::gitlab::render_tree(
+            &forest,
+            &started.to_rfc3339(),
+            &chrono::Utc::now().to_rfc3339(),
+            Some(&plan),
+        )?;
+        cli::OutputTarget::resolve_named(args.output.as_deref(), "audit", "json").write(&out)?;
+    } else if args.json {
         let doc = audit::to_json(&summary, &args.path.display().to_string(), gate_tripped);
         let out = serde_json::to_string_pretty(&doc)?;
         cli::OutputTarget::resolve_named(args.output.as_deref(), "audit", "json").write(&out)?;
@@ -1597,51 +1609,117 @@ fn print_overview() {
         println!("  {} {what}", format!("{name:<9}").cyan());
     }
 
-    println!("{} {}", "postmortem".bold(), env!("CARGO_PKG_VERSION").dimmed());
-    println!("{}", "Supply-chain security scanner for the code you depend on.".dimmed());
-    println!("{}", "No telemetry. Offline unless you pass --online or --vulns.".dimmed());
+    println!(
+        "{} {}",
+        "postmortem".bold(),
+        env!("CARGO_PKG_VERSION").dimmed()
+    );
+    println!(
+        "{}",
+        "Supply-chain security scanner for the code you depend on.".dimmed()
+    );
+    println!(
+        "{}",
+        "No telemetry. Offline unless you pass --online or --vulns.".dimmed()
+    );
     println!();
     println!("{}", "USAGE".bold());
     println!("  postmortem <command> [options]");
 
     println!("\n{}", "LOOK FOR PROBLEMS".bold());
     cmd("scan", "malicious code in your dependencies' source");
-    cmd("tree", &format!("the dependency graph {}", "(--online, --vulns, --human)".dimmed()));
+    cmd(
+        "tree",
+        &format!(
+            "the dependency graph {}",
+            "(--online, --vulns, --human)".dimmed()
+        ),
+    );
     cmd("audit", "one graded verdict: malware + risk + CVEs");
-    cmd("system", "your machine's OS packages (brew, apt, dnf, pacman, nix, apk)");
+    cmd(
+        "system",
+        "your machine's OS packages (brew, apt, dnf, pacman, nix, apk)",
+    );
 
     println!("\n{}", "UNDERSTAND ONE THING".bold());
-    cmd("why", &format!("why a package is here {}", "(--blast: what a compromise reaches)".dimmed()));
-    cmd("timeline", "a package's history: handovers, install scripts, repo moves");
-    cmd("diff", &format!("what a change pulls in {}", "(also takes a GitHub PR URL)".dimmed()));
+    cmd(
+        "why",
+        &format!(
+            "why a package is here {}",
+            "(--blast: what a compromise reaches)".dimmed()
+        ),
+    );
+    cmd(
+        "timeline",
+        "a package's history: handovers, install scripts, repo moves",
+    );
+    cmd(
+        "diff",
+        &format!(
+            "what a change pulls in {}",
+            "(also takes a GitHub PR URL)".dimmed()
+        ),
+    );
     cmd("scripts", "which dependencies execute code at install time");
 
     println!("\n{}", "DECIDE AND ACT".bold());
     cmd("fix", "the minimum upgrade that clears the known CVEs");
     cmd("licenses", "license inventory, with a deny / allow policy");
-    cmd("allowlist", "every suppression you have, and what has lapsed");
+    cmd(
+        "allowlist",
+        "every suppression you have, and what has lapsed",
+    );
 
     println!("\n{}", "PUT IT IN YOUR WORKFLOW".bold());
     cmd("sbom", "export the graph as a CycloneDX 1.5 SBOM");
-    cmd("hook", "the git pre-commit hook for staged dependency changes");
+    cmd(
+        "ci",
+        &format!(
+            "a ready-made pipeline {}",
+            "(gitlab · azure · jenkins · github)".dimmed()
+        ),
+    );
+    cmd(
+        "hook",
+        "the git pre-commit hook for staged dependency changes",
+    );
     cmd("watch", "re-scan whenever a lockfile changes");
     cmd("cache", "inspect and clear the cache the online paths use");
     cmd("help", "show this overview");
 
     println!("\n{}", "ECOSYSTEMS".bold());
-    println!("  {}", "node · python · rust · ruby · php · go · java".dimmed());
-    println!("  {}", "and your machine: brew · pacman · apt · dnf · nix · apk".dimmed());
+    println!(
+        "  {}",
+        "node · python · rust · ruby · php · go · java".dimmed()
+    );
+    println!(
+        "  {}",
+        "and your machine: brew · pacman · apt · dnf · nix · apk".dimmed()
+    );
 
     println!("\n{}", "EXAMPLES".bold());
     let ex = |c: &str, note: &str| println!("  {c:<44}{}", note.dimmed());
     ex("postmortem scan .", "# malicious code, offline");
     ex("postmortem audit . --online --vulns", "# one verdict");
     ex("postmortem tree . --omit dev", "# only what ships");
-    ex("postmortem tree . --online --human", "# who controls your tree");
+    ex(
+        "postmortem tree . --online --human",
+        "# who controls your tree",
+    );
     ex("postmortem fix .", "# how to clear the CVEs");
     ex("postmortem scripts .", "# what runs on install");
-    ex("postmortem diff <github-pr-url> --online", "# what does this PR pull in");
-    ex("postmortem timeline event-stream", "# when did it change hands");
+    ex(
+        "postmortem diff <github-pr-url> --online",
+        "# what does this PR pull in",
+    );
+    ex(
+        "postmortem timeline event-stream",
+        "# when did it change hands",
+    );
+    ex(
+        "postmortem ci gitlab > .gitlab-ci.yml",
+        "# wire it into your pipeline",
+    );
 
     println!(
         "\nRun {} for a command's flags, or read the manual at {}",
@@ -1693,11 +1771,31 @@ fn run_scan(args: cli::ScanArgs) -> Result<()> {
 /// `postmortem tree <paths>...` — resolve and render the dependency forest from
 /// the lockfiles. Offline today; `--online` is reserved for repository-reputation
 /// resolution (see [`resolve`]). Exit 2 if no supported ecosystem was found.
+/// `postmortem ci <platform>` — print a pipeline for GitLab CI, Azure DevOps or
+/// Jenkins (or the shell equivalent of the GitHub Action).
+fn run_ci(args: cli::CiArgs) -> Result<()> {
+    let version = args
+        .version
+        .unwrap_or_else(|| format!("v{}", env!("CARGO_PKG_VERSION")));
+    let out = ci::render(args.platform, &version);
+    match args.output.as_deref() {
+        // Default to stdout: this is meant to be piped or reviewed before it is
+        // committed, not silently dropped in the cwd like the report commands.
+        None => print!("{out}"),
+        Some(p) if p.as_os_str() == "-" => print!("{out}"),
+        Some(p) => {
+            std::fs::write(p, &out).with_context(|| format!("cannot write {}", p.display()))?
+        }
+    }
+    Ok(())
+}
+
 fn run_tree(args: cli::TreeArgs) -> Result<()> {
-    let machine = args.json || args.sarif || args.html;
+    let started = chrono::Utc::now();
+    let machine = args.json || args.sarif || args.html || args.gitlab;
     if args.paths.len() > 1 && machine && !args.allow_multiple {
         anyhow::bail!(
-            "machine formats (--json/--sarif/--html) support a single target; got {}. \
+            "machine formats (--json/--sarif/--html/--gitlab) support a single target; got {}. \
              Pass --allow-multiple to emit them all — note the shape changes: \
              --json becomes an array of trees, --sarif one runs[] entry per target, \
              and --html one page per target concatenated.",
@@ -1767,6 +1865,10 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
     let mut gate_tripped = false;
     let mut gate_misconfig = false;
     let mut machine_trees: Vec<tree::Tree> = Vec::new();
+    // Kept alongside the trees purely so --gitlab can run `fix` over them: the
+    // GitLab report's `solution` is the upgrade target, and computing it needs
+    // the dependency graph the tree alone does not carry.
+    let mut machine_deps: Vec<Vec<model::Dependency>> = Vec::new();
     for path in &args.paths {
         let target = match path.canonicalize() {
             Ok(r) => r,
@@ -1913,6 +2015,9 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
 
         if machine {
             machine_trees.push(forest);
+            if args.gitlab {
+                machine_deps.push(deps);
+            }
         }
     }
 
@@ -1934,6 +2039,20 @@ fn run_tree(args: cli::TreeArgs) -> Result<()> {
                 .collect::<Vec<_>>()
                 .join("\n");
             cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "html").write(&out)?;
+        } else if args.gitlab {
+            // GitLab reads one report per job artifact, so --allow-multiple has
+            // nothing to widen here: the first target is the one reported.
+            let plan = fix::plan(
+                machine_deps.first().map(Vec::as_slice).unwrap_or(&[]),
+                &machine_trees[0].vulnerabilities,
+            );
+            let out = report::gitlab::render_tree(
+                &machine_trees[0],
+                &started.to_rfc3339(),
+                &chrono::Utc::now().to_rfc3339(),
+                Some(&plan),
+            )?;
+            cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "json").write(&out)?;
         } else {
             let out = match args.allow_multiple {
                 true => report::sarif::render_trees(&machine_trees)?,

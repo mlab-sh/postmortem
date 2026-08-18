@@ -24,3 +24,6 @@ serde_yaml = "0.9"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[dev-dependencies]
+serde_yaml = "0.9"

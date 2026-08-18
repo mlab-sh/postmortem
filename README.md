@@ -127,6 +127,7 @@ cd postmortem && cargo build --release
 | [`scripts`](https://github.com/mlab-sh/postmortem/wiki/Install-Time) | Which dependencies execute code at install time, whether each is approved, and what its script does. |
 | [`hook`](https://github.com/mlab-sh/postmortem/wiki/Install-Time) | Git pre-commit hook for staged dependency changes. |
 | [`timeline`](https://github.com/mlab-sh/postmortem/wiki/Timeline) | Lay a package's release history out in order: handovers, install scripts, repository moves. |
+| [`ci`](https://github.com/mlab-sh/postmortem/wiki/CI-Templates) | Print a ready-to-commit pipeline for GitLab CI, Azure DevOps, Jenkins or GitHub Actions. |
 | [`allowlist`](https://github.com/mlab-sh/postmortem/wiki/Allowlist) | Every suppression the project declares, with how long each has left to run. |
 | [`cache`](https://github.com/mlab-sh/postmortem/wiki/Cache) | Manage the local cache used by the online paths. |
 
@@ -143,7 +144,7 @@ The full manual lives in the
 * [Online resolution and scoring](https://github.com/mlab-sh/postmortem/wiki/Online-Resolution)
 * [Licenses](https://github.com/mlab-sh/postmortem/wiki/Licenses) and [dependency scopes](https://github.com/mlab-sh/postmortem/wiki/Dependency-Scopes)
 * [Source-code scanning](https://github.com/mlab-sh/postmortem/wiki/Source-Code-Scanning)
-* [CI gate](https://github.com/mlab-sh/postmortem/wiki/CI-Gate) and [Configuration](https://github.com/mlab-sh/postmortem/wiki/Configuration)
+* [CI gate](https://github.com/mlab-sh/postmortem/wiki/CI-Gate), [CI templates](https://github.com/mlab-sh/postmortem/wiki/CI-Templates) and [Configuration](https://github.com/mlab-sh/postmortem/wiki/Configuration)
 
 ## License
 

@@ -101,6 +101,7 @@ pub enum Command {
     Allowlist(AllowlistArgs),
 
     /// Manage the on-disk cache (~/.postmortem/cache) used by `tree --online`.
+    Ci(CiArgs),
     Cache(CacheArgs),
 
     /// Audit the machine's OS-level package managers (Homebrew, pacman/AUR,
@@ -551,6 +552,12 @@ pub struct AuditArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// Emit a **GitLab Dependency Scanning** report instead of the verdict.
+    /// GitLab does not read SARIF; this is the format its merge-request widget
+    /// consumes. The gate still sets the exit code.
+    #[arg(long, conflicts_with = "json")]
+    pub gitlab: bool,
+
     /// Write output to file. Pass `-` to force stdout.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
@@ -707,6 +714,29 @@ pub struct PruneArgs {
     pub dry_run: bool,
 }
 
+/// Arguments for `postmortem ci <platform>`.
+#[derive(Args, Debug)]
+pub struct CiArgs {
+    /// Which CI platform to generate a pipeline for.
+    #[arg(value_enum)]
+    pub platform: crate::ci::Platform,
+
+    /// Pin a different postmortem release than the one printing this. Defaults
+    /// to this binary's own version, so a generated pipeline always references a
+    /// release that exists.
+    #[arg(long)]
+    pub version: Option<String>,
+
+    /// Write to this file instead of stdout. Pass `-` to force stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Accepted for uniformity with the other commands; there is no progress UI
+    /// to disable here.
+    #[arg(long)]
+    pub no_progress: bool,
+}
+
 /// Arguments for `postmortem tree <paths>...`.
 #[derive(Args, Debug)]
 pub struct TreeArgs {
@@ -740,14 +770,21 @@ pub struct TreeArgs {
 
     /// Emit SARIF 2.1.0 — risk signals + known vulns as GitHub Code Scanning
     /// alerts. Combine with --online / --vulns for content.
-    #[arg(long, conflicts_with_all = ["json", "html"])]
+    #[arg(long, conflicts_with_all = ["json", "html", "gitlab"])]
     pub sarif: bool,
+
+    /// Emit a **GitLab Dependency Scanning** report. GitLab does not read SARIF
+    /// — it has its own schema, and this is what populates the merge-request
+    /// security widget. Pair with --vulns; without it the report is valid but
+    /// empty. One target only.
+    #[arg(long, conflicts_with_all = ["json", "html", "sarif"])]
+    pub gitlab: bool,
 
     /// Emit a self-contained HTML report: the flagged packages worst-first with
     /// their source repos and signals, known vulnerabilities, and the full
     /// forest. Combine with --online / --vulns for content. One target only,
     /// unless --allow-multiple.
-    #[arg(long, conflicts_with = "json")]
+    #[arg(long, conflicts_with_all = ["json", "gitlab"])]
     pub html: bool,
 
     /// Write output to file. Pass `-` to force stdout. When omitted for --json a

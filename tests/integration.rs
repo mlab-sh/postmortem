@@ -2558,8 +2558,25 @@ fn the_overview_lists_every_command() {
     let (exit, overview) = run_bare(&["help"]);
     assert_eq!(exit, 0);
     for c in [
-        "scan", "tree", "audit", "system", "why", "timeline", "diff", "scripts", "fix",
-        "licenses", "allowlist", "sbom", "hook", "watch", "cache",
+        "scan",
+        "tree",
+        "audit",
+        "system",
+        "why",
+        "timeline",
+        "diff",
+        "scripts",
+        "fix",
+        "licenses",
+        "allowlist",
+        "sbom",
+        "hook",
+        "watch",
+        "cache",
+        // Note: a two-letter name like `ci` matches as a substring of unrelated
+        // prose ("malicious"), so its real guard is the clap-derived check
+        // below, which requires every command clap knows to appear in `help`.
+        "ci",
     ] {
         assert!(overview.contains(c), "`{c}` missing from the overview");
     }
@@ -2572,9 +2589,15 @@ fn the_overview_lists_every_command() {
         .take_while(|l| l.starts_with("  ") && !l.trim_start().starts_with('-'))
         .filter_map(|l| l.split_whitespace().next())
         .collect();
-    assert!(listed.len() >= 15, "expected clap to list the commands, got {listed:?}");
+    assert!(
+        listed.len() >= 16,
+        "expected clap to list the commands, got {listed:?}"
+    );
     for c in &listed {
-        assert!(overview.contains(c), "`{c}` is a real command but absent from `help`");
+        assert!(
+            overview.contains(c),
+            "`{c}` is a real command but absent from `help`"
+        );
     }
 }
 

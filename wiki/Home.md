@@ -31,6 +31,7 @@ locally.
 | [`hook`](Install-Time) | The git pre-commit hook that scans staged dependency changes. |
 | [`watch`](Install-Time) | Re-scan whenever a lockfile changes. |
 | [`timeline`](Timeline) | Lay a package's release history out in order: handovers, install scripts, repository moves. |
+| [`ci`](CI-Templates) | Print a ready-to-commit pipeline for GitLab CI, Azure DevOps, Jenkins or GitHub Actions. |
 | [`allowlist`](Allowlist) | Every suppression the project declares, with how long each has left to run. |
 | [`cache`](Cache) | Inspect (`info`, `path`) and clear (`prune`) the on-disk cache used by the online paths. |
 
@@ -49,6 +50,8 @@ locally.
 - **[System package managers](System)** - the Homebrew, [pacman](Pacman), [apt](Apt), [dnf](Dnf), [Nix](Nix), and [apk](Apk) backends in depth.
 - **[CI gate](CI-Gate)** - turn scores and vulns into a pass/fail build, from
   `tree`, `audit` or `system`.
+- **[CI templates](CI-Templates)** - generated pipelines for GitLab, Azure and
+  Jenkins, and why GitLab needs its own report format rather than SARIF.
 - **[Configuration](Configuration)** - tokens, thresholds, per-project policy, and
   the `network` block for proxies and internal mirrors.
 
