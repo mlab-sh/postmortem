@@ -43,6 +43,8 @@ pub enum Ecosystem {
     Job,
     /// Windows privilege posture — UAC, LSA, PATH and ACL readings.
     Posture,
+    /// Windows machine network posture — hosts, proxies, DNS, root CAs.
+    Network,
     /// Windows Add/Remove Programs entries — what the registry records as
     /// installed, whether or not a package manager claims it (`system`).
     Arp,
@@ -74,6 +76,7 @@ impl Ecosystem {
             Ecosystem::Service => "service",
             Ecosystem::Job => "job",
             Ecosystem::Posture => "posture",
+            Ecosystem::Network => "network",
         }
     }
 }

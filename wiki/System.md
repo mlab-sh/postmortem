@@ -18,7 +18,7 @@ detected package managers: homebrew
 ```
 
 Recognized: `brew`, `apt`, `dpkg`, `pacman`, `dnf`, `rpm`, `nix`, `apk`, `port`,
-and on Windows `winget`, `msix`, `choco`, `scoop`, `arp`, `asep`, `task`, `service`, `jobs`, `posture`. If no **supported**
+and on Windows `winget`, `msix`, `choco`, `scoop`, `arp`, `asep`, `task`, `service`, `jobs`, `posture`, `network`. If no **supported**
 manager is found, it exits `2`.
 
 On Windows, executables are resolved through `PATHEXT` - what sits on disk is
@@ -56,7 +56,8 @@ manager.
 | Scheduled tasks | supported | [Scheduled tasks](Scheduled-Tasks) |
 | Services & drivers | supported | [Services](Services) |
 | Jobs & file-based | supported | [Jobs](Jobs) |
-| Privilege posture | supported | [Privilege posture](Privilege-Posture) |
+| Privilege & trust posture | supported | [Privilege posture](Privilege-Posture) |
+| Network posture | supported (`--deep`) | [Network posture](Network-Posture) |
 | macports | planned | (roadmap) |
 
 ## Common options
@@ -71,6 +72,7 @@ manager.
 | `--depth <N>` | Limit tree depth. |
 | `--json` | Emit the resolved forest as JSON. |
 | `--manager <name>` | Audit this manager instead of the detected default. |
+| `--deep` | Also read the machine's [network posture](Network-Posture) (Windows). |
 | `--no-signatures` | Skip [binary trust](Binary-Trust) verification (Windows). |
 | `--no-progress` | Disable the animated progress UI. |
 

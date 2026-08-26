@@ -279,6 +279,51 @@ pub(crate) fn signals_for(r: &Reading) -> Option<SysSignal> {
         }
         // Absence is only a finding on a machine that claims to be gated, which
         // postmortem cannot know. Reported so the claim can be checked.
+        // --- firmware and boot -----------------------------------------------
+        // Info by design: a machine without a TPM or with BitLocker off is a
+        // configuration, not a compromise. What makes this section matter is
+        // the combination below.
+        "Boot\\Tpm" => {
+            if r.value == "True" {
+                return None;
+            }
+            (Severity::Info, 0, "no TPM is present or ready".to_string())
+        }
+        "Boot\\BitLocker" => {
+            if r.value == "On" {
+                return None;
+            }
+            (Severity::Info, 0, "BitLocker is not protecting the system volume".to_string())
+        }
+        "Boot\\KernelDma" => {
+            if r.value == "1" {
+                return None;
+            }
+            (Severity::Info, 0, "Kernel DMA protection is not running".to_string())
+        }
+        // A boot manager somewhere other than the Microsoft path is worth a
+        // look; a bootkit is out of scope, its footprint is not.
+        "Boot\\Manager" => {
+            if r.value.eq_ignore_ascii_case(r"\EFI\MICROSOFT\BOOT\BOOTMGFW.EFI") {
+                return None;
+            }
+            (
+                Severity::Medium,
+                20,
+                format!("the boot manager is not at the Microsoft path ({})", r.value),
+            )
+        }
+        // These switch off driver signature enforcement outright.
+        "Boot\\IntegrityChecks" => {
+            if r.value != "1" {
+                return None;
+            }
+            (
+                Severity::High,
+                40,
+                format!("driver integrity checks are disabled ({})", r.detail),
+            )
+        }
         "AppControl\\Policy" => match r.value.as_str() {
             "audit" => (
                 Severity::Low,
@@ -431,6 +476,17 @@ $umci = [int]$dg.UsermodeCodeIntegrityPolicyEnforcementStatus
 $applocker = @(@(Get-AppLockerPolicy -Effective).RuleCollections | Where-Object { $_.Count -gt 0 }).Count
 $state = if ($umci -eq 2) { 'enforced' } elseif ($umci -eq 1) { 'audit' } elseif ($applocker -gt 0) { 'enforced' } else { 'none' }
 Emit 'AppControl\Policy' $state ''
+
+# --- firmware and boot --------------------------------------------------------
+$tpm = Get-Tpm
+Emit 'Boot\Tpm' $(if ($tpm.TpmPresent -and $tpm.TpmReady) { 'True' } else { 'False' }) ''
+Emit 'Boot\BitLocker' ((Get-BitLockerVolume -MountPoint $env:SystemDrive).ProtectionStatus) ''
+Emit 'Boot\KernelDma' $(if (@($dg.SecurityServicesRunning) -contains 3) { 1 } else { 0 }) ''
+$bm = ((& bcdedit /enum '{bootmgr}') | Select-String '^path\s+(.+)$').Matches.Groups[1].Value
+Emit 'Boot\Manager' ($bm -replace '\s+$','') ''
+foreach ($f in @('nointegritychecks','disableintegritychecks')) {
+  if ($bcd -match "$f\s+Yes") { Emit 'Boot\IntegrityChecks' 1 $f }
+}
 "#;
 
 pub(crate) fn parse_readings(stdout: &str) -> Vec<Reading> {
@@ -731,6 +787,81 @@ mod tests {
         assert_eq!(uac.category, Category::Policy);
     }
 
+    /// The one combination in the firmware section that is not Info. Each half
+    /// is ordinary; together they mean the machine loads kernel code nobody
+    /// vouched for.
+    #[test]
+    fn test_signing_plus_a_third_party_driver_is_critical() {
+        let mut inv = Inventory {
+            manager: "system",
+            deps: Vec::new(),
+            repos: Vec::new(),
+            signals: HashMap::new(),
+            claims: Vec::new(),
+            summary: String::new(),
+            notes: Vec::new(),
+        };
+        push_signal(&mut inv.signals, "VendorDrv", SysSignal::new(
+            "driver starts automatically from outside System32",
+            Category::Persistence, Severity::Info, 0));
+
+        // Third-party driver alone: nothing added.
+        flag_unsigned_driver_risk(&mut inv);
+        assert_eq!(inv.signals["VendorDrv"].len(), 1);
+
+        // Add the boot flag and the pair becomes the finding.
+        push_signal(&mut inv.signals, "Boot\\TestSigning", SysSignal::new(
+            "test signing is enabled — unsigned drivers load",
+            Category::Policy, Severity::High, 40));
+        flag_unsigned_driver_risk(&mut inv);
+        let added = inv.signals["VendorDrv"]
+            .iter()
+            .find(|s| s.label.contains("driver signing is not enforced"))
+            .expect("the combination is the finding");
+        assert_eq!(added.severity, Severity::Critical);
+    }
+
+    /// Test signing on a machine with no third-party driver stays what it was.
+    #[test]
+    fn test_signing_alone_escalates_nothing() {
+        let mut inv = Inventory {
+            manager: "system", deps: Vec::new(), repos: Vec::new(),
+            signals: HashMap::new(), claims: Vec::new(),
+            summary: String::new(), notes: Vec::new(),
+        };
+        push_signal(&mut inv.signals, "Boot\\TestSigning", SysSignal::new(
+            "test signing is enabled — unsigned drivers load",
+            Category::Policy, Severity::High, 40));
+        flag_unsigned_driver_risk(&mut inv);
+        assert_eq!(inv.signals.len(), 1);
+        assert_eq!(inv.signals["Boot\\TestSigning"].len(), 1);
+    }
+
+    /// Firmware readings are Info: a machine without a TPM is a configuration,
+    /// not a compromise.
+    #[test]
+    fn the_firmware_readings_are_context() {
+        for (check, value) in [("Boot\\Tpm", "False"), ("Boot\\BitLocker", "Off"), ("Boot\\KernelDma", "0")] {
+            let s = signals_for(&r(check, value, "")).unwrap();
+            assert_eq!(s.severity, Severity::Info, "{check}");
+            assert_eq!(s.points, 0);
+        }
+        assert!(signals_for(&r("Boot\\Tpm", "True", "")).is_none());
+        assert!(signals_for(&r("Boot\\BitLocker", "On", "")).is_none());
+
+        // The standard boot manager path is silent; anything else is not.
+        assert!(signals_for(&r("Boot\\Manager", r"\EFI\MICROSOFT\BOOT\BOOTMGFW.EFI", "")).is_none());
+        assert_eq!(
+            signals_for(&r("Boot\\Manager", r"\EFI\vendor\boot.efi", "")).unwrap().severity,
+            Severity::Medium
+        );
+        // Disabled integrity checks are a decision, not a gap.
+        assert_eq!(
+            signals_for(&r("Boot\\IntegrityChecks", "1", "nointegritychecks")).unwrap().severity,
+            Severity::High
+        );
+    }
+
     #[test]
     fn readings_are_parsed_and_a_missing_value_is_not_a_zero() {
         let json = r#"{"Check":"LSA\\RunAsPPL","Value":"","Detail":""}
@@ -738,5 +869,47 @@ mod tests {
         let got = parse_readings(json);
         assert_eq!(got.len(), 1, "a reading with no check is not a reading");
         assert!(!got[0].is_set(), "unset must not read as zero");
+    }
+}
+
+/// Escalate the one combination in the firmware section that is not Info.
+///
+/// Test signing on its own is a developer machine; a third-party driver on its
+/// own is ordinary. **Together** they mean the machine will load a kernel
+/// driver nobody vouched for, which is the whole reason to read boot flags in a
+/// supply-chain scanner.
+///
+/// Runs over the **merged** inventory: the boot flag comes from this layer and
+/// the drivers from [`super::service`], so neither can see it alone.
+pub fn flag_unsigned_driver_risk(inv: &mut Inventory) {
+    let test_signing = inv.signals.values().flatten().any(|s| {
+        s.label.contains("test signing is enabled")
+            || s.label.contains("driver integrity checks are disabled")
+    });
+    if !test_signing {
+        return;
+    }
+    // Drivers the service layer reported as starting from outside System32.
+    let drivers: Vec<String> = inv
+        .signals
+        .iter()
+        .filter(|(_, sigs)| {
+            sigs.iter()
+                .any(|s| s.label.starts_with("driver starts automatically from outside"))
+        })
+        .map(|(name, _)| name.clone())
+        .collect();
+
+    for name in drivers {
+        push_signal(
+            &mut inv.signals,
+            &name,
+            SysSignal::new(
+                "third-party driver on a machine where driver signing is not enforced",
+                Category::Unsigned,
+                Severity::Critical,
+                50,
+            ),
+        );
     }
 }

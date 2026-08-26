@@ -47,6 +47,7 @@
 - [Services & drivers](Services)
 - [Jobs & file-based](Jobs)
 - [Privilege & trust posture](Privilege-Posture)
+- [Network posture](Network-Posture)
 
 **Concepts**
 - [Install-time execution](Install-Time)

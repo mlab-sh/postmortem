@@ -304,6 +304,15 @@ pub struct SystemArgs {
     #[command(subcommand)]
     pub command: Option<SystemCommand>,
 
+    /// Also read the machine's network posture: the hosts file, the system
+    /// proxy, port proxies, DNS resolvers, trusted root certificates and
+    /// application firewall rules.
+    ///
+    /// Off by default — this is incident-response material rather than
+    /// supply-chain material.
+    #[arg(long)]
+    pub deep: bool,
+
     /// Skip Authenticode verification of the binaries each package installed.
     ///
     /// Verification is on by default: batched into a single call it costs

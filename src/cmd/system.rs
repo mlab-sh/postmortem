@@ -47,7 +47,12 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
     } else {
         let usable = managers.iter().filter(|m| m.available && m.implemented);
         let picked: Vec<&'static str> = if cfg!(windows) {
-            usable.map(|m| m.name).collect()
+            // The network layer is incident-response material and is only read
+            // when asked for.
+            usable
+                .filter(|m| m.name != "network" || args.deep)
+                .map(|m| m.name)
+                .collect()
         } else {
             usable.take(1).map(|m| m.name).collect()
         };
@@ -63,6 +68,7 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
         online: args.online,
         force_aur: args.force_aur,
         signatures: !args.no_signatures,
+        deep: args.deep,
     };
     let mut read = Vec::new();
     let mut unread = Vec::new();
@@ -97,6 +103,9 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
     // Only meaningful once every layer has been read: an Add/Remove entry is
     // orphaned relative to what the *other* managers claim.
     system::flag_unclaimed(&mut inv);
+    // Test signing and a third-party driver are each unremarkable; together
+    // they mean the machine loads kernel code nobody vouched for.
+    system::flag_unsigned_driver_risk(&mut inv);
     // Surface backend caveats (weakened signing trust, tampered files, un-synced
     // DB, …) as a gochi alert followed by one bullet per caveat, so a system with
     // many caveats stays readable instead of collapsing into one run-on line.

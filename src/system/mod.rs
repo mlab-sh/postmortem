@@ -25,6 +25,7 @@
 //! - [`service`] — services and drivers, and unquoted image paths.
 //! - [`jobs`] — image hijacks, setup scripts, BITS jobs and answer files.
 //! - [`posture`] — UAC, LSA, PATH and ACL: Windows' privilege primitives.
+//! - [`network`] — hosts, proxies, DNS and root certificates (`--deep`).
 //!
 //! Three cross-cutting concerns are factored out rather than duplicated per
 //! backend: [`recipe`] statically analyzes the install code a third-party package
@@ -60,6 +61,7 @@ mod choco;
 mod dnf;
 mod jobs;
 mod msix;
+mod network;
 mod nix;
 mod orphan;
 mod pacman;
@@ -102,6 +104,7 @@ const KNOWN: &[(&str, &str, bool)] = &[
     ("service", "powershell", true),
     ("jobs", "powershell", true),
     ("posture", "powershell", true),
+    ("network", "powershell", true),
     ("macports", "port", false),
 ];
 
@@ -206,6 +209,7 @@ pub struct Inventory {
 }
 
 pub use orphan::flag_unclaimed;
+pub use posture::flag_unsigned_driver_risk;
 
 /// Options for [`inventory`].
 #[derive(Default, Clone, Copy)]
@@ -214,6 +218,9 @@ pub struct Opts {
     pub online: bool,
     /// Force foreign/AUR detection past the un-synced-DB guard (pacman).
     pub force_aur: bool,
+    /// Read the machine's network posture too (Windows). Incident-response
+    /// material, so it is asked for rather than assumed.
+    pub deep: bool,
     /// Verify Authenticode signatures on installed binaries (Windows). On by
     /// default from the CLI; `Opts::default()` leaves it off so a caller has to
     /// ask, which keeps the tests explicit about what they exercise.
@@ -240,6 +247,7 @@ pub fn inventory(manager: &str, opts: Opts) -> Result<Inventory> {
         "service" => service::service_inventory(opts),
         "jobs" => jobs::jobs_inventory(opts),
         "posture" => posture::posture_inventory(opts),
+        "network" => network::network_inventory(opts),
         other => anyhow::bail!("no inventory backend for '{other}'"),
     }
 }

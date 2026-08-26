@@ -100,6 +100,29 @@ Developer mode and MSIX sideloading are read by [MSIX](MSIX); Store certificate
 pinning by [WinGet](WinGet); the per-user PowerShell execution policy by
 [Scoop](Scoop).
 
+## Firmware & boot
+
+Info by design: a machine without a TPM, or with BitLocker off, is a
+configuration rather than a compromise.
+
+| Reading | Severity |
+| --- | --- |
+| No TPM present or ready | Info |
+| BitLocker not protecting the system volume | Info |
+| Kernel DMA protection not running | Info |
+| Boot manager outside the Microsoft path | Medium |
+| `nointegritychecks` / `disableintegritychecks` set | High |
+
+### The one combination that is Critical
+
+Test signing on its own is a developer machine. A third-party driver on its own
+is ordinary. **Together** they mean the machine will load kernel code nobody
+vouched for — so when the boot flags are loosened *and* a driver starts from
+outside `System32`, that driver is raised to `Critical`.
+
+That check runs after every layer is read, because the boot flag comes from here
+and the drivers from [services](Services); neither can see it alone.
+
 ## Not covered yet
 
 Service token privileges (`SeDebug`, `SeImpersonate`, `SeLoadDriver`, `SeTcb`
