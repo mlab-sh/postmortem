@@ -50,3 +50,13 @@ Well-known custom domains are rewritten to their GitHub mirror
 
 Irregular vanity paths (e.g. `google.golang.org/grpc`) have no fixed mapping and
 resolve to *no repository* (**unchecked**) - deliberately not guessed.
+
+## Typosquatting
+
+1 200 module paths ranked by dependent count (`golang.org/x/sys`,
+`stretchr/testify`, …), matched whole plus an owner-squat rule
+(`boltdb-go/bolt` → `boltdb/bolt`). A path that differs only in a version
+element — `gopkg.in/yaml.v1` vs `.v3`, `hcl2` vs `hcl`, a trailing `/v2` — is
+not flagged, and neither are two modules under one owner: nobody but
+`github.com/aws` can publish under `github.com/aws`, so `service/sqs` and
+`service/sts` are siblings. See [Typosquatting](Typosquatting).

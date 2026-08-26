@@ -23,6 +23,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that can publish, so `tree --human` and `why --blast` now attribute Python
   packages instead of counting them as unattributed.
 
+- **Typosquat detection for Maven, and a real corpus for Go.** The corpus
+  generator ranked every registry by download count, but ecosyste.ms returns
+  `downloads: null` for Go and Maven — so neither was ever in its target list.
+  Go ran on 59 hand-curated module paths and Java had no corpus at all. Both are
+  now built from `dependent_packages_count`, which ranks them sanely
+  (`golang.org/x/sys`, `junit:junit`, `guava` at the top): Go goes from 59 to
+  1 207 paths and Maven gets 1 200 `group:artifact` coordinates.
+
+  Maven is not Packagist with another separator, and the rules say so. A name
+  that carries its own version is not a near-miss of itself (Scala's `_2.12` /
+  `_2.13`, `retrofit` → `retrofit2`, `kotlin-stdlib-jre7` vs `-jre8`), and two
+  coordinates sharing a groupId are siblings rather than impostors, because
+  Central verifies a groupId against a domain its publisher controls. The
+  "same name, other vendor" rule stays off there — an artifactId is unique only
+  within its group. Both rules apply to Go for the same reasons
+  (`gopkg.in/yaml.v1` vs `.v3`; `github.com/aws/…/service/sqs` vs `sts`).
+  Measured against 1 200 legitimate packages ranked just below each corpus:
+  0 false positives on Maven, 2 on Go, down from 65 and 11 before the rules.
+- **Fixed: a Go module path with a capital letter was flagged as a typosquat of
+  itself.** 67 of the popular paths carry one (`github.com/BurntSushi/toml`,
+  `Azure`, `Microsoft`) and the input was lowercased while the corpus was not,
+  so the membership test missed and the name came back one edit from itself.
 - **Two install-time execution paths npm runs and its own flag does not record.**
   A dependency npm builds locally — a `git+`, `file:`, `link:` or
   remote-tarball source — also runs its `prepare` on the installing machine, and

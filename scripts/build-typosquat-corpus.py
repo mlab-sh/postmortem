@@ -5,11 +5,20 @@ One-off maintenance script — postmortem itself never runs it, and never fetche
 these lists at scan time. The corpora are compiled into the binary so the
 typosquat check stays fully offline and deterministic.
 
-Source: packages.ecosyste.ms, which exposes a downloads-ranked package list for
-every registry we cover behind one API. Paced at ~1 request/second because it is
-a free public service.
+Source: packages.ecosyste.ms, which exposes a ranked package list for every
+registry we cover behind one API. Paced at ~1 request/second because it is a
+free public service.
 
-    python3 scripts/build-typosquat-corpus.py
+Two registries rank differently. Go and Maven publish no download counts — the
+API returns `downloads: null` for every package, so a downloads sort there is an
+arbitrary order of unknown repos. Both do carry `dependent_packages_count`, which
+ranks them sanely (golang.org/x/sys, junit:junit, guava at the top), so that is
+the axis used for those two. It measures a different thing than downloads —
+being depended upon rather than being fetched — but for *impersonation targets*
+it is arguably the better one: a squat aims at a name people type.
+
+    python3 scripts/build-typosquat-corpus.py             # every registry
+    python3 scripts/build-typosquat-corpus.py go maven    # only these
 
 Each list is a UNION with whatever is already on disk: the original curated npm
 entries include real squat targets (bcrypt, electron, cypress, ...) that sit
@@ -24,22 +33,25 @@ import json, os, subprocess, sys, time
 
 DATA = os.path.join(os.path.dirname(__file__), "..", "src", "data")
 
-# (registry, output file, how many names to keep)
+# (short name, registry, output file, how many names to keep, ranking axis)
 TARGETS = [
-    ("npmjs.org", "npm-popular.txt", 5000),
-    ("pypi.org", "pypi-popular.txt", 2000),
-    ("crates.io", "crates-popular.txt", 1200),
-    ("rubygems.org", "rubygems-popular.txt", 1200),
-    ("packagist.org", "packagist-popular.txt", 1200),
+    ("npm", "npmjs.org", "npm-popular.txt", 5000, "downloads"),
+    ("pypi", "pypi.org", "pypi-popular.txt", 2000, "downloads"),
+    ("crates", "crates.io", "crates-popular.txt", 1200, "downloads"),
+    ("rubygems", "rubygems.org", "rubygems-popular.txt", 1200, "downloads"),
+    ("packagist", "packagist.org", "packagist-popular.txt", 1200, "downloads"),
+    # No download counts published — see the module docstring.
+    ("go", "proxy.golang.org", "go-popular.txt", 1200, "dependent_packages_count"),
+    ("maven", "repo1.maven.org", "maven-popular.txt", 1200, "dependent_packages_count"),
 ]
 
 UA = "postmortem-corpus-builder (one-off offline typosquat corpus)"
 
 HEADER = """# {title}
 #
-# The {n} most-downloaded packages on {registry}, plus any curated entries that
-# predate this list. Source: packages.ecosyste.ms (downloads, descending),
-# fetched {date}. Order is popularity rank, most-downloaded first.
+# The top {n} packages on {registry} by {sort}, plus any curated entries that
+# predate this list. Source: packages.ecosyste.ms ({sort}, descending),
+# fetched {date}. Order is popularity rank, most popular first.
 #
 # Used only for OFFLINE typosquat proximity: a dependency one edit / one
 # transposition / one punctuation variant away from a name in here is flagged.
@@ -63,11 +75,11 @@ def fetch(url):
     raise SystemExit(f"failed to fetch {url}")
 
 
-def top(registry, want):
+def top(registry, want, sort):
     out, page = [], 1
     while len(out) < want:
         batch = fetch(f"https://packages.ecosyste.ms/api/v1/registries/{registry}"
-                      f"/packages?sort=downloads&order=desc&per_page=100&page={page}")
+                      f"/packages?sort={sort}&order=desc&per_page=100&page={page}")
         if not batch:
             break
         out.extend(p["name"] for p in batch if p.get("name"))
@@ -84,15 +96,18 @@ def existing(path):
 
 def main():
     date = time.strftime("%Y-%m-%d")
-    for registry, filename, want in TARGETS:
+    only = set(sys.argv[1:])
+    for short, registry, filename, want, sort in TARGETS:
+        if only and short not in only:
+            continue
         path = os.path.join(DATA, filename)
-        names = top(registry, want)
+        names = top(registry, want, sort)
         # Keep curated entries the ranked list does not include.
         keep = [n for n in existing(path) if n not in set(names)]
         names += keep
         title = f"Popular {registry} packages"
         open(path, "w").write(
-            HEADER.format(title=title, n=want, registry=registry, date=date)
+            HEADER.format(title=title, n=want, registry=registry, date=date, sort=sort)
             + "\n".join(names) + "\n")
         print(f"{filename}: {len(names)} ({len(keep)} carried over)", file=sys.stderr)
 

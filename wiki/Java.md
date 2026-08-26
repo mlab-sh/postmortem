@@ -50,3 +50,14 @@ stats API) as their SOURCE_REPO. postmortem rewrites it to the GitHub mirror:
 
 An artifact whose SCM is on an unsupported host (and has no GitHub link) resolves
 to *no repository* (**unchecked**).
+
+## Typosquatting
+
+Covered since the Maven corpus was added — 1 200 coordinates ranked by dependent
+count, `group:artifact` matched whole. Maven's rules are its own: a name
+carrying its version (`enumeratum_2.13`, `retrofit2`) is not a near-miss of
+itself, and two artifacts sharing a groupId are siblings, because Central
+verifies a groupId against a domain its publisher controls. The Packagist
+"same name, other vendor" rule is deliberately **off** here — an artifactId is
+unique only within its group, so `core` and `annotations` live under dozens.
+See [Typosquatting](Typosquatting).

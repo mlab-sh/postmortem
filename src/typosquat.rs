@@ -12,10 +12,16 @@
 //! ordinary npm name, so a shared corpus would flag half of one registry as
 //! squatting the other.
 //!
-//! Two name shapes exist. Most registries are flat (`lodash`, `requests`), while
-//! Packagist and Go are `vendor/name` — there the vendor half carries the
+//! Three name shapes exist. Most registries are flat (`lodash`, `requests`).
+//! Packagist and Go are `vendor/name`, where the vendor half carries the
 //! impersonation (`evil/monolog` squats `monolog/monolog`), so those are matched
 //! whole, with an extra rule for a near-miss vendor under an identical name.
+//! Maven is `group:artifact`, the same shape with another separator — but *not*
+//! the same rule: an artifactId is only unique within its group, so `core`,
+//! `annotations` and `commons-io` each appear under several unrelated groups in
+//! the corpus alone. "Same artifact, different group" is therefore ordinary on
+//! Maven where it is impersonation on Packagist, and only the shape-based
+//! matches (one edit, transposition, punctuation, homoglyph) apply there.
 //!
 //! The corpora are a few thousand names each, and the check runs once per
 //! dependency, so every derived form (separator-stripped, homoglyph-folded) is
@@ -32,6 +38,7 @@ const CRATES: &str = include_str!("data/crates-popular.txt");
 const RUBYGEMS: &str = include_str!("data/rubygems-popular.txt");
 const PACKAGIST: &str = include_str!("data/packagist-popular.txt");
 const GO: &str = include_str!("data/go-popular.txt");
+const MAVEN: &str = include_str!("data/maven-popular.txt");
 
 /// A corpus with its comparison forms precomputed.
 ///
@@ -45,6 +52,11 @@ struct Corpus {
     stripped: Vec<String>,
     /// `homoglyph(name)`, index-aligned with `names`.
     folded: Vec<String>,
+    /// Lowercased, index-aligned with `names`. Go module paths are
+    /// case-sensitive as *paths* but 67 of the popular ones carry a capital
+    /// (`github.com/BurntSushi/toml`, `Azure`, `Microsoft`), and a dependency
+    /// on one must not read as a one-edit near-miss of itself.
+    lowered: Vec<String>,
     /// Membership test for "this *is* the popular package".
     set: HashSet<&'static str>,
 }
@@ -58,11 +70,13 @@ impl Corpus {
             .collect();
         let stripped = names.iter().map(|n| strip_sep(n)).collect();
         let folded = names.iter().map(|n| homoglyph(n)).collect();
+        let lowered = names.iter().map(|n| n.to_lowercase()).collect();
         let set = names.iter().copied().collect();
         Corpus {
             names,
             stripped,
             folded,
+            lowered,
             set,
         }
     }
@@ -82,10 +96,10 @@ corpus!(crates, CRATES);
 corpus!(rubygems, RUBYGEMS);
 corpus!(packagist, PACKAGIST);
 corpus!(go, GO);
+corpus!(maven, MAVEN);
 
-/// The corpus for an ecosystem, or `None` where we have no list (the OS package
-/// managers, and Java — whose `group:artifact` coordinates are a different shape
-/// again).
+/// The corpus for an ecosystem, or `None` where we have no list — the OS
+/// package managers, whose names are distribution-specific.
 fn corpus_for(eco: Ecosystem) -> Option<&'static Corpus> {
     Some(match eco {
         Ecosystem::Node => npm(),
@@ -94,6 +108,7 @@ fn corpus_for(eco: Ecosystem) -> Option<&'static Corpus> {
         Ecosystem::Ruby => rubygems(),
         Ecosystem::Php => packagist(),
         Ecosystem::Go => go(),
+        Ecosystem::Java => maven(),
         _ => return None,
     })
 }
@@ -115,7 +130,13 @@ pub fn check(name: &str, eco: Ecosystem) -> Option<Match> {
     // Two-part coordinates (`vendor/name`) carry the impersonation in the vendor
     // half, so they are matched whole rather than by last segment.
     if matches!(eco, Ecosystem::Php) {
-        return check_two_part(&name.to_lowercase(), c);
+        // Packagist is case-insensitive, and a fork there takes a new vendor
+        // under the same name — so the vendor-variant rule applies.
+        return check_two_part(&name.to_lowercase(), c, PACKAGIST_SHAPE);
+    }
+    if matches!(eco, Ecosystem::Java) {
+        // Maven coordinates are case-sensitive (`org.antlr:ST4`), so no folding.
+        return check_two_part(name, c, MAVEN_SHAPE);
     }
     if matches!(eco, Ecosystem::Go) {
         return check_module_path(name);
@@ -199,11 +220,45 @@ fn check_flat(name: &str, c: &Corpus) -> Option<Match> {
 /// likes under a name a reader skims as `monolog`. So an identical package name
 /// under a *different* vendor is the signal, alongside the ordinary whole-string
 /// near-misses.
-fn check_two_part(p: &str, c: &Corpus) -> Option<Match> {
+/// What a two-part coordinate means in a given registry.
+struct TwoPart {
+    /// `vendor/name` or `group:artifact`.
+    sep: char,
+    /// Does "same name, other vendor" read as impersonation? On Packagist yes:
+    /// one flat namespace, a name is claimed once, so a second vendor
+    /// publishing `monolog` is impersonating the first. On Maven no: an
+    /// artifactId is unique only within its group, and `core`, `annotations`
+    /// and `commons-io` each sit under several unrelated groups in the corpus
+    /// alone — the rule would fire on every one of them.
+    vendor_variant: bool,
+    /// Do names carry their version? See `version_skeleton`.
+    versioned_names: bool,
+    /// Is the vendor half an *owned* namespace? Maven Central verifies a
+    /// groupId against a domain or repository the publisher controls, so an
+    /// impostor cannot publish into its victim's group — two coordinates
+    /// sharing a group are siblings of one project (`aether-api` and
+    /// `aether-spi`), never an impersonation.
+    verified_vendor: bool,
+}
+
+const PACKAGIST_SHAPE: TwoPart = TwoPart {
+    sep: '/',
+    vendor_variant: true,
+    versioned_names: false,
+    verified_vendor: false,
+};
+const MAVEN_SHAPE: TwoPart = TwoPart {
+    sep: ':',
+    vendor_variant: false,
+    versioned_names: true,
+    verified_vendor: true,
+};
+
+fn check_two_part(p: &str, c: &Corpus, shape: TwoPart) -> Option<Match> {
     if c.set.contains(p) {
         return None;
     }
-    let (pv, pn) = p.split_once('/')?;
+    let (pv, pn) = p.split_once(shape.sep)?;
     if pn.len() < 4 {
         return None;
     }
@@ -218,10 +273,19 @@ fn check_two_part(p: &str, c: &Corpus) -> Option<Match> {
 
     let p_sep = strip_sep(p);
     let p_homo = homoglyph(p);
+    let p_skel = shape.versioned_names.then(|| version_skeleton(p));
     let plen = p.chars().count();
     for (i, &t) in c.names.iter().enumerate() {
         if t == p {
             return None;
+        }
+        // Same project, another version — see `version_skeleton`.
+        if p_skel.as_deref() == Some(version_skeleton(t).as_str()) {
+            continue;
+        }
+        // Siblings under one owned namespace — see `TwoPart::verified_vendor`.
+        if shape.verified_vendor && t.split_once(shape.sep).is_some_and(|(tv, _)| tv == pv) {
+            continue;
         }
         if p_sep == c.stripped[i] {
             return Some(hit(t, "punctuation variant"));
@@ -229,11 +293,12 @@ fn check_two_part(p: &str, c: &Corpus) -> Option<Match> {
         if p_homo == c.folded[i] {
             return Some(hit(t, "homoglyph"));
         }
-        let Some((tv, tn)) = t.split_once('/') else {
-            continue;
-        };
-        // Same package name, impostor vendor — the squat that matters here.
-        if tn == pn && tv != pv {
+        if shape.vendor_variant
+            && let Some((tv, tn)) = t.split_once(shape.sep)
+            // Same package name, impostor vendor — the squat that matters here.
+            && tn == pn
+            && tv != pv
+        {
             return Some(hit(t, "vendor variant"));
         }
         if plen.abs_diff(t.chars().count()) > 1 {
@@ -257,6 +322,20 @@ fn hit(target: &str, kind: &'static str) -> Match {
 }
 
 /// Remove `-`, `_`, `.` so `cross-env`, `cross_env`, `crossenv` collapse.
+/// A name with every digit removed.
+///
+/// Package names on Maven and Go carry the version *in the name*: Scala's
+/// `_2.12` / `_2.13` cross-build suffix, a major bump baked into the artifact
+/// (`retrofit` → `retrofit2`, `okhttp3`, `antlr4`), a gopkg.in `.v1` / `.v3`, a
+/// `/v2` element, a JDK target (`kotlin-stdlib-jre7` vs `-jre8`). Two releases
+/// of one project are then exactly one edit apart, which is the signature this
+/// module looks for — so before calling anything a squat, check whether the two
+/// names are the same modulo their digits. If they are, it is a version, and a
+/// version is not an impostor.
+fn version_skeleton(s: &str) -> String {
+    s.chars().filter(|c| !c.is_ascii_digit()).collect()
+}
+
 fn strip_sep(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(c, '-' | '_' | '.'))
@@ -382,29 +461,43 @@ pub fn check_module_path(path: &str) -> Option<Match> {
         .map(|(base, _)| base)
         .unwrap_or(normalized.as_str());
     let c = go();
-    if c.set.contains(p) {
+    // Compared lowercased throughout — see `Corpus::lowered`.
+    if c.lowered.iter().any(|t| t == p) {
         return None;
     }
     let (ph, po, pr) = split_path(p);
-    for &t in &c.names {
-        if t == p {
-            return None;
+    let p_skel = version_skeleton(p);
+    for (i, t) in c.lowered.iter().map(String::as_str).enumerate() {
+        // Same module, another version — `gopkg.in/yaml.v1` vs `.v3`,
+        // `hashicorp/hcl2` vs `hcl`. See `version_skeleton`.
+        if p_skel == version_skeleton(t) {
+            continue;
         }
-        // Whole-path near-miss.
+        // Siblings under one owned namespace. Nobody but `github.com/aws` can
+        // publish under `github.com/aws`, so its `service/sqs` and
+        // `service/sts` are two modules of one project, not an impersonation —
+        // the same reasoning as a verified Maven groupId.
+        let (th_, to_, _) = split_path(t);
+        if (ph, po) == (th_, to_) && !po.is_empty() {
+            continue;
+        }
+        // Whole-path near-miss. The corpus entry keeps its own spelling in
+        // the report — it is what the user would go and look up.
+        let shown = c.names[i];
         if strip_sep(p) == strip_sep(t) {
-            return Some(hit(t, "punctuation variant"));
+            return Some(hit(shown, "punctuation variant"));
         }
         if lev1(p, t) {
-            return Some(hit(t, "1 edit away"));
+            return Some(hit(shown, "1 edit away"));
         }
-        if p != t && homoglyph(p) == homoglyph(t) {
-            return Some(hit(t, "homoglyph"));
+        if homoglyph(p) == homoglyph(t) {
+            return Some(hit(shown, "homoglyph"));
         }
         // Owner-squat: same host + repo, an impostor owner near/suffixed.
         // `owner_squat(popular_owner, candidate_owner)`.
         let (th, to, tr) = split_path(t);
         if ph == th && pr == tr && !pr.is_empty() && po != to && owner_squat(to, po) {
-            return Some(hit(t, "owner variant"));
+            return Some(hit(shown, "owner variant"));
         }
     }
     None
@@ -455,6 +548,85 @@ fn transposition(a: &str, b: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn java(n: &str) -> Option<Match> {
+        check(n, Ecosystem::Java)
+    }
+
+    fn go_path(n: &str) -> Option<Match> {
+        check(n, Ecosystem::Go)
+    }
+
+    #[test]
+    fn flags_a_maven_group_impostor() {
+        // The Maven squat shape: the artifact is kept, the *group* is the lie.
+        assert_eq!(
+            java("com.gogle.guava:guava").unwrap().target,
+            "com.google.guava:guava"
+        );
+        assert_eq!(
+            java("com.g00gle.guava:guava").unwrap().target,
+            "com.google.guava:guava",
+            "digit homoglyph in the group"
+        );
+        assert!(java("com.google.guava:guava").is_none(), "the real one");
+        // A near-miss *inside* the victim's own group is not reachable by an
+        // attacker: Maven Central verifies a groupId against a domain or
+        // repository its publisher controls.
+        assert!(java("org.slf4j:slf4j-ap").is_none());
+    }
+
+    /// Every one of these is a real, legitimate coordinate that an earlier cut
+    /// of this matcher flagged. They are the reason the Maven rules differ from
+    /// the Packagist ones.
+    #[test]
+    fn maven_version_and_sibling_shapes_are_not_squats() {
+        for n in [
+            // Scala cross-build suffixes: one edit apart, by construction.
+            "com.beachape:enumeratum_2.13",
+            "org.typelevel:cats-effect_2.11",
+            // A major version baked into the group or the artifact.
+            "com.squareup.retrofit:retrofit",
+            "org.antlr:antlr",
+            "org.jetbrains.kotlin:kotlin-stdlib-jre7",
+            // Siblings under one verified groupId.
+            "org.mongodb:mongodb-driver-async",
+            "org.eclipse.aether:aether-spi",
+            // A generic artifactId under an unrelated group — ordinary on Maven,
+            // which is why the vendor-variant rule is off there.
+            "com.acme.internal:core",
+            "com.acme.internal:annotations",
+        ] {
+            assert!(
+                java(n).is_none(),
+                "{n} should not be flagged: {:?}",
+                java(n)
+            );
+        }
+    }
+
+    #[test]
+    fn go_version_and_namespace_shapes_are_not_squats() {
+        for n in [
+            // gopkg.in carries the major version in the name.
+            "gopkg.in/yaml.v1",
+            "gopkg.in/tomb.v2",
+            "github.com/hashicorp/hcl2",
+            // Sub-modules of one project, under an owner nobody else can use.
+            "github.com/aws/aws-sdk-go-v2/service/sqs",
+            "github.com/aws/aws-sdk-go-v2/service/sns",
+            "github.com/gobuffalo/packd",
+            // A capitalised owner must not read as a near-miss of itself.
+            "github.com/BurntSushi/toml",
+            "github.com/Microsoft/go-winio",
+        ] {
+            assert!(
+                go_path(n).is_none(),
+                "{n} should not be flagged: {:?}",
+                go_path(n)
+            );
+        }
+    }
 
     /// npm is the historical corpus, so most shape tests live here.
     fn npm_check(n: &str) -> Option<Match> {
