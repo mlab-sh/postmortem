@@ -17,6 +17,7 @@
 //! - [`apk`] — Alpine's installed DB as a capability graph.
 //! - [`winget`] — Windows' winget sources and the installed table behind them.
 //! - [`msix`] — Windows MSIX/AppX packages, their signing and their capabilities.
+//! - [`choco`] — Chocolatey's install posture, sources and configuration drift.
 //!
 //! Two cross-cutting concerns are factored out rather than duplicated per
 //! backend: [`recipe`] statically analyzes the install code a third-party package
@@ -44,6 +45,7 @@ use crate::tree::{Node, Tree};
 mod apk;
 mod apt;
 mod brew;
+mod choco;
 mod dnf;
 mod msix;
 mod nix;
@@ -74,6 +76,7 @@ const KNOWN: &[(&str, &str, bool)] = &[
     // No CLI of its own: the AppX layer is reached through PowerShell, which is
     // what gates whether postmortem can read it at all.
     ("msix", "powershell", true),
+    ("choco", "choco", true),
     ("macports", "port", false),
 ];
 
@@ -191,8 +194,50 @@ pub fn inventory(manager: &str, opts: Opts) -> Result<Inventory> {
         "apk" => apk::apk_inventory(opts),
         "winget" => winget::winget_inventory(opts),
         "msix" => msix::msix_inventory(opts),
+        "choco" => choco::choco_inventory(opts),
         other => anyhow::bail!("no inventory backend for '{other}'"),
     }
+}
+
+/// Run a PowerShell script and return its stdout.
+///
+/// Passed as `-EncodedCommand` (base64 UTF-16LE): it sidesteps every layer of
+/// quoting between here and PowerShell, and unlike `-File` it is not subject to
+/// the script execution policy, so a locked-down machine can still be scanned.
+pub(super) fn powershell(script: &str) -> Result<String> {
+    let out = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+        .arg(base64_utf16le(script))
+        .output()
+        .context("running powershell")?;
+    if !out.status.success() {
+        anyhow::bail!(
+            "powershell failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Encode `s` as PowerShell's `-EncodedCommand` expects: UTF-16LE, then base64.
+/// Hand-rolled rather than pulling a crate in for twenty lines.
+pub(super) fn base64_utf16le(s: &str) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let bytes: Vec<u8> = s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = u32::from(b[0]) << 16 | u32::from(b[1]) << 8 | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - i * 6)) as usize & 0x3F] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
 }
 
 /// An installed version behind the current one — running old code means missing

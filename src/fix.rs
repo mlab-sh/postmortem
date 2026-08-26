@@ -254,6 +254,7 @@ pub fn upgrade_command(eco: Ecosystem, name: &str, target: &str) -> Option<Strin
         // MSIX updates come from the Store or the publisher's own channel;
         // there is no per-package command to hand the user.
         Ecosystem::Msix => return None,
+        Ecosystem::Choco => format!("choco upgrade {name} -y"),
     })
 }
 

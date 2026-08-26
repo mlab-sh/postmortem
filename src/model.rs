@@ -28,6 +28,8 @@ pub enum Ecosystem {
     Winget,
     /// Windows MSIX/AppX packages (Store and sideloaded) — `system` command.
     Msix,
+    /// Windows `chocolatey` — an OS-level package manager (`system` command).
+    Choco,
 }
 
 impl Ecosystem {
@@ -48,6 +50,7 @@ impl Ecosystem {
             Ecosystem::Apk => "apk",
             Ecosystem::Winget => "winget",
             Ecosystem::Msix => "msix",
+            Ecosystem::Choco => "choco",
         }
     }
 }

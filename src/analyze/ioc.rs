@@ -30,6 +30,9 @@ pub enum Lang {
     Perl,
     /// Shell (sh/bash/zsh) - covers OS-package install hooks.
     Shell,
+    /// PowerShell (`ps1`/`psm1`) - Chocolatey packages ARE PowerShell scripts,
+    /// and Windows install hooks live here.
+    PowerShell,
     Lua,
 }
 
@@ -46,6 +49,7 @@ impl Lang {
         Lang::Cpp,
         Lang::Perl,
         Lang::Shell,
+        Lang::PowerShell,
         Lang::Lua,
     ];
 
@@ -61,6 +65,7 @@ impl Lang {
             Lang::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
             Lang::Perl => &["pl", "pm", "t"],
             Lang::Shell => &["sh", "bash", "zsh", "ksh"],
+            Lang::PowerShell => &["ps1", "psm1", "psd1"],
             Lang::Lua => &["lua"],
         }
     }
