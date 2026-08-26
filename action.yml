@@ -101,20 +101,43 @@ runs:
       run: |
         set -euo pipefail
         num="${VERSION#v}"
+        # On a Windows runner `shell: bash` is Git Bash, so `uname -s` reports
+        # MINGW64_NT-… rather than anything containing "Windows".
         case "$(uname -s)-$(uname -m)" in
-          Linux-x86_64)   target=x86_64-unknown-linux-gnu ;;
-          Linux-aarch64)  target=aarch64-unknown-linux-gnu ;;
-          Darwin-x86_64)  target=x86_64-apple-darwin ;;
-          Darwin-arm64)   target=aarch64-apple-darwin ;;
+          Linux-x86_64)                     target=x86_64-unknown-linux-gnu ;;
+          Linux-aarch64)                    target=aarch64-unknown-linux-gnu ;;
+          Darwin-x86_64)                    target=x86_64-apple-darwin ;;
+          Darwin-arm64)                     target=aarch64-apple-darwin ;;
+          MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64) target=x86_64-pc-windows-msvc ;;
           *) echo "::error::unsupported runner $(uname -s)-$(uname -m)"; exit 1 ;;
         esac
-        url="https://github.com/mlab-sh/postmortem/releases/download/${VERSION}/postmortem-${num}-${target}.tar.gz"
+
+        # Windows release assets are zip archives holding `postmortem.exe`;
+        # every other target ships a tarball holding `postmortem`.
+        case "$target" in
+          *windows*) ext=zip;    bin=postmortem.exe ;;
+          *)         ext=tar.gz; bin=postmortem ;;
+        esac
+
+        url="https://github.com/mlab-sh/postmortem/releases/download/${VERSION}/postmortem-${num}-${target}.${ext}"
         echo "Downloading $url"
         dest="${RUNNER_TEMP:-/tmp}/postmortem"
         mkdir -p "$dest"
-        curl -fsSL "$url" | tar xz -C "$dest"
+        if [ "$ext" = zip ]; then
+          # Piping a zip is not possible - it is read from the end - so it is
+          # staged first. `unzip` ships with Git Bash on the Windows images.
+          curl -fsSL "$url" -o "$dest/pm.zip"
+          # unzip exits 1 for a *warning* while still extracting everything
+          # (a zip written with backslash separators, for one). Only 2 and above
+          # are real failures, and `set -e` would abort on the warning.
+          unzip -q "$dest/pm.zip" -d "$dest" || [ "$?" -le 1 ]
+          rm -f "$dest/pm.zip"
+        else
+          curl -fsSL "$url" | tar xz -C "$dest"
+        fi
         bindir="$dest/postmortem-${num}-${target}"
-        chmod +x "$bindir/postmortem"
+        chmod +x "$bindir/$bin"
+        "$bindir/$bin" --version
         echo "$bindir" >> "$GITHUB_PATH"
 
     - name: Run postmortem gate

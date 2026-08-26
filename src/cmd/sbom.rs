@@ -27,6 +27,12 @@ pub(crate) fn run_sbom(args: cli::SbomArgs) -> Result<()> {
     let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let bom = sbom::cyclonedx(name, &deps, &timestamp);
     let out = serde_json::to_string_pretty(&bom)?;
-    cli::OutputTarget::resolve_named(args.output.as_deref(), "sbom", "json").write(&out)?;
+    cli::OutputTarget::emit(
+            true,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "sbom",
+            &out,
+        )?;
     Ok(())
 }

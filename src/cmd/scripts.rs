@@ -34,10 +34,16 @@ pub(crate) fn run_scripts(args: cli::ScriptsArgs) -> Result<()> {
     let code_scanned = analyze::scans_dependency_code(&detected);
     let approvals = scripts::read_approvals(&root);
     let report = scripts::build(&deps, &with_scripts, &approvals, &findings, code_scanned);
-    if args.json {
+    if args.json || args.webhook.is_some() {
         let out =
             serde_json::to_string_pretty(&scripts::to_json(&report, &root.display().to_string()))?;
-        cli::OutputTarget::resolve_named(args.output.as_deref(), "scripts", "json").write(&out)?;
+        cli::OutputTarget::emit(
+            args.json,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "scripts",
+            &out,
+        )?;
     } else {
         scripts::render(&report, &args.path.display().to_string());
     }

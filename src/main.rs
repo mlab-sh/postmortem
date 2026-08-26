@@ -45,6 +45,7 @@ mod typosquat;
 mod ui;
 mod vuln;
 mod watch;
+mod webhook;
 mod why;
 
 use anyhow::Result;

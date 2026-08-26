@@ -142,6 +142,52 @@ fail_on_unknown = true
 | `allow` | When non-empty, the only ids permitted. Satisfied if *any* one alternative is allowed. |
 | `fail_on_unknown` | Fail when a package has no resolvable license. Pair with `--online`, since coverage depends on the ecosystem. |
 
+## Shipping reports - `--webhook`
+
+Every command that can emit JSON accepts `--webhook <URL>`. It builds exactly
+what `--json` builds and **POSTs it** as `application/json`:
+
+```bash
+postmortem system --webhook https://collector.example/postmortem
+postmortem scan . --webhook https://collector.example/postmortem
+```
+
+| Flags | Behaviour |
+| --- | --- |
+| `--json` | Written where it always went (stdout with `-o -`, otherwise a file). |
+| `--webhook URL` | Delivered. Nothing is printed and no file is written. |
+| both | Written **and** delivered. |
+
+Asking only for the webhook writes nothing on purpose: a caller that wanted a
+file would have said so.
+
+### A failed delivery is an error
+
+```
+Error: webhook rejected the report: HTTP 500 collector is down
+```
+
+The command exits non-zero. A webhook that quietly stopped arriving is worse
+than one that never worked — something downstream is waiting for it, so a run
+that could not deliver must not report success.
+
+### Proxies and clear text
+
+Delivery goes through the [`network.proxy`](#corporate-networks---network)
+setting like every other request, so a corporate runner needs no special case.
+
+A report is an inventory of your machine or your project. Sending one over plain
+HTTP prints a warning:
+
+```
+warning: http://collector.corp/h is plain HTTP — the report travels in clear
+text. Use https:// unless the collector is on this machine.
+```
+
+A collector on `localhost` is exempt — that is a real deployment, not an
+oversight. The check recognises the address, not the name: `127.evil.test` is a
+hostname whose owner decides where it points.
+
 ## Cache
 
 All networked responses are cached under `~/.postmortem/cache/`. A published

@@ -99,6 +99,16 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
     if read.is_empty() {
         anyhow::bail!("none of the detected managers could be read: {}", unread.join("; "));
     }
+    // Each layer's own summary, always — it is computed either way, and the
+    // loader that used to carry it only prints on a terminal, so a redirected
+    // run or a CI log never saw it.
+    if read.len() > 1 {
+        use owo_colors::OwoColorize;
+        for inv in &read {
+            eprintln!("  {:>10}  {}", inv.manager.bold(), inv.summary.dimmed());
+        }
+    }
+
     let mut inv = merge_inventories(read, unread);
     // Only meaningful once every layer has been read: an Add/Remove entry is
     // orphaned relative to what the *other* managers claim.
@@ -138,6 +148,10 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
         ecos.push(inv.manager.to_string());
     }
     let mut forest = tree::build(inv.manager, &ecos, &inv.deps, args.depth);
+    // With several layers merged, a flat alphabetical list interleaves a kernel
+    // driver, an ACL reading and a registry entry. Group them so each layer can
+    // be read on its own.
+    tree::group_by_ecosystem(&mut forest);
 
     // `--online`: resolve each formula's repo reputation through the shared
     // resolver (same token/cache/scoring path as `tree --online`).
@@ -177,8 +191,12 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
         scan_system_vulns(&mut forest, &inv, args.release.as_deref(), &ui);
     }
 
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&forest)?);
+    if args.json || args.webhook.is_some() {
+        let out = serde_json::to_string_pretty(&forest)?;
+        if args.json {
+            println!("{out}");
+        }
+        crate::webhook::deliver_opt(args.webhook.as_deref(), &out)?;
     } else {
         tree::render(&forest);
     }

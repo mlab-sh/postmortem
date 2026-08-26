@@ -136,10 +136,16 @@ pub(crate) fn run_diff(args: cli::DiffArgs) -> Result<()> {
     }
 
     let (ol, nl) = (old_label, new_label);
-    if args.json {
+    if args.json || args.webhook.is_some() {
         let doc = diff::to_json(&report, &ol, &nl);
         let out = serde_json::to_string_pretty(&doc)?;
-        cli::OutputTarget::resolve_named(args.output.as_deref(), "diff", "json").write(&out)?;
+        cli::OutputTarget::emit(
+            args.json,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "diff",
+            &out,
+        )?;
     } else {
         diff::render(&report, &ol, &nl);
     }

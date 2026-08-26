@@ -190,6 +190,14 @@ pub struct ScriptsArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
+
     /// Write output to file. Pass `-` to force stdout.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
@@ -223,6 +231,14 @@ pub struct TimelineArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
+
     /// Write output to file. Pass `-` to force stdout.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
@@ -251,6 +267,14 @@ pub struct AllowlistArgs {
     /// Emit the listing as JSON instead of the terminal view.
     #[arg(long)]
     pub json: bool,
+
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
 
     /// Write output to file. Pass `-` to force stdout.
     #[arg(short, long)]
@@ -282,6 +306,14 @@ pub struct FixArgs {
     /// Emit the plan as JSON instead of the terminal view.
     #[arg(long)]
     pub json: bool,
+
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
 
     /// Write output to file. Pass `-` to force stdout.
     #[arg(short, long)]
@@ -341,6 +373,14 @@ pub struct SystemArgs {
     /// Emit the resolved forest as JSON instead of the terminal view.
     #[arg(long)]
     pub json: bool,
+
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
 
     /// Go ONLINE: resolve each package to its source repo and fetch reputation
     /// stats (Homebrew `homepage` → GitHub). Touches the network.
@@ -470,6 +510,14 @@ pub struct DiffArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
+
     /// Write output to file. Pass `-` to force stdout.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
@@ -514,6 +562,13 @@ pub struct SbomArgs {
     /// Disable the animated progress UI.
     #[arg(long)]
     pub no_progress: bool,
+    /// POST the SBOM to this URL as well as writing it.
+    ///
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
+
 }
 
 /// Arguments for `postmortem why <package> <path>`.
@@ -534,6 +589,14 @@ pub struct WhyArgs {
     /// Emit the result as JSON instead of the terminal view.
     #[arg(long)]
     pub json: bool,
+
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
 
     /// Write output to file. Pass `-` to force stdout.
     #[arg(short, long)]
@@ -576,6 +639,14 @@ pub struct AuditArgs {
     /// Emit the result as JSON instead of the terminal view.
     #[arg(long)]
     pub json: bool,
+
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
 
     /// Emit a **GitLab Dependency Scanning** report instead of the verdict.
     /// GitLab does not read SARIF; this is the format its merge-request widget
@@ -665,6 +736,14 @@ pub struct LicensesArgs {
     /// Emit the inventory as JSON.
     #[arg(long)]
     pub json: bool,
+
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
 
     /// Write output to file. Pass `-` to force stdout.
     #[arg(short, long)]
@@ -793,6 +872,14 @@ pub struct TreeArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
+
     /// Emit SARIF 2.1.0 — risk signals + known vulns as GitHub Code Scanning
     /// alerts. Combine with --online / --vulns for content.
     #[arg(long, conflicts_with_all = ["json", "html", "gitlab"])]
@@ -900,6 +987,14 @@ pub struct ScanArgs {
     /// Emit JSON
     #[arg(long, conflicts_with_all = ["html", "sarif"])]
     pub json: bool,
+
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
 
     /// Emit a self-contained HTML report
     #[arg(long, conflicts_with_all = ["json", "sarif"])]
@@ -1012,6 +1107,24 @@ impl OutputTarget {
             Some(p) => OutputTarget::File(p.to_path_buf()),
             None => OutputTarget::File(default_named(stem, ext)),
         }
+    }
+
+    /// Emit a machine-readable report.
+    ///
+    /// `--json` writes it where it always went; `--webhook` delivers it. Asking
+    /// only for the webhook delivers and writes nothing — a caller that wanted
+    /// a file would have said so.
+    pub fn emit(
+        json: bool,
+        webhook: Option<&str>,
+        user_out: Option<&Path>,
+        stem: &str,
+        data: &str,
+    ) -> Result<()> {
+        if json {
+            Self::resolve_named(user_out, stem, "json").write(data)?;
+        }
+        crate::webhook::deliver_opt(webhook, data)
     }
 
     pub fn write(&self, data: &str) -> Result<()> {

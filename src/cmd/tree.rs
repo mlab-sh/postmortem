@@ -134,14 +134,19 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
             // it: it answers a different question over the same resolution.
             if args.human {
                 let g = human::graph(&deps, &resolutions);
-                if args.json {
+                if args.json || args.webhook.is_some() {
                     let out = serde_json::to_string_pretty(&human::to_json(
                         &g,
                         &deps,
                         &root.display().to_string(),
                     ))?;
-                    cli::OutputTarget::resolve_named(args.output.as_deref(), "human", "json")
-                        .write(&out)?;
+                    cli::OutputTarget::emit(
+            args.json,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "human",
+            &out,
+        )?;
                 } else {
                     human::render(&g, &deps, &root.display().to_string());
                 }
@@ -242,12 +247,18 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
     // One document for every target: a bare object for a single tree (the
     // long-standing shape), an array / multi-run SARIF under --allow-multiple.
     if machine && !machine_trees.is_empty() {
-        if args.json {
+        if args.json || args.webhook.is_some() {
             let out = match args.allow_multiple {
                 true => serde_json::to_string_pretty(&machine_trees)?,
                 false => serde_json::to_string_pretty(&machine_trees[0])?,
             };
-            cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "json").write(&out)?;
+            cli::OutputTarget::emit(
+            args.json,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "tree",
+            &out,
+        )?;
         } else if args.html {
             // One document per target: HTML has no multi-run container the way
             // SARIF does, so several targets are concatenated as separate pages.
@@ -270,7 +281,13 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
                 &chrono::Utc::now().to_rfc3339(),
                 Some(&plan),
             )?;
-            cli::OutputTarget::resolve_named(args.output.as_deref(), "tree", "json").write(&out)?;
+            cli::OutputTarget::emit(
+            args.json,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "tree",
+            &out,
+        )?;
         } else {
             let out = match args.allow_multiple {
                 true => report::sarif::render_trees(&machine_trees)?,

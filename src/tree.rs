@@ -613,6 +613,68 @@ fn version_suffix(version: &str) -> String {
     }
 }
 
+/// Regroup a flat forest under one synthetic node per ecosystem.
+///
+/// A merged Windows inventory is a thousand-odd roots from eleven layers, and
+/// rendering them as one alphabetical list interleaves a kernel driver, an ACL
+/// reading and a registry uninstall entry with no way to read any of them. The
+/// grouping node carries the layer's name and its own count.
+///
+/// No-op on a single-ecosystem forest: a project's tree is already meaningful.
+pub fn group_by_ecosystem(tree: &mut Tree) {
+    let mut ecosystems: Vec<String> = Vec::new();
+    for r in &tree.roots {
+        if !ecosystems.contains(&r.ecosystem) {
+            ecosystems.push(r.ecosystem.clone());
+        }
+    }
+    if ecosystems.len() < 2 {
+        return;
+    }
+    ecosystems.sort();
+
+    let mut roots = std::mem::take(&mut tree.roots);
+    for eco in ecosystems {
+        let (mine, rest): (Vec<Node>, Vec<Node>) =
+            roots.into_iter().partition(|n| n.ecosystem == eco);
+        roots = rest;
+        // The group is a heading, not a package: no version, no severity of its
+        // own, so it never enters a tally or a flagged list.
+        tree.roots.push(Node {
+            name: format!("{eco} ({} entries)", mine.len()),
+            version: String::new(),
+            ecosystem: eco,
+            direct: true,
+            deduped: false,
+            truncated: false,
+            repo: None,
+            stars: None,
+            signals: Vec::new(),
+            severity: None,
+            risk: None,
+            dep: None,
+            language: None,
+            languages: None,
+            children: mine,
+        });
+    }
+}
+
+/// Does this forest have any dependency edges at all?
+///
+/// A machine inventory is flat by nature: no Windows package manager publishes
+/// a dependency graph, so every node is a root. A "dependency risk" score over
+/// that is a number with nothing behind it.
+fn has_edges(tree: &Tree) -> bool {
+    // Looks for a *grandchild*, not a child: `group_by_ecosystem` puts a
+    // heading node above each layer, which would otherwise make every flat
+    // inventory look like it had a graph.
+    tree.roots
+        .iter()
+        .flat_map(|r| r.children.iter())
+        .any(|c| !c.children.is_empty())
+}
+
 /// gochi's closing recap: the overall scores and a per-category headcount,
 /// deduped by name@version. Packages flagged only by **soft** signals (version
 /// drift / persistence) get their own yellow lines instead of the amber
@@ -628,12 +690,25 @@ fn render_recap(tree: &Tree) {
     let yellow = |s: String| s.truecolor(YELLOW.0, YELLOW.1, YELLOW.2).to_string();
 
     println!("\n  {}  {}", mood.paint(), "gochi's recap".bold());
-    println!(
-        "    {}  risk {}/100 · dep {}/100",
-        "overall".dimmed(),
-        paint_score(risk, risk_color(risk)),
-        paint_score(dep, dep_color(dep)),
-    );
+    // `dep` accumulates points per flagged dependency, so it saturates at 100
+    // after a handful of findings. That is meaningful for a project with a few
+    // dozen dependencies and meaningless for a machine inventory of a thousand
+    // flat entries — where there is no dependency graph to score at all.
+    if has_edges(tree) {
+        println!(
+            "    {}  risk {}/100 · dep {}/100",
+            "overall".dimmed(),
+            paint_score(risk, risk_color(risk)),
+            paint_score(dep, dep_color(dep)),
+        );
+    } else {
+        println!(
+            "    {}  risk {}/100 {}",
+            "overall".dimmed(),
+            paint_score(risk, risk_color(risk)),
+            "· no dependency graph to score".dimmed()
+        );
+    }
     println!(
         "    {}  {}   {}",
         pad(c.high).red().bold(),
@@ -802,7 +877,11 @@ fn render_node(node: &Node, prefix: &str, is_last: bool, scored: bool) {
         let tag = format!("⚠ {}", node.signals.join(", "));
         label.push_str(&format!(" {}", tint(&tag, node.severity, &node.signals)));
     }
-    if scored {
+    // A grouping heading is a title, not a package: it has no version and no
+    // signals of its own, so a `(risk:dep)` beside it reads as a score for the
+    // whole layer, which it is not.
+    let is_heading = node.version.is_empty() && node.signals.is_empty() && !node.children.is_empty();
+    if scored && !is_heading {
         let scores = format!("({}:{})", node.risk.unwrap_or(0), node.dep.unwrap_or(0));
         label.push_str(&format!(" {}", paint(&scores, node)));
         // Repo language, after the scores: `(Rust)`, a breakdown
@@ -867,19 +946,58 @@ fn render_flagged(tree: &Tree) {
     let mut rows: Vec<(&(String, String), &Flag)> = flagged.iter().collect();
     rows.sort_by(|(ka, a), (kb, b)| b.severity.cmp(&a.severity).then_with(|| ka.cmp(kb)));
 
+    // The repo column is only useful where a repo exists. Every Windows node
+    // resolves to none, so printing `[—]` on each line is pure noise there.
+    let show_repo = rows.iter().any(|(_, f)| f.repo.is_some());
+
     println!(
         "\n{}",
-        format!("⚠ {} flagged package(s)", flagged.len()).bold()
+        format!(
+            "⚠ {} package(s) flagged — medium and above; the recap below counts every severity",
+            flagged.len()
+        )
+        .bold()
     );
-    for ((name, version), flag) in rows {
-        let repo = flag.repo.as_deref().unwrap_or("—");
-        println!(
-            "  {}{} {} {}",
-            tint(name, flag.severity, &flag.signals),
-            version_suffix(version).dimmed(),
-            format!("[{repo}]").dimmed(),
-            tint(&flag.signals.join(", "), flag.severity, &flag.signals)
-        );
+
+    // One condition affecting many packages is one thing to read, not many: a
+    // stock Windows machine has eighteen scheduled tasks sharing a single
+    // finding, and as eighteen lines it buries everything else.
+    const FOLD_AT: usize = 3;
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for (i, (_, flag)) in rows.iter().enumerate() {
+        let sig = flag.signals.join(", ");
+        match groups.iter_mut().find(|(s, _)| *s == sig) {
+            Some((_, members)) => members.push(i),
+            None => groups.push((sig, vec![i])),
+        }
+    }
+
+    for (sig, members) in &groups {
+        let severity = rows[members[0]].1.severity;
+        if members.len() >= FOLD_AT {
+            let sample: Vec<&str> = members.iter().take(3).map(|i| rows[*i].0.0.as_str()).collect();
+            println!(
+                "  {} {}",
+                tint(&format!("{} packages —", members.len()), severity, std::slice::from_ref(sig)),
+                format!("{sig} (e.g. {})", sample.join(", ")).dimmed()
+            );
+            continue;
+        }
+        for i in members {
+            let ((name, version), flag) = rows[*i];
+            let repo = if show_repo {
+                format!(" {}", format!("[{}]", flag.repo.as_deref().unwrap_or("—")).dimmed())
+            } else {
+                String::new()
+            };
+            println!(
+                "  {}{}{} {}",
+                tint(name, flag.severity, &flag.signals),
+                version_suffix(version).dimmed(),
+                repo,
+                tint(&flag.signals.join(", "), flag.severity, &flag.signals)
+            );
+        }
     }
 }
 
@@ -918,6 +1036,87 @@ mod tests {
         let mut node = n(name, Some(sev), vec![]);
         node.signals = signals.iter().map(|s| s.to_string()).collect();
         node
+    }
+
+    /// `dep` accumulates points per flagged dependency and saturates after a
+    /// handful, so it is meaningless over a flat machine inventory — and the
+    /// grouping heading must not make one look like a graph.
+    #[test]
+    fn a_flat_inventory_has_no_dependency_graph_to_score() {
+        let flat = tree_of(vec![n("a", None, vec![]), n("b", None, vec![])]);
+        assert!(!has_edges(&flat));
+
+        let mut grouped = tree_of(vec![
+            {
+                let mut x = n("a", None, vec![]);
+                x.ecosystem = "winget".into();
+                x
+            },
+            {
+                let mut y = n("b", None, vec![]);
+                y.ecosystem = "msix".into();
+                y
+            },
+        ]);
+        group_by_ecosystem(&mut grouped);
+        assert!(!has_edges(&grouped), "a heading is not an edge");
+
+        // A real dependency tree does have one.
+        let real = tree_of(vec![n("root", None, vec![n("child", None, vec![n("grand", None, vec![])])])]);
+        assert!(has_edges(&real));
+    }
+
+    /// Eleven layers rendered as one alphabetical list interleave a kernel
+    /// driver, an ACL reading and a registry entry.
+    #[test]
+    fn a_merged_forest_is_grouped_one_heading_per_layer() {
+        let mk = |name: &str, eco: &str| {
+            let mut x = n(name, None, vec![]);
+            x.ecosystem = eco.into();
+            x
+        };
+        let mut t = tree_of(vec![
+            mk("svc1", "service"),
+            mk("pkg1", "winget"),
+            mk("svc2", "service"),
+        ]);
+        group_by_ecosystem(&mut t);
+
+        assert_eq!(t.roots.len(), 2, "one heading per ecosystem");
+        // Sorted, so the output is stable between runs.
+        assert!(t.roots[0].name.starts_with("service"));
+        assert!(t.roots[0].name.contains("2 entries"));
+        assert_eq!(t.roots[0].children.len(), 2);
+        assert!(t.roots[1].name.starts_with("winget"));
+
+        // A heading carries no severity of its own, so it enters no tally.
+        assert!(t.roots.iter().all(|r| r.severity.is_none() && r.signals.is_empty()));
+    }
+
+    /// A heading carries no score of its own: `(0:9)` beside `arp (162 entries)`
+    /// reads as a verdict on the whole layer, which it is not.
+    #[test]
+    fn a_grouping_heading_is_not_a_scored_node() {
+        let mut t = tree_of(vec![
+            { let mut x = n("a", Some(Severity::High), vec![]); x.ecosystem = "winget".into(); x },
+            { let mut y = n("b", Some(Severity::High), vec![]); y.ecosystem = "msix".into(); y },
+        ]);
+        group_by_ecosystem(&mut t);
+        for h in &t.roots {
+            assert!(h.version.is_empty() && h.signals.is_empty() && !h.children.is_empty(),
+                    "the heading must be recognisable as one");
+            assert!(h.risk.is_none(), "and carry no risk of its own");
+        }
+    }
+
+    /// A project's own tree is already meaningful; grouping it would add a
+    /// pointless level.
+    #[test]
+    fn a_single_ecosystem_forest_is_left_alone() {
+        let mut t = tree_of(vec![n("a", None, vec![]), n("b", None, vec![])]);
+        let before = t.roots.len();
+        group_by_ecosystem(&mut t);
+        assert_eq!(t.roots.len(), before);
     }
 
     /// Not every node is a package. An auto-start entry has no version, and

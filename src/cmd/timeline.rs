@@ -40,9 +40,15 @@ pub(crate) fn run_timeline(args: cli::TimelineArgs) -> Result<()> {
     };
     let t = timeline::build(&doc, &args.package, installed.as_deref());
     phase.done(format!("{} release(s)", t.releases.len()));
-    if args.json {
+    if args.json || args.webhook.is_some() {
         let out = serde_json::to_string_pretty(&timeline::to_json(&t))?;
-        cli::OutputTarget::resolve_named(args.output.as_deref(), "timeline", "json").write(&out)?;
+        cli::OutputTarget::emit(
+            args.json,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "timeline",
+            &out,
+        )?;
     } else {
         timeline::render(&t, args.all);
     }

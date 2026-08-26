@@ -9,7 +9,6 @@
 //!
 //! So privilege is scored **in combination** with provenance, never alone.
 
-use super::asep::split_command;
 use super::*;
 
 /// One scheduled task, as emitted by [`PS_TASKS`].
@@ -102,16 +101,6 @@ impl Task {
             .iter()
             .any(|t| matches!(t.as_str(), "Boot" | "Logon" | "SessionStateChange"))
     }
-}
-
-/// Normalise a task's `Execute` value.
-///
-/// Task XML carries forward slashes as readily as backslashes — the reference
-/// machine's Ubisoft task reads `C:/Program Files (x86)/…/upc.exe` — and the
-/// value may or may not be quoted.
-pub(crate) fn normalise_target(execute: &str) -> String {
-    let (path, _) = split_command(execute.trim());
-    path.replace('/', "\\")
 }
 
 // --- scoring ------------------------------------------------------------------
@@ -262,11 +251,7 @@ foreach ($t in Get-ScheduledTask) {
   $a = @($t.Actions)[0]
   $kind = if ($a.CimClass.CimClassName -eq 'MSFT_TaskComHandlerAction') { 'ComHandler' } else { 'Exec' }
   $exec = [string]$a.Execute
-  $target = ''
-  if ($exec) {
-    $e = $exec.Trim('"').Replace('/', '\')
-    $target = [Environment]::ExpandEnvironmentVariables($e)
-  }
+  $target = Resolve-Image $exec
   # The definition file is the task: whoever can rewrite it owns what it runs.
   $file = Join-Path $env:WINDIR ('System32\Tasks' + $t.TaskPath + $t.TaskName)
   $triggers = @()
@@ -311,7 +296,7 @@ pub(crate) fn parse_tasks(stdout: &str) -> Vec<Task> {
 }
 
 pub fn task_inventory(opts: Opts) -> Result<Inventory> {
-    let raw = powershell(PS_TASKS).context("enumerating scheduled tasks")?;
+    let raw = powershell(&format!("{}{}", super::PS_RESOLVE_IMAGE, PS_TASKS)).context("enumerating scheduled tasks")?;
     let tasks = parse_tasks(&raw);
     if tasks.is_empty() {
         anyhow::bail!(
@@ -435,17 +420,6 @@ mod tests {
     /// Task XML carries forward slashes as readily as backslashes — the
     /// reference machine's Ubisoft task reads `C:/Program Files (x86)/…`.
     #[test]
-    fn a_target_is_normalised_whatever_slashes_it_uses() {
-        assert_eq!(
-            normalise_target("C:/Program Files (x86)/Ubisoft/Ubisoft Game Launcher/upc.exe"),
-            r"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\upc.exe"
-        );
-        assert_eq!(
-            normalise_target(r#""C:\Program Files\Thing\run.exe" --flag"#),
-            r"C:\Program Files\Thing\run.exe"
-        );
-    }
-
     /// The discriminator the surface actually offers: 243 of 252 tasks live
     /// under `\Microsoft\`.
     #[test]
@@ -530,7 +504,7 @@ mod tests {
         let mut ubisoft = task(r"\Ubisoft\", "alice", "Limited", &["Logon"]);
         ubisoft.execute = "C:/Program Files (x86)/Ubisoft/Ubisoft Game Launcher/upc.exe".into();
         ubisoft.arguments = "-upc_scheduled_task update".into();
-        ubisoft.target = normalise_target(&ubisoft.execute);
+        ubisoft.target = r"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\upc.exe".into();
         assert!(signals_for(&ubisoft).is_empty(), "{:?}", signals_for(&ubisoft).iter().map(|s| s.label.clone()).collect::<Vec<_>>());
     }
 

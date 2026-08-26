@@ -50,7 +50,7 @@ pub(crate) fn run_allowlist(args: cli::AllowlistArgs) -> Result<()> {
         .as_ref()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| format!("{} (no postmortem.conf)", root.display()));
-    if args.json {
+    if args.json || args.webhook.is_some() {
         let doc = serde_json::json!({
             "schema_version": 1,
             "config": where_,
@@ -74,8 +74,13 @@ pub(crate) fn run_allowlist(args: cli::AllowlistArgs) -> Result<()> {
             })).collect::<Vec<_>>(),
         });
         let out = serde_json::to_string_pretty(&doc)?;
-        cli::OutputTarget::resolve_named(args.output.as_deref(), "allowlist", "json")
-            .write(&out)?;
+        cli::OutputTarget::emit(
+            args.json,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "allowlist",
+            &out,
+        )?;
     } else {
         render_allowlist(&items, &where_, lapsed, soon, args.expiring_in);
     }

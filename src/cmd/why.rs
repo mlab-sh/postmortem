@@ -34,20 +34,31 @@ pub(crate) fn run_why(args: cli::WhyArgs) -> Result<()> {
         let Some(b) = blast::analyze(&deps, &findings, &args.package, code_scanned) else {
             anyhow::bail!("{} is not in the dependency graph", args.package);
         };
-        if args.json {
+        if args.json || args.webhook.is_some() {
             let out = serde_json::to_string_pretty(&blast::to_json(&b, &label))?;
-            cli::OutputTarget::resolve_named(args.output.as_deref(), "blast", "json")
-                .write(&out)?;
+            cli::OutputTarget::emit(
+            args.json,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "blast",
+            &out,
+        )?;
         } else {
             blast::render(&b, &label);
         }
         return Ok(());
     }
 
-    if args.json {
+    if args.json || args.webhook.is_some() {
         let doc = why::to_json(&deps, &args.package, &label);
         let out = serde_json::to_string_pretty(&doc)?;
-        cli::OutputTarget::resolve_named(args.output.as_deref(), "why", "json").write(&out)?;
+        cli::OutputTarget::emit(
+            args.json,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "why",
+            &out,
+        )?;
     } else {
         why::render(&deps, &args.package, &label);
     }

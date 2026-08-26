@@ -289,13 +289,15 @@ pub fn flag_unclaimed(inv: &mut Inventory) {
         if hidden {
             continue;
         }
-        let name = dep.name.to_ascii_lowercase();
-        let by_code = dep
-            .integrity
-            .as_deref()
-            .map(str::to_ascii_lowercase)
-            .is_some_and(|c| claims.contains(&c));
-        if by_code || claims.contains(&name) {
+        // Reuse the join rather than restating it: `is_claimed` is what the
+        // tests exercise, and a second copy here would be the next place the
+        // two drift apart.
+        let entry = ArpEntry {
+            name: dep.name.clone(),
+            key: dep.integrity.clone().unwrap_or_default(),
+            ..ArpEntry::default()
+        };
+        if is_claimed(&entry, &claims) {
             continue;
         }
         push_signal(

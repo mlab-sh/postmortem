@@ -127,38 +127,6 @@ pub(super) fn lolbin_in(text: &str) -> Option<&'static str> {
 
 // --- command line parsing -----------------------------------------------------
 
-/// Split an auto-start command line into its executable and its arguments.
-///
-/// Registry commands are not shell-quoted consistently: `"C:\a b\x.exe" --flag`
-/// is quoted, `C:\Windows\x.exe --flag` is not, and an unquoted path may itself
-/// contain spaces. A quoted path is authoritative; otherwise the longest
-/// leading prefix ending in a recognised executable extension wins, which is
-/// how Windows itself resolves the ambiguity.
-pub(super) fn split_command(command: &str) -> (String, String) {
-    let c = command.trim();
-    if let Some(rest) = c.strip_prefix('"') {
-        return match rest.split_once('"') {
-            Some((path, args)) => (path.to_string(), args.trim().to_string()),
-            None => (rest.to_string(), String::new()),
-        };
-    }
-    const EXTS: &[&str] = &[".exe", ".com", ".bat", ".cmd", ".scr", ".pif"];
-    let lower = c.to_ascii_lowercase();
-    for ext in EXTS {
-        if let Some(at) = lower.find(ext) {
-            let end = at + ext.len();
-            // Only a real boundary counts, so `setup.exec` is not `setup.exe`.
-            if lower[end..].starts_with([' ', '\t']) || end == lower.len() {
-                return (c[..end].to_string(), c[end..].trim().to_string());
-            }
-        }
-    }
-    match c.split_once(char::is_whitespace) {
-        Some((path, args)) => (path.to_string(), args.trim().to_string()),
-        None => (c.to_string(), String::new()),
-    }
-}
-
 // --- scoring ------------------------------------------------------------------
 
 /// The signals one entry earns.
@@ -252,22 +220,6 @@ pub(crate) fn winlogon_is_default(name: &str, value: &str) -> bool {
 const PS_LOGON: &str = r#"
 $ErrorActionPreference = 'SilentlyContinue'
 
-function Resolve-Target([string]$cmd) {
-  $c = $cmd.Trim()
-  if ($c.StartsWith('"')) {
-    $end = $c.IndexOf('"', 1)
-    if ($end -gt 0) { return $c.Substring(1, $end - 1) }
-    return $c.Trim('"')
-  }
-  foreach ($ext in @('.exe','.com','.bat','.cmd','.scr','.pif')) {
-    $i = $c.ToLower().IndexOf($ext)
-    if ($i -ge 0) {
-      $end = $i + $ext.Length
-      if ($end -eq $c.Length -or $c[$end] -eq ' ') { return $c.Substring(0, $end) }
-    }
-  }
-  return ($c -split '\s+')[0]
-}
 
 function Acl-Writers([string]$p) {
   # Emit the raw ACL facts; the decision of what counts as an unprivileged
@@ -288,13 +240,7 @@ function Acl-Writers([string]$p) {
 
 function Emit($location, $hive, $name, $command) {
   if (-not $command) { return }
-  $t = [Environment]::ExpandEnvironmentVariables((Resolve-Target $command))
-  # A bare name (no separator) is resolved by Windows through PATH at run time
-  # — `Shell = explorer.exe` is the shipped value, not a dangling reference.
-  if ($t -and $t -notmatch '[\\/]') {
-    $resolved = (Get-Command $t -ErrorAction SilentlyContinue).Source
-    if ($resolved) { $t = $resolved }
-  }
+  $t = Resolve-Image $command
   $exists = $t -and (Test-Path -LiteralPath $t)
   [pscustomobject]@{
     Location    = $location
@@ -379,7 +325,7 @@ pub(crate) fn parse_entries(stdout: &str) -> Vec<AsepEntry> {
 }
 
 pub fn asep_inventory(opts: Opts) -> Result<Inventory> {
-    let raw = powershell(PS_LOGON).context("enumerating logon auto-start points")?;
+    let raw = powershell(&format!("{}{}", super::PS_RESOLVE_IMAGE, PS_LOGON)).context("enumerating logon auto-start points")?;
     let entries = parse_entries(&raw);
 
     let mut signals: HashMap<String, Vec<SysSignal>> = HashMap::new();
@@ -479,8 +425,19 @@ pub fn asep_inventory(opts: Opts) -> Result<Inventory> {
 mod tests {
     use super::*;
 
+    /// The target is resolved by the enumerator, so a test states it rather
+    /// than deriving it: quoting and PATH lookup are PowerShell's job now.
     fn entry(hive: &str, command: &str, exists: bool, writable: bool) -> AsepEntry {
-        let (target, _) = split_command(command);
+        let target = command
+            .trim()
+            .trim_start_matches('"')
+            .split('"')
+            .next()
+            .unwrap_or("")
+            .split(' ')
+            .next()
+            .unwrap_or("")
+            .to_string();
         AsepEntry {
             location: "HKLM\\Run".into(),
             name: "x".into(),
@@ -499,41 +456,9 @@ mod tests {
     /// Verbatim `Run` values from the reference machine. Registry commands are
     /// not quoted consistently, and an unquoted path may itself contain spaces.
     #[test]
-    fn a_command_line_is_split_into_its_executable_and_arguments() {
-        // Unquoted, no arguments.
-        assert_eq!(
-            split_command(r"C:\WINDOWS\system32\SecurityHealthSystray.exe"),
-            (r"C:\WINDOWS\system32\SecurityHealthSystray.exe".into(), String::new())
-        );
-        // Quoted path containing spaces, with arguments.
-        let (p, a) = split_command(
-            r#""C:\Program Files (x86)\Microsoft\EdgeWebView\Application\151.0.4129.107\Installer\setup.exe" --msedgewebview --on-logon"#,
-        );
-        assert!(p.ends_with(r"Installer\setup.exe"), "{p}");
-        assert_eq!(a, "--msedgewebview --on-logon");
-        // Arguments that themselves contain quotes.
-        let (p, a) = split_command(
-            r#""C:\Users\alice\AppData\Local\Discord\Update.exe" --processStart Discord.exe --process-start-args "--start-inactive""#,
-        );
-        assert!(p.ends_with(r"Discord\Update.exe"), "{p}");
-        assert!(a.contains("--start-inactive"));
-    }
-
     /// An unquoted path with spaces is the case that defeats a naive split on
     /// whitespace: the extension is the boundary Windows itself uses.
     #[test]
-    fn an_unquoted_path_with_spaces_is_split_at_the_extension() {
-        let (p, a) = split_command(r"C:\Program Files\Thing\run.exe --flag");
-        assert_eq!(p, r"C:\Program Files\Thing\run.exe");
-        assert_eq!(a, "--flag");
-
-        // A bare executable name resolved through PATH.
-        assert_eq!(split_command("explorer.exe"), ("explorer.exe".into(), String::new()));
-        // An extension inside a longer word is not a boundary.
-        let (p, _) = split_command(r"C:\x\setup.exectomy\a.exe");
-        assert!(p.ends_with(r"a.exe"), "{p}");
-    }
-
     /// The departure from a flat rule, and the reason this layer stays usable:
     /// an HKCU entry runs as the user who can write to that directory, so
     /// nothing is crossed. The same directory under HKLM means an unprivileged

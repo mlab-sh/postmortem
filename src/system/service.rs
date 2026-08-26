@@ -114,28 +114,6 @@ pub(crate) fn is_unquoted_with_space(image: &str) -> bool {
     path.contains(' ')
 }
 
-/// The paths Windows would try before the real target, given an unquoted image
-/// path with spaces.
-///
-/// `C:\Program Files\A B\svc.exe` is searched as `C:\Program.exe`, then
-/// `C:\Program Files\A.exe`, and so on. Each candidate's *directory* is what an
-/// attacker needs to be able to write to.
-pub(crate) fn intercept_candidates(path: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut acc = String::new();
-    for (i, part) in path.split(' ').enumerate() {
-        if i > 0 {
-            acc.push(' ');
-        }
-        acc.push_str(part);
-        // The final segment is the real target, not an intercept.
-        if acc.len() < path.len() {
-            out.push(format!("{acc}.exe"));
-        }
-    }
-    out
-}
-
 // --- scoring ------------------------------------------------------------------
 
 /// Placeholders Windows and vendors leave in `FailureCommand`. They name no
@@ -244,24 +222,7 @@ foreach ($k in Get-ChildItem $root) {
   $image = [string]$p.ImagePath
   if (-not $image) { continue }
 
-  # Normalise: strip a leading quote, expand \SystemRoot\ and %SystemRoot%,
-  # and treat a system32-relative path as absolute.
-  $exe = $image.Trim()
-  if ($exe.StartsWith('"')) {
-    $end = $exe.IndexOf('"', 1)
-    if ($end -gt 0) { $exe = $exe.Substring(1, $end - 1) }
-  } else {
-    foreach ($ext in @('.exe','.sys','.dll')) {
-      $i = $exe.ToLower().IndexOf($ext)
-      if ($i -ge 0) {
-        $end = $i + $ext.Length
-        if ($end -eq $exe.Length -or $exe[$end] -eq ' ') { $exe = $exe.Substring(0, $end); break }
-      }
-    }
-  }
-  $exe = $exe -replace '^\\\?\?\\', '' -replace '^\\SystemRoot', $env:WINDIR
-  $exe = [Environment]::ExpandEnvironmentVariables($exe)
-  if ($exe -match '^system32|^SysWOW64') { $exe = Join-Path $env:WINDIR $exe }
+  $exe = Resolve-Image $image
 
   # For an unquoted path with spaces, the directories Windows searches first.
   $intercept = @()
@@ -330,7 +291,7 @@ pub(crate) fn parse_services(stdout: &str) -> Vec<Service> {
 }
 
 pub fn service_inventory(opts: Opts) -> Result<Inventory> {
-    let raw = powershell(PS_SERVICES).context("enumerating services and drivers")?;
+    let raw = powershell(&format!("{}{}", super::PS_RESOLVE_IMAGE, PS_SERVICES)).context("enumerating services and drivers")?;
     let services = parse_services(&raw);
     if services.is_empty() {
         anyhow::bail!(
@@ -480,16 +441,6 @@ mod tests {
     /// Windows tries each space-separated prefix in turn. Those are the
     /// positions an attacker needs to be able to write to.
     #[test]
-    fn the_search_path_is_every_prefix_before_the_target() {
-        let got = intercept_candidates(r"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher Core\UpcElevationService.exe");
-        assert_eq!(got[0], r"C:\Program.exe");
-        assert_eq!(got[1], r"C:\Program Files.exe");
-        assert!(got.iter().any(|c| c == r"C:\Program Files (x86)\Ubisoft\Ubisoft.exe"));
-        // The real target is not one of its own intercepts.
-        assert!(!got.iter().any(|c| c.ends_with("UpcElevationService.exe")));
-        assert!(intercept_candidates(r"C:\NoSpaces\svc.exe").is_empty());
-    }
-
     /// An unquoted path is worth fixing either way, but only exploitable when
     /// something on the search path can be written to.
     #[test]

@@ -71,6 +71,7 @@ manager.
 | `--release <id:ver>` | Override the detected OS release for the vuln lookup (e.g. `debian:12`). |
 | `--depth <N>` | Limit tree depth. |
 | `--json` | Emit the resolved forest as JSON. |
+| `--webhook <URL>` | POST that JSON to a collector — see [Configuration](Configuration). |
 | `--manager <name>` | Audit this manager instead of the detected default. |
 | `--deep` | Also read the machine's [network posture](Network-Posture) (Windows). |
 | `--no-signatures` | Skip [binary trust](Binary-Trust) verification (Windows). |

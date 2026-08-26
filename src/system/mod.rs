@@ -437,6 +437,49 @@ fn is_unprivileged_sid(rest: &str) -> bool {
     false
 }
 
+/// The PowerShell helper every Windows layer uses to turn a raw command line
+/// into an absolute path.
+///
+/// Shared on purpose. Three layers resolved targets with three copies of this
+/// logic and each learned different lessons: `asep` resolved bare names through
+/// `PATH`, `service` expanded `\??\` and `\SystemRoot\`, `task` did neither —
+/// which is why two Windows tasks (`sc.exe`, `BthUdTask.exe`) were reported as
+/// pointing at missing files.
+pub(super) const PS_RESOLVE_IMAGE: &str = r#"
+function Resolve-Image([string]$cmd) {
+  if (-not $cmd) { return '' }
+  $c = $cmd.Trim()
+
+  # A quoted path is authoritative.
+  if ($c.StartsWith('"')) {
+    $end = $c.IndexOf('"', 1)
+    $c = if ($end -gt 0) { $c.Substring(1, $end - 1) } else { $c.Trim('"') }
+  } else {
+    # Otherwise the executable ends at its extension, not at the first space:
+    # `C:\Program Files\A B\x.exe --flag` must not split on the space.
+    foreach ($ext in @('.exe','.sys','.dll','.com','.bat','.cmd','.scr','.pif')) {
+      $i = $c.ToLower().IndexOf($ext)
+      if ($i -ge 0) {
+        $end = $i + $ext.Length
+        if ($end -eq $c.Length -or $c[$end] -eq ' ') { $c = $c.Substring(0, $end); break }
+      }
+    }
+  }
+
+  $c = $c -replace '^\\\?\?\\', '' -replace '^\\SystemRoot', $env:WINDIR
+  $c = [Environment]::ExpandEnvironmentVariables($c).Replace('/', '\')
+  if ($c -match '^system32|^SysWOW64') { $c = Join-Path $env:WINDIR $c }
+
+  # A bare name carries no directory: Windows resolves it through PATH at run
+  # time, so it is not a dangling reference.
+  if ($c -and $c -notmatch '[\\/]') {
+    $r = (Get-Command $c -ErrorAction SilentlyContinue).Source
+    if ($r) { $c = $r }
+  }
+  return $c
+}
+"#;
+
 /// A signal key scoped to one ecosystem.
 ///
 /// The separator is a control character so it cannot occur in a package name —

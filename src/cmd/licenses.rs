@@ -42,10 +42,16 @@ pub(crate) fn run_licenses(args: cli::LicensesArgs) -> Result<()> {
     };
     let inventory = license::inventory(&deps);
     let violations = license::evaluate(&deps, &policy);
-    if args.json {
+    if args.json || args.webhook.is_some() {
         let doc = license::inventory_json(&inventory, &violations, &deps);
         let out = serde_json::to_string_pretty(&doc)?;
-        cli::OutputTarget::resolve_named(args.output.as_deref(), "licenses", "json").write(&out)?;
+        cli::OutputTarget::emit(
+            args.json,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "licenses",
+            &out,
+        )?;
     } else {
         render_licenses(
             &inventory,

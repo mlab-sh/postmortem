@@ -57,9 +57,15 @@ pub(crate) fn run_fix(args: cli::FixArgs) -> Result<()> {
         },
         format!("{} package(s) to fix", plan.remedies.len()),
     );
-    if args.json {
+    if args.json || args.webhook.is_some() {
         let out = serde_json::to_string_pretty(&fix::to_json(&plan, &root.display().to_string()))?;
-        cli::OutputTarget::resolve_named(args.output.as_deref(), "fix", "json").write(&out)?;
+        cli::OutputTarget::emit(
+            args.json,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "fix",
+            &out,
+        )?;
     } else {
         fix::render(&plan, &args.path.display().to_string());
         if !unscannable.is_empty() {

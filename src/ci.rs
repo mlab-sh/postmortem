@@ -79,15 +79,26 @@ impl fmt::Display for Platform {
 /// step; if the release layout changes, this and `action.yml` are the two places
 /// to update, and the tests below assert they agree.
 const INSTALL: &str = r#"set -euo pipefail
+# On a Windows runner this script runs under Git Bash, where `uname -s` reports
+# MINGW64_NT-… rather than anything containing "Windows".
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64)   target=x86_64-unknown-linux-gnu ;;
   Linux-aarch64)  target=aarch64-unknown-linux-gnu ;;
   Darwin-x86_64)  target=x86_64-apple-darwin ;;
   Darwin-arm64)   target=aarch64-apple-darwin ;;
+  MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64) target=x86_64-pc-windows-msvc ;;
   *) echo "unsupported runner $(uname -s)-$(uname -m)" >&2; exit 1 ;;
 esac
-url="https://github.com/mlab-sh/postmortem/releases/download/{version}/postmortem-{num}-${target}.tar.gz"
-curl -fsSL "$url" | tar xz
+case "$target" in *windows*) ext=zip ;; *) ext=tar.gz ;; esac
+url="https://github.com/mlab-sh/postmortem/releases/download/{version}/postmortem-{num}-${target}.${ext}"
+if [ "$ext" = zip ]; then
+  curl -fsSL "$url" -o pm.zip
+  # unzip exits 1 on a warning while still extracting everything.
+  unzip -q pm.zip || [ "$?" -le 1 ]
+  rm -f pm.zip
+else
+  curl -fsSL "$url" | tar xz
+fi
 export PATH="$PWD/postmortem-{num}-${target}:$PATH"
 postmortem --version"#;
 
@@ -433,14 +444,21 @@ mod tests {
             "aarch64-unknown-linux-gnu",
             "x86_64-apple-darwin",
             "aarch64-apple-darwin",
+            "x86_64-pc-windows-msvc",
         ] {
             assert!(action.contains(target), "action.yml lost target {target}");
             assert!(INSTALL.contains(target), "INSTALL lost target {target}");
         }
         assert!(
-            action.contains("releases/download/${VERSION}/postmortem-${num}-${target}.tar.gz"),
+            action.contains("releases/download/${VERSION}/postmortem-${num}-${target}.${ext}"),
             "action.yml release URL changed — update INSTALL to match"
         );
+        // Windows ships a zip; everything else a tarball. Both copies have to
+        // know that, or a Windows runner downloads an archive that is not there.
+        for copy in [action, INSTALL] {
+            assert!(copy.contains("ext=zip"), "a copy lost the Windows archive form");
+            assert!(copy.contains("ext=tar.gz"), "a copy lost the tarball form");
+        }
     }
 
     #[test]

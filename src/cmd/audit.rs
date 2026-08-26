@@ -164,11 +164,23 @@ pub(crate) fn run_audit(args: cli::AuditArgs) -> Result<()> {
             &chrono::Utc::now().to_rfc3339(),
             Some(&plan),
         )?;
-        cli::OutputTarget::resolve_named(args.output.as_deref(), "audit", "json").write(&out)?;
-    } else if args.json {
+        cli::OutputTarget::emit(
+            args.json,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "audit",
+            &out,
+        )?;
+    } else if args.json || args.webhook.is_some() {
         let doc = audit::to_json(&summary, &args.path.display().to_string(), gate_tripped);
         let out = serde_json::to_string_pretty(&doc)?;
-        cli::OutputTarget::resolve_named(args.output.as_deref(), "audit", "json").write(&out)?;
+        cli::OutputTarget::emit(
+            args.json,
+            args.webhook.as_deref(),
+            args.output.as_deref(),
+            "audit",
+            &out,
+        )?;
     } else {
         audit::render(&summary, &args.path.display().to_string());
         if policy.is_active() {
