@@ -23,6 +23,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that can publish, so `tree --human` and `why --blast` now attribute Python
   packages instead of counting them as unattributed.
 
+- **Two install-time execution paths npm runs and its own flag does not record.**
+  A dependency npm builds locally — a `git+`, `file:`, `link:` or
+  remote-tarball source — also runs its `prepare` on the installing machine, and
+  a package with a `binding.gyp` and no install script of its own gets
+  `node-gyp rebuild` synthesised for it. npm gates both behind `allowScripts`,
+  but computes `hasInstallScript` as `preinstall || install || postinstall`
+  alone, so `scripts` — the command whose job is to help you decide what to
+  approve — was silent on exactly the packages npm was asking about. Both now
+  appear in `scripts` and `scan`. A **registry** dependency's `prepare` stays
+  unreported: it ran at publish time on the publisher's machine, and
+  `"prepare": "tsc"` is half of npm.
+- Which lifecycle scripts count as install-time now lives in one place rather
+  than three diverging lists.
+
 ### Changed
 
 - **A signal that could not be evaluated is no longer reported as clean.** The

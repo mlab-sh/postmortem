@@ -144,10 +144,22 @@ pub fn read_approvals(root: &Path) -> BTreeSet<String> {
     out
 }
 
-/// Which packages the lockfile says run install scripts.
+/// Which packages the lockfile says run install code.
 ///
-/// npm records `hasInstallScript` per entry, so this works with nothing
-/// installed — the decision list does not require the code.
+/// Two sources, because npm's own flag is narrower than npm's own behaviour:
+///
+/// * `hasInstallScript`, which arborist sets for `preinstall` / `install` /
+///   `postinstall` and nothing else;
+/// * a **non-registry `resolved`** — a git, `file:` or remote-tarball
+///   dependency. npm builds those locally, so their `prepare` runs on install
+///   and npm's approval gate covers it, while the flag does not (see
+///   [`crate::lifecycle`]). A lockfile records no `scripts`, so whether such a
+///   package actually *has* a `prepare` can only be answered from the code:
+///   listing it keeps the decision list complete rather than silently short,
+///   and its behaviour column reads *unread* until the code is there to check.
+///
+/// Either way this works with nothing installed — the decision list does not
+/// require the code.
 pub fn lockfile_install_scripts(lockfile: &Path) -> BTreeSet<String> {
     let Ok(text) = std::fs::read_to_string(lockfile) else {
         return BTreeSet::new();
@@ -159,7 +171,14 @@ pub fn lockfile_install_scripts(lockfile: &Path) -> BTreeSet<String> {
         return BTreeSet::new();
     };
     pkgs.iter()
-        .filter(|(_, v)| v.get("hasInstallScript").and_then(|h| h.as_bool()) == Some(true))
+        // Installed dependencies only. The root entry and workspace members are
+        // your own code, not something npm asks you to approve.
+        .filter(|(k, _)| k.contains("node_modules/"))
+        .filter(|(_, v)| {
+            v.get("hasInstallScript").and_then(|h| h.as_bool()) == Some(true)
+                || crate::lifecycle::source_of(v.get("resolved").and_then(|r| r.as_str()))
+                    == crate::lifecycle::Source::NonRegistry
+        })
         .filter_map(|(k, _)| k.rsplit("node_modules/").next())
         .filter(|n| !n.is_empty())
         .map(str::to_string)
@@ -445,6 +464,42 @@ mod tests {
 
     fn set(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn the_decision_list_covers_what_npms_flag_misses() {
+        // `hasInstallScript` is `preinstall || install || postinstall`. npm also
+        // builds a non-registry dependency locally and runs its `prepare`, and
+        // gates that too — so the list must not stop at the flag.
+        let dir = std::env::temp_dir().join(format!("pm-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("package-lock.json");
+        std::fs::write(
+            &lock,
+            r#"{"packages":{
+                "": {"name":"root"},
+                "packages/workspace-pkg": {"version":"1.0.0","hasInstallScript":true},
+                "node_modules/from-git": {"version":"1.0.0",
+                    "resolved":"git+ssh://git@github.com/o/r.git#abc123"},
+                "node_modules/plain": {"version":"1.0.0",
+                    "resolved":"https://registry.npmjs.org/plain/-/plain-1.0.0.tgz"},
+                "node_modules/native": {"version":"1.0.0","hasInstallScript":true,
+                    "resolved":"https://registry.npmjs.org/native/-/native-1.0.0.tgz"}
+            }}"#,
+        )
+        .unwrap();
+        let got = lockfile_install_scripts(&lock);
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(got.contains("native"), "npm's own flag: {got:?}");
+        assert!(
+            got.contains("from-git"),
+            "built locally, prepare runs: {got:?}"
+        );
+        assert!(!got.contains("plain"), "a plain registry dep: {got:?}");
+        assert!(
+            !got.contains("workspace-pkg"),
+            "your own workspace code is not an approval decision: {got:?}"
+        );
     }
 
     #[test]

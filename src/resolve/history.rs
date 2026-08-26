@@ -366,15 +366,15 @@ fn has_provenance(manifest: &serde_json::Value) -> bool {
 }
 
 /// Does a version manifest declare an install lifecycle script?
+///
+/// [`crate::lifecycle::ALWAYS`] and not the longer list: a packument version is
+/// a registry artifact by definition, and a registry tarball's `prepare` ran on
+/// the publisher's machine before packing, never on an installing one.
 fn has_install_hook(manifest: &serde_json::Value) -> bool {
     manifest
         .get("scripts")
         .and_then(|s| s.as_object())
-        .is_some_and(|s| {
-            ["preinstall", "install", "postinstall"]
-                .iter()
-                .any(|k| s.contains_key(*k))
-        })
+        .is_some_and(|s| crate::lifecycle::ALWAYS.iter().any(|k| s.contains_key(*k)))
 }
 
 /// The npm user who published this version (`_npmUser.name`).

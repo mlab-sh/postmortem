@@ -26,6 +26,7 @@ mod hook;
 mod human;
 mod inspect;
 mod license;
+mod lifecycle;
 mod model;
 mod osv;
 mod parsers;

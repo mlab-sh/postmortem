@@ -55,6 +55,27 @@ install scripts  .
 it that column reads `not checked`, never "looks fine". An unread script is not a
 clean one.
 
+### Two things npm runs that its own flag does not record
+
+`hasInstallScript` is computed as `preinstall || install || postinstall`. npm
+runs two more things at install time, gates both behind the same approval
+prompt, and records neither in that flag:
+
+| | What runs | When |
+| --- | --- | --- |
+| **`prepare`** | the package's own `prepare` (bracketed by `preprepare` / `postprepare`) | only for a dependency npm builds locally — a `git+`, `file:`, `link:` or remote-tarball source. npm clones it, installs *its* dependencies, and runs `prepare` before packing. |
+| **`node-gyp rebuild`** | a C++ build over the package's source | when the package ships a `binding.gyp`, declares no `install`/`preinstall` of its own, and does not opt out with `"gypfile": false`. |
+
+Both are reported. A **registry** dependency's `prepare` is deliberately *not*:
+it ran on the publisher's machine before the tarball was packed, never on yours,
+and `"prepare": "tsc"` is half of npm — flagging it would bury the case that
+matters.
+
+A non-registry dependency is listed from the lockfile alone, since that is where
+the source is recorded. Whether it actually *has* a `prepare` needs the code, so
+until `node_modules` is there its behaviour column reads `not checked` like any
+other unread script.
+
 ### Approvals rot, and that is the part npm cannot catch
 
 `allowScripts` records a *name*. Not a version, not a hash. A package you

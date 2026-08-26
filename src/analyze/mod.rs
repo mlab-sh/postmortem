@@ -104,7 +104,11 @@ pub fn scan_source_tree(root: &Path) -> Vec<Finding> {
 /// progress bar over the units. Order is irrelevant — findings are independent.
 /// Each analyzer is best-effort: a failure inside one must not abort the scan.
 pub fn run_all(detected: &[Detected], deps: &[Dependency], ui: &Ui) -> Vec<Finding> {
-    let steps = plan(detected);
+    // Where each Node package came from. The installed `package.json` does not
+    // record it, so the install-hook analyzer cannot work it out from the tree
+    // it walks — and it decides whether a `prepare` runs on install.
+    let sources = crate::lifecycle::Sources::from_deps(deps);
+    let steps = plan(detected, &sources);
     let total = steps.len();
 
     let mut findings = Vec::new();
@@ -119,14 +123,12 @@ pub fn run_all(detected: &[Detected], deps: &[Dependency], ui: &Ui) -> Vec<Findi
         findings.len()
     ));
 
-    // Attribute findings without a dependency to "<project>" if possible.
-    let _ = deps; // currently each analyzer derives dep from path
     findings
 }
 
 /// Enumerate the analysis units for the detected ecosystems. This is the single
 /// source of truth for both *what* runs and *how many* steps the bar shows.
-fn plan(detected: &[Detected]) -> Vec<Step<'_>> {
+fn plan<'a>(detected: &'a [Detected], sources: &'a crate::lifecycle::Sources) -> Vec<Step<'a>> {
     let mut steps = Vec::new();
 
     // IDE/agent autostart-hook scan runs once per unique project root (covers the
@@ -156,7 +158,7 @@ fn plan(detected: &[Detected]) -> Vec<Step<'_>> {
                 ..
             } => {
                 steps.push(Step::new("node · install-hooks", move |f| {
-                    install_hooks::scan_node(nm, f)
+                    install_hooks::scan_node(nm, sources, f)
                 }));
                 steps.push(Step::new("node · ioc", move |f| {
                     ioc::scan_dir(nm, f, ioc::Lang::JavaScript)
