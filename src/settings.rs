@@ -11,9 +11,30 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-/// `$HOME`
+/// The user's home directory.
+///
+/// `$HOME` first, then `%USERPROFILE%`: Windows does not set `HOME`, so reading
+/// only that leaves every Windows user with no cache, no `config.yml`, and
+/// therefore no `[gate]` policy and no allowlist — silently, because a missing
+/// home is treated as "caching disabled" rather than as an error.
 pub fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    resolve_home(
+        std::env::var_os("HOME"),
+        std::env::var_os("USERPROFILE"),
+    )
+}
+
+/// The choice itself, split out so it can be tested without mutating the
+/// process environment (which no test can do safely in parallel).
+fn resolve_home(
+    home: Option<std::ffi::OsString>,
+    userprofile: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    // An empty variable is set-but-useless; treat it as absent rather than
+    // resolving paths against "".
+    home.filter(|v| !v.is_empty())
+        .or(userprofile.filter(|v| !v.is_empty()))
+        .map(PathBuf::from)
 }
 
 /// `$HOME/.postmortem/` — the base directory for settings and cache.
@@ -441,6 +462,32 @@ fn restrict_perms(_p: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Windows sets `USERPROFILE`, not `HOME`. Reading only `HOME` left the
+    /// cache, `config.yml`, the `[gate]` policy and the allowlist quietly
+    /// inert on every Windows machine.
+    #[test]
+    fn the_home_directory_falls_back_to_userprofile() {
+        use std::ffi::OsString;
+        let home = || Some(OsString::from("/home/alice"));
+        let profile = || Some(OsString::from(r"C:\Users\alice"));
+
+        assert_eq!(resolve_home(home(), None).unwrap(), PathBuf::from("/home/alice"));
+        assert_eq!(
+            resolve_home(None, profile()).unwrap(),
+            PathBuf::from(r"C:\Users\alice")
+        );
+        // HOME wins when both are set, so an explicitly-set HOME on Windows
+        // still decides.
+        assert_eq!(resolve_home(home(), profile()).unwrap(), PathBuf::from("/home/alice"));
+        // Set-but-empty is not a home.
+        assert_eq!(
+            resolve_home(Some(OsString::new()), profile()).unwrap(),
+            PathBuf::from(r"C:\Users\alice")
+        );
+        assert!(resolve_home(None, None).is_none());
+        assert!(resolve_home(Some(OsString::new()), Some(OsString::new())).is_none());
+    }
 
     #[test]
     fn endpoints_default_to_the_public_services() {

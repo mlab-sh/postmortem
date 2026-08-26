@@ -304,6 +304,12 @@ pub struct SystemArgs {
     #[command(subcommand)]
     pub command: Option<SystemCommand>,
 
+    /// Verify the Authenticode signature of the binaries each package
+    /// installed. Off by default: Windows charges roughly 120 ms a file, so a
+    /// machine with many packages spends minutes here.
+    #[arg(long)]
+    pub signatures: bool,
+
     /// Audit this manager instead of the first one detected. Windows is the
     /// case that needs it: winget, MSIX and the registry coexist on one
     /// machine, where a Linux box has a single distro manager.

@@ -62,6 +62,7 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
     let opts = system::Opts {
         online: args.online,
         force_aur: args.force_aur,
+        signatures: args.signatures,
     };
     let mut read = Vec::new();
     let mut unread = Vec::new();

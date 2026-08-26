@@ -21,12 +21,14 @@
 //! - [`scoop`] — Scoop's buckets and per-manifest hashes and hooks.
 //! - [`orphan`] — Add/Remove Programs: what is installed that no manager claims.
 //!
-//! Two cross-cutting concerns are factored out rather than duplicated per
+//! Three cross-cutting concerns are factored out rather than duplicated per
 //! backend: [`recipe`] statically analyzes the install code a third-party package
 //! runs (a Homebrew Ruby formula, a PKGBUILD, a maintainer script, an rpm
 //! scriptlet), and [`privilege`] derives the execution surface from the files a
 //! package installs (boot services, scheduled tasks, auth config, setuid bits)
-//! and checks them against the package database.
+//! and checks them against the package database. [`authenticode`] establishes
+//! per-binary trust on Windows, where a signature covers a file rather than a
+//! whole repository.
 //!
 //! Two risk lenses feed the shared `tree` model:
 //! - **provenance** (offline): third-party sources, unsigned or unverified
@@ -46,6 +48,7 @@ use crate::tree::{Node, Tree};
 
 mod apk;
 mod apt;
+mod authenticode;
 mod brew;
 mod choco;
 mod dnf;
@@ -196,6 +199,9 @@ pub struct Opts {
     pub online: bool,
     /// Force foreign/AUR detection past the un-synced-DB guard (pacman).
     pub force_aur: bool,
+    /// Verify Authenticode signatures on installed binaries (Windows). Off by
+    /// default because Windows charges roughly 120 ms a file.
+    pub signatures: bool,
 }
 
 /// Build the installed inventory for a supported backend. Homebrew ignores
