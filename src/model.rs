@@ -37,6 +37,8 @@ pub enum Ecosystem {
     Asep,
     /// Windows scheduled tasks — what the machine runs on a trigger (`system`).
     Task,
+    /// Windows services and drivers — what runs before anyone logs in.
+    Service,
     /// Windows Add/Remove Programs entries — what the registry records as
     /// installed, whether or not a package manager claims it (`system`).
     Arp,
@@ -65,6 +67,7 @@ impl Ecosystem {
             Ecosystem::Arp => "arp",
             Ecosystem::Asep => "asep",
             Ecosystem::Task => "task",
+            Ecosystem::Service => "service",
         }
     }
 }

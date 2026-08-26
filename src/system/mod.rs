@@ -22,6 +22,7 @@
 //! - [`orphan`] — Add/Remove Programs: what is installed that no manager claims.
 //! - [`asep`] — the auto-start points the machine runs at logon.
 //! - [`task`] — scheduled tasks, and the ones hiding from the task listing.
+//! - [`service`] — services and drivers, and unquoted image paths.
 //!
 //! Three cross-cutting concerns are factored out rather than duplicated per
 //! backend: [`recipe`] statically analyzes the install code a third-party package
@@ -62,6 +63,7 @@ mod pacman;
 mod privilege;
 mod recipe;
 mod scoop;
+mod service;
 mod task;
 mod winget;
 
@@ -93,6 +95,7 @@ const KNOWN: &[(&str, &str, bool)] = &[
     ("arp", "powershell", true),
     ("asep", "powershell", true),
     ("task", "powershell", true),
+    ("service", "powershell", true),
     ("macports", "port", false),
 ];
 
@@ -228,6 +231,7 @@ pub fn inventory(manager: &str, opts: Opts) -> Result<Inventory> {
         "arp" => orphan::orphan_inventory(opts),
         "asep" => asep::asep_inventory(opts),
         "task" => task::task_inventory(opts),
+        "service" => service::service_inventory(opts),
         other => anyhow::bail!("no inventory backend for '{other}'"),
     }
 }
@@ -299,14 +303,7 @@ fn push_signal(map: &mut HashMap<String, Vec<SysSignal>>, name: &str, sig: SysSi
 /// `rights` is checked too: `WriteAttributes` is not the ability to replace a
 /// file, and matching the substring `Write` treats it as though it were.
 pub(super) fn is_unprivileged_writer(identity: &str, rights: &str) -> bool {
-    let r = rights.to_ascii_lowercase();
-    let can_replace = r.contains("fullcontrol")
-        || r.contains("modify")
-        || r.contains("writedata")
-        || r.contains("createfiles")
-        // The composite FILE_GENERIC_WRITE renders as a bare `Write` token.
-        || r.split(',').any(|t| t.trim() == "write");
-    if !can_replace {
+    if !rights_can_replace(rights) {
         return false;
     }
 
@@ -348,6 +345,43 @@ pub(super) fn is_unprivileged_writer(identity: &str, rights: &str) -> bool {
 
     // Anything left is a named account or group - a person, not the platform.
     !id.is_empty()
+}
+
+/// Do these rights allow replacing the object?
+///
+/// Windows renders a rights mask by name only when every bit maps to the
+/// `FileSystemRights` enum; otherwise it prints the raw integer — the reference
+/// machine's `C:\` carries `-536805376`. Matching names alone silently reads
+/// those as "not writable", which is an assumption, not an answer.
+fn rights_can_replace(rights: &str) -> bool {
+    let r = rights.trim();
+    if let Ok(mask) = r.parse::<i64>() {
+        return mask_can_replace(mask as u32);
+    }
+    let r = r.to_ascii_lowercase();
+    r.contains("fullcontrol")
+        || r.contains("modify")
+        || r.contains("writedata")
+        || r.contains("createfiles")
+        // The composite FILE_GENERIC_WRITE renders as a bare `Write` token.
+        || r.split(',').any(|t| t.trim() == "write")
+}
+
+/// Decode an access mask.
+///
+/// The distinction that matters on a directory: `FILE_WRITE_DATA` is the right
+/// to create a *file* in it, while `FILE_APPEND_DATA` is only the right to
+/// create a *subdirectory*. `C:\` grants Authenticated Users the latter, which
+/// is why `C:\Program.exe` cannot be planted there and an unquoted service
+/// path under `C:\Program Files` is not exploitable by default.
+fn mask_can_replace(mask: u32) -> bool {
+    const FILE_WRITE_DATA: u32 = 0x0000_0002;
+    const DELETE: u32 = 0x0001_0000;
+    const GENERIC_WRITE: u32 = 0x4000_0000;
+    const GENERIC_ALL: u32 = 0x1000_0000;
+    mask & (FILE_WRITE_DATA | GENERIC_WRITE | GENERIC_ALL) != 0
+        // Delete-then-recreate replaces the object just as effectively.
+        || mask & DELETE != 0
 }
 
 /// Classify a raw SID (everything after `S-1-`).
@@ -575,6 +609,37 @@ mod tests {
         // And an ordinary user SID is still not asserted either: unresolvable
         // is unknown, and unknown is not a finding.
         assert!(!is_unprivileged_writer("S-1-5-21-1-2-3-1001", "FullControl"));
+    }
+
+    /// Windows prints a raw integer when a mask has bits outside the
+    /// `FileSystemRights` enum — `C:\` carries `-536805376`. Matching names
+    /// alone read those as "not writable" without ever looking.
+    #[test]
+    fn numeric_rights_masks_are_decoded_not_ignored() {
+        let user = r"BUILTIN\Users";
+        // GENERIC_READ | GENERIC_EXECUTE: no write.
+        assert!(!is_unprivileged_writer(user, "-1610612736"));
+        // FILE_WRITE_DATA on its own is enough to plant a file.
+        assert!(is_unprivileged_writer(user, "2"));
+        // GENERIC_WRITE and GENERIC_ALL likewise.
+        assert!(is_unprivileged_writer(user, "1073741824"));
+        assert!(is_unprivileged_writer(user, "268435456"));
+        // DELETE alone: replace by removing and recreating.
+        assert!(is_unprivileged_writer(user, "65536"));
+    }
+
+    /// The distinction the whole unquoted-path verdict rests on: `C:\` grants
+    /// Authenticated Users `AppendData` — create a *subdirectory*, not a file.
+    /// So `C:\Program.exe` cannot be planted, and the reference machine's one
+    /// unquoted service path is correctly reported as not exploitable.
+    #[test]
+    fn creating_a_subdirectory_is_not_creating_a_file() {
+        let au = r"NT AUTHORITY\Authenticated Users";
+        assert!(!is_unprivileged_writer(au, "AppendData"));
+        assert!(!is_unprivileged_writer(au, "4"), "FILE_APPEND_DATA alone");
+        assert!(!is_unprivileged_writer(au, "CreateDirectories"));
+        // But the right to create files there is the finding.
+        assert!(is_unprivileged_writer(au, "CreateFiles"));
     }
 
     /// The real ACL of a Windows task file: nothing in it is a finding.

@@ -44,6 +44,7 @@
 - [Add/Remove Programs](Add-Remove-Programs)
 - [Auto-start (ASEP)](Autostart)
 - [Scheduled tasks](Scheduled-Tasks)
+- [Services & drivers](Services)
 
 **Concepts**
 - [Install-time execution](Install-Time)

@@ -241,6 +241,11 @@ function Acl-Writers([string]$p) {
   $out = @()
   foreach ($a in (Get-Acl -LiteralPath $p).Access) {
     if ($a.AccessControlType -ne 'Allow') { continue }
+    # An inherit-only ACE applies to child objects created later, never to this
+    # one. `C:\` carries such an ACE granting Authenticated Users GENERIC_WRITE,
+    # while the ACE that actually governs `C:\` grants only AppendData - the
+    # right to create a subdirectory, not a file.
+    if ($a.PropagationFlags -band [System.Security.AccessControl.PropagationFlags]::InheritOnly) { continue }
     $out += ([string]$a.IdentityReference + '|' + [string]$a.FileSystemRights)
   }
   return $out
