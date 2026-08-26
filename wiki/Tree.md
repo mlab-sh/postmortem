@@ -167,7 +167,8 @@ fetches carries them:
 | --- | --- | --- |
 | **npm** | packument `maintainers` | free — already fetched for provenance |
 | **Packagist** | package `maintainers` | free — already fetched |
-| crates.io, RubyGems, PyPI | would need another call per package | not queried |
+| **PyPI** | project JSON `ownership.roles` (Owner and Maintainer alike — both can publish) | free — already fetched for provenance |
+| crates.io, RubyGems | would need another call per package (`/owners`) | not queried |
 
 Packages with no attribution are counted and reported:
 

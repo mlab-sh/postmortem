@@ -40,6 +40,21 @@ See [Dependency scopes](Dependency-Scopes).
   to `info.home_page`. The first candidate that parses to a known
   [host](Ecosystems-and-Hosts#code-hosts) wins.
 
+### Release history
+
+The registry call above asks for the **pinned version** (`/<name>/<version>/json`),
+because a project can relicense between releases. That document carries no
+`releases` map, so the provenance signals that need a timeline —
+`dormant-release`, `fresh-release`, `newborn-package` — read the name-only
+document in one further request, cached per version forever. It also carries
+`ownership.roles`, which is where Python's maintainer sets for
+[`tree --human`](Tree) come from.
+
+PyPI records no per-release uploader, so `new-publisher` is unanswerable for
+Python, and PEP 740 attestations need a per-file request that postmortem does
+not make — neither is reported as clean. See
+[provenance coverage](Online-Resolution#provenance-coverage).
+
 ### Gotcha
 
 Many packages list only a documentation/homepage URL, not a code repo - those

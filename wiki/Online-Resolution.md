@@ -20,15 +20,15 @@ Everything is cached under `~/.postmortem/cache/` - see [Cache](Cache).
 | `starjacking (<repo> doesn't own it)` *(npm)* | High | 45 |
 | `install-script-added` *(npm)* | High | 40 |
 | `recently-created (Nd ago)` | High | 40 |
-| `provenance-removed` *(npm)* | High | 30 |
+| `provenance-removed` *(npm, crates.io)* | High | 30 |
 | `low-stars (N★)` | High | 30 |
 | `archived` | Medium (amber) | 30 |
-| `new-publisher` *(npm)* | Medium | 25 |
+| `new-publisher` *(npm, crates.io)* | Medium | 25 |
 | `dangling-repo (<repo> not found)` *(GitHub)* | Medium | 25 |
 | `stale (Nd idle)` | Medium | 20 |
-| `dormant-release (Nd gap)` *(npm)* | Medium | 20 |
-| `newborn-package (Nd old)` *(npm)* | Medium | 20 |
-| `fresh-release (Nh old)` *(npm)* | Low | 15 |
+| `dormant-release (Nd gap)` *(npm, crates.io, PyPI)* | Medium | 20 |
+| `newborn-package (Nd old)` *(npm, crates.io, PyPI)* | Medium | 20 |
+| `fresh-release (Nh old)` *(npm, crates.io, PyPI)* | Low | 15 |
 | `no-repository` / `resolve-failed` / `stats-*` | Info (unchecked) | 0 |
 
 - **Reputation** signals come from the source repo's stats vs. your
@@ -36,15 +36,56 @@ Everything is cached under `~/.postmortem/cache/` - see [Cache](Cache).
 - **Identity** signals: `typosquat` (see [Typosquatting](Typosquatting) — it
   covers six ecosystems, offline) and `starjacking` (the linked repo doesn't
   declare the package — its stars are borrowed).
-- **Provenance** signals read the npm packument: `install-script-added`,
-  `dormant-release`, `new-publisher`, `newborn-package` (first-ever release
-  &lt;30d), `fresh-release` (this version &lt;48h — the release-age cooldown),
-  and `provenance-removed` (a version that dropped the OIDC/Trusted-Publishing
-  attestation an earlier one had — the axios pattern).
+- **Provenance** signals compare the installed version against the one
+  published before it, in whichever document its registry publishes a release
+  *history* in — npm's packument, crates.io's crate record, PyPI's project JSON:
+  `install-script-added`, `dormant-release`, `new-publisher`, `newborn-package`
+  (first-ever release &lt;30d), `fresh-release` (this version &lt;48h — the
+  release-age cooldown), and `provenance-removed` (a version that dropped the
+  OIDC/Trusted-Publishing attestation an earlier one had — the axios pattern;
+  `dist.attestations` on npm, `trustpub_data` on crates.io).
+
+  See [provenance coverage](#provenance-coverage) for which registry answers
+  which question.
 - **`dangling-repo`** — a declared GitHub repo that 404s (deleted/renamed), so
   the handle is re-registerable (repojacking exposure).
 - **`no-repository`** means "we couldn't find a source repo to assess" - an
   *absence of information*, so it's counted as **unchecked**, not suspicious.
+
+## Provenance coverage
+
+No registry answers every question, and one that cannot be asked is never
+reported as a clean answer — an unanswerable signal is simply absent:
+
+| Signal | npm | crates.io | PyPI |
+| --- | --- | --- | --- |
+| `install-script-added` | yes | — | — |
+| `dormant-release` | yes | yes | yes |
+| `new-publisher` | yes | yes | — |
+| `provenance-removed` | yes | yes | — |
+| `fresh-release` / `newborn-package` | yes | yes | yes |
+| maintainer set (`--human`) | yes | — | yes |
+
+RubyGems, Packagist and deps.dev (Java, Go) publish a package's *current* state
+rather than its history, so none of these apply there. The OS package managers
+have no registry of this kind at all.
+
+The gaps are registry limits, not pending work:
+
+- **PyPI** records no per-release uploader, so `new-publisher` has nothing to
+  compare. Its PEP 740 attestations exist but need one
+  `/integrity/{project}/{version}/{file}/provenance` request *per file*, rather
+  than riding along in a document already fetched.
+- **crates.io** does not say whether a crate has a `build.rs`, and its owner
+  list is a separate `/owners` call.
+
+### What each costs
+
+| Ecosystem | Requests for the history |
+| --- | --- |
+| **crates.io** | none — the crate record fetched for the repo and license already carries every version. |
+| **PyPI** | one. The *version-pinned* document postmortem fetches (a license is per-version) has no `releases` map; the name-only document does. |
+| **npm** | one packument, shared with `timeline`. |
 
 ## The `risk:dep` score
 

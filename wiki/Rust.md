@@ -37,6 +37,20 @@ See [Dependency scopes](Dependency-Scopes).
 - **Registry:** `crates.io/api/v1/crates/<name>` → the `crate.repository` field.
 - crates.io requires a `User-Agent` (postmortem always sends one).
 
+### Release history
+
+The crate record is one document for the whole crate: it carries every version
+with its `created_at`, its `published_by` account, and `trustpub_data` (the
+Trusted Publishing record — crates.io's equivalent of an npm attestation). So
+`dormant-release`, `fresh-release`, `newborn-package`, `new-publisher` and
+`provenance-removed` all come out of the request already made for the repo and
+the license, at no extra cost.
+
+Two things are not in it: whether the crate has a `build.rs` (so
+`install-script-added` is npm's alone) and the owner list (a separate `/owners`
+call, not made). Neither is reported as clean. See
+[provenance coverage](Online-Resolution#provenance-coverage).
+
 ### Gotcha
 
 A crate that omits `repository` resolves to *no repository* (**unchecked**).

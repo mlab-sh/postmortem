@@ -20,6 +20,8 @@ postmortem cache prune --stale            # drop entries an upgrade invalidated
 | `repo-pkgname/` | package-name → repo lookups that needed a second hop. |
 | `languages/` | repo language breakdowns (`--languages`). |
 | `npm-meta/` | npm packument provenance (per `name@version`). |
+| `crates-meta/` | crates.io release-history provenance (per `name@version`), derived from the record already fetched into `registry/`. |
+| `pypi-meta/` | PyPI release-history provenance and owner set (per `name@version`). |
 | `vuln/`, `vuln-scan/` | advisory lookups (`--vulns`), keyed by package and by lockfile content-hash. |
 
 Because a published version's metadata never changes, resolutions are cached

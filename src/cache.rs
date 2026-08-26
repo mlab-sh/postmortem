@@ -41,7 +41,9 @@ use serde::{Deserialize, Serialize};
 /// History: 1 — the initial envelope. 2 — `CachedRepo` gained `licenses`.
 /// 3 — `Vuln` gained `fixed`, the version that remediates it.
 /// 4 — `VersionMeta` / `CachedRepo` gained `maintainers`.
-pub const FORMAT_VERSION: u32 = 4;
+/// 5 — `VersionMeta`'s verdict fields became tri-state (`Option<bool>`), and the
+/// struct is now written by three registries rather than npm alone.
+pub const FORMAT_VERSION: u32 = 5;
 
 pub struct Cache {
     root: Option<PathBuf>,

@@ -38,15 +38,18 @@ scope. See [Dependency scopes](Dependency-Scopes).
   (string or `{ url }`).
 - Resolves to a [host](Ecosystems-and-Hosts#code-hosts) for reputation stats.
 
-### npm-only provenance signals
+### Provenance signals
 
-These come from the npm **packument** (version history), so they are
-**Node-only** (the `typosquat` signal is not — see [Typosquatting](Typosquatting)):
+These come from the npm **packument** (version history). crates.io and PyPI
+publish a history too and answer some of the same questions — see
+[provenance coverage](Online-Resolution#provenance-coverage) — but
+`install-script-added` is npm's alone, because no other registry records what a
+package runs at install time:
 
-| Signal | Meaning |
-| --- | --- |
-| `install-script-added` | A lifecycle script (`preinstall`/`install`/`postinstall`) appears in this version but not the previous one. |
-| `dormant-release (Nd gap)` | Published after a long dormancy (the event-stream pattern). |
-| `new-publisher` | A different npm publisher than every earlier version. |
+| Signal | Meaning | Elsewhere |
+| --- | --- | --- |
+| `install-script-added` | A lifecycle script (`preinstall`/`install`/`postinstall`) appears in this version but not the previous one. | npm only |
+| `dormant-release (Nd gap)` | Published after a long dormancy (the event-stream pattern). | crates.io, PyPI |
+| `new-publisher` | A different npm publisher than every earlier version. | crates.io |
 
 See [Online resolution](Online-Resolution) for the full signal/scoring model.

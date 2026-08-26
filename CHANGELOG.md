@@ -5,6 +5,40 @@ All notable changes to postmortem are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Provenance signals beyond npm.** The release-history comparison behind
+  `dormant-release`, `new-publisher`, `provenance-removed`, `fresh-release` and
+  `newborn-package` was npm-only. crates.io and PyPI publish a history too, and
+  now feed the same signals. Rust gets five of them for **no additional
+  request**: the crate record already fetched for the repository and the license
+  carries every version, with `created_at`, `published_by` and `trustpub_data`
+  — Trusted Publishing, crates.io's equivalent of an npm attestation. Python
+  gets the three time-relative ones from one further call to the name-only
+  project document, because the version-pinned one postmortem fetches (a licence
+  is per-version) carries no release map.
+- **Maintainer sets for Python.** PyPI's `ownership.roles` names every account
+  that can publish, so `tree --human` and `why --blast` now attribute Python
+  packages instead of counting them as unattributed.
+
+### Changed
+
+- **A signal that could not be evaluated is no longer reported as clean.** The
+  verdicts became tri-state: the anomaly, its absence, and *this registry does
+  not publish what the comparison needs*. A single `false` covering the last two
+  was harmless while one ecosystem was involved; across three it would have
+  implied checks nobody ran. `install-script-added` stays npm's alone (no other
+  registry records what a package runs at install time), `new-publisher` is
+  unanswerable on PyPI (no per-release uploader), and PyPI's PEP 740
+  attestations need a per-file request that is not made — all three now read as
+  unevaluated rather than clean. The full matrix is in the online-resolution
+  documentation.
+- **Cache record format 4 → 5**, for that shape change. Entries written by 2.2.0
+  and earlier are refetched on first use: no action needed, the first online run
+  is simply slower.
+
 ## [2.2.0] - 2026-08-18
 
 The largest release so far: eight new commands, and a pass over every existing
