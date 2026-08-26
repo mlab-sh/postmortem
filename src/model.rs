@@ -26,6 +26,8 @@ pub enum Ecosystem {
     Apk,
     /// Windows `winget` — an OS-level package manager (`system` command).
     Winget,
+    /// Windows MSIX/AppX packages (Store and sideloaded) — `system` command.
+    Msix,
 }
 
 impl Ecosystem {
@@ -45,6 +47,7 @@ impl Ecosystem {
             Ecosystem::Nix => "nix",
             Ecosystem::Apk => "apk",
             Ecosystem::Winget => "winget",
+            Ecosystem::Msix => "msix",
         }
     }
 }

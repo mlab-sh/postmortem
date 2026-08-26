@@ -16,6 +16,7 @@
 //! - [`nix`] — the store closure reachable from the installed profiles.
 //! - [`apk`] — Alpine's installed DB as a capability graph.
 //! - [`winget`] — Windows' winget sources and the installed table behind them.
+//! - [`msix`] — Windows MSIX/AppX packages, their signing and their capabilities.
 //!
 //! Two cross-cutting concerns are factored out rather than duplicated per
 //! backend: [`recipe`] statically analyzes the install code a third-party package
@@ -44,6 +45,7 @@ mod apk;
 mod apt;
 mod brew;
 mod dnf;
+mod msix;
 mod nix;
 mod pacman;
 mod privilege;
@@ -69,6 +71,9 @@ const KNOWN: &[(&str, &str, bool)] = &[
     ("nix", "nix-store", true),
     ("apk", "apk", true),
     ("winget", "winget", true),
+    // No CLI of its own: the AppX layer is reached through PowerShell, which is
+    // what gates whether postmortem can read it at all.
+    ("msix", "powershell", true),
     ("macports", "port", false),
 ];
 
@@ -185,6 +190,7 @@ pub fn inventory(manager: &str, opts: Opts) -> Result<Inventory> {
         "nix" => nix::nix_inventory(opts),
         "apk" => apk::apk_inventory(opts),
         "winget" => winget::winget_inventory(opts),
+        "msix" => msix::msix_inventory(opts),
         other => anyhow::bail!("no inventory backend for '{other}'"),
     }
 }

@@ -304,6 +304,12 @@ pub struct SystemArgs {
     #[command(subcommand)]
     pub command: Option<SystemCommand>,
 
+    /// Audit this manager instead of the first one detected. Windows is the
+    /// case that needs it: winget, MSIX and the registry coexist on one
+    /// machine, where a Linux box has a single distro manager.
+    #[arg(long, value_name = "NAME")]
+    pub manager: Option<String>,
+
     /// List the configured source repos (Homebrew taps) and exit, flagging
     /// third-party taps that bypass core review.
     #[arg(long)]

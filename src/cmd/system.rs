@@ -22,16 +22,40 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
     let managers = system::detect();
     system::render_detected(&managers);
 
-    // Use the first available manager we have a backend for. On a machine with
-    // several (Homebrew alongside apt, say) the detection order in
-    // `system::KNOWN` decides; `--repos` and the tree then describe that one.
-    let Some(backend) = managers
-        .iter()
-        .find(|m| m.available && m.implemented)
-        .map(|m| m.name)
-    else {
-        eprintln!("no supported system package manager found.");
-        std::process::exit(2);
+    // Which backends to read. `--manager` pins one; otherwise Windows reads
+    // every layer it can, because winget, MSIX and the registry all describe
+    // the same machine and picking one would be exactly the partial scan this
+    // command exists to avoid. A Linux box has a single distro manager, so the
+    // first match there is the whole story.
+    let backends: Vec<&'static str> = if let Some(want) = &args.manager {
+        match managers.iter().find(|m| m.name.eq_ignore_ascii_case(want)) {
+            Some(m) if m.available && m.implemented => vec![m.name],
+            Some(m) if !m.implemented => {
+                eprintln!("'{}' is detected but has no backend yet.", m.name);
+                std::process::exit(2);
+            }
+            Some(m) => {
+                eprintln!("'{}' has a backend but is not installed here.", m.name);
+                std::process::exit(2);
+            }
+            None => {
+                let known: Vec<&str> = managers.iter().map(|m| m.name).collect();
+                eprintln!("unknown manager '{want}'. known: {}", known.join(", "));
+                std::process::exit(2);
+            }
+        }
+    } else {
+        let usable = managers.iter().filter(|m| m.available && m.implemented);
+        let picked: Vec<&'static str> = if cfg!(windows) {
+            usable.map(|m| m.name).collect()
+        } else {
+            usable.take(1).map(|m| m.name).collect()
+        };
+        if picked.is_empty() {
+            eprintln!("no supported system package manager found.");
+            std::process::exit(2);
+        }
+        picked
     };
 
     // gochi rides the (indeterminate) load while the manager is read.
@@ -39,17 +63,36 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
         online: args.online,
         force_aur: args.force_aur,
     };
-    let loader = gochi::Loader::spinner("gochi reading installed packages", ui.animating());
-    let inv = match system::inventory(backend, opts) {
-        Ok(inv) => {
-            loader.finish(gochi::Mood::Happy, format!("read {}", inv.summary));
-            inv
+    let mut read = Vec::new();
+    let mut unread = Vec::new();
+    for backend in &backends {
+        let loader = gochi::Loader::spinner(
+            &format!("gochi reading {backend} packages"),
+            ui.animating(),
+        );
+        match system::inventory(backend, opts) {
+            Ok(inv) => {
+                loader.finish(gochi::Mood::Happy, format!("read {}", inv.summary));
+                read.push(inv);
+            }
+            // With one backend asked for, its failure is the command's failure.
+            // With several, one unreadable layer must not abort the others —
+            // but it must not vanish either, or a partial scan reads as a
+            // complete one.
+            Err(e) if backends.len() == 1 => {
+                loader.finish(gochi::Mood::Bad, "couldn't read packages");
+                return Err(e);
+            }
+            Err(e) => {
+                loader.finish(gochi::Mood::Bad, format!("couldn't read {backend}"));
+                unread.push(format!("{backend} could not be read: {e}"));
+            }
         }
-        Err(e) => {
-            loader.finish(gochi::Mood::Bad, "couldn't read packages");
-            return Err(e);
-        }
-    };
+    }
+    if read.is_empty() {
+        anyhow::bail!("none of the detected managers could be read: {}", unread.join("; "));
+    }
+    let inv = merge_inventories(read, unread);
     // Surface backend caveats (weakened signing trust, tampered files, un-synced
     // DB, …) as a gochi alert followed by one bullet per caveat, so a system with
     // many caveats stays readable instead of collapsing into one run-on line.
@@ -71,13 +114,17 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
         return Ok(());
     }
 
-    let eco = inv
-        .deps
-        .first()
-        .map(|d| d.ecosystem.as_str())
-        .unwrap_or(backend)
-        .to_string();
-    let mut forest = tree::build(inv.manager, &[eco], &inv.deps, args.depth);
+    let mut ecos: Vec<String> = Vec::new();
+    for d in &inv.deps {
+        let e = d.ecosystem.as_str().to_string();
+        if !ecos.contains(&e) {
+            ecos.push(e);
+        }
+    }
+    if ecos.is_empty() {
+        ecos.push(inv.manager.to_string());
+    }
+    let mut forest = tree::build(inv.manager, &ecos, &inv.deps, args.depth);
 
     // `--online`: resolve each formula's repo reputation through the shared
     // resolver (same token/cache/scoring path as `tree --online`).
@@ -307,5 +354,142 @@ fn scan_system_vulns(
                 message: format!("vuln scan failed: {e:#}"),
             });
         }
+    }
+}
+
+/// Fold the inventories of several coexisting layers into one, so everything
+/// downstream — tree, annotate, score, vulns, gate — stays a single path.
+///
+/// `unread` carries the layers that failed: they are appended to the caveats so
+/// an incomplete machine view is stated rather than implied.
+fn merge_inventories(mut invs: Vec<system::Inventory>, unread: Vec<String>) -> system::Inventory {
+    if invs.len() == 1 && unread.is_empty() {
+        return invs.remove(0);
+    }
+    let summary = invs
+        .iter()
+        .map(|i| format!("{}: {}", i.manager, i.summary))
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let mut merged = system::Inventory {
+        // A name for the combined view; the per-layer names survive in the
+        // summary and in each package's ecosystem.
+        manager: "system",
+        deps: Vec::new(),
+        repos: Vec::new(),
+        signals: std::collections::HashMap::new(),
+        summary,
+        notes: Vec::new(),
+    };
+    for inv in invs {
+        merged.deps.extend(inv.deps);
+        merged.repos.extend(inv.repos);
+        merged.notes.extend(inv.notes);
+        for (name, sigs) in inv.signals {
+            merged.signals.entry(name).or_default().extend(sigs);
+        }
+    }
+    merged.notes.extend(unread);
+    merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Category, Ecosystem, LicenseSource, Scope, Severity};
+
+    fn inv(manager: &'static str, eco: Ecosystem, names: &[&str]) -> system::Inventory {
+        let deps = names
+            .iter()
+            .map(|n| crate::model::Dependency {
+                name: (*n).into(),
+                version: "1.0".into(),
+                ecosystem: eco,
+                direct: true,
+                scope: Scope::Prod,
+                licenses: Vec::new(),
+                license_source: LicenseSource::Unknown,
+                resolved_url: None,
+                integrity: None,
+                parents: Vec::new(),
+            })
+            .collect();
+        system::Inventory {
+            manager,
+            deps,
+            repos: Vec::new(),
+            signals: std::collections::HashMap::new(),
+            summary: format!("{} package(s)", names.len()),
+            notes: Vec::new(),
+        }
+    }
+
+    /// A single healthy layer must come through untouched — merging is only for
+    /// the coexisting case.
+    #[test]
+    fn one_layer_passes_through_unchanged() {
+        let merged = merge_inventories(vec![inv("winget", Ecosystem::Winget, &["a"])], vec![]);
+        assert_eq!(merged.manager, "winget");
+        assert_eq!(merged.deps.len(), 1);
+    }
+
+    /// Windows layers coexist, so their packages land in one forest and each
+    /// keeps its own ecosystem.
+    #[test]
+    fn coexisting_layers_are_folded_into_one_view() {
+        let merged = merge_inventories(
+            vec![
+                inv("winget", Ecosystem::Winget, &["a", "b"]),
+                inv("msix", Ecosystem::Msix, &["c"]),
+            ],
+            vec![],
+        );
+        assert_eq!(merged.manager, "system");
+        assert_eq!(merged.deps.len(), 3);
+        assert!(merged.summary.contains("winget:"));
+        assert!(merged.summary.contains("msix:"));
+        assert_eq!(
+            merged.deps.iter().filter(|d| d.ecosystem == Ecosystem::Msix).count(),
+            1
+        );
+    }
+
+    /// Signals from different layers about the same package name accumulate
+    /// rather than one silently replacing the other.
+    #[test]
+    fn signals_from_two_layers_accumulate() {
+        let mut a = inv("winget", Ecosystem::Winget, &["shared"]);
+        a.signals.insert(
+            "shared".into(),
+            vec![system::SysSignal {
+                label: "x".into(),
+                category: Category::Unsigned,
+                severity: Severity::Low,
+                points: 1,
+            }],
+        );
+        let mut b = inv("msix", Ecosystem::Msix, &["shared"]);
+        b.signals.insert(
+            "shared".into(),
+            vec![system::SysSignal {
+                label: "y".into(),
+                category: Category::Tamper,
+                severity: Severity::High,
+                points: 2,
+            }],
+        );
+        let merged = merge_inventories(vec![a, b], vec![]);
+        assert_eq!(merged.signals["shared"].len(), 2);
+    }
+
+    /// A layer that could not be read is stated as a caveat. Staying silent
+    /// would let a partial machine view read as a complete one.
+    #[test]
+    fn an_unreadable_layer_is_surfaced_not_swallowed() {
+        let merged = merge_inventories(
+            vec![inv("winget", Ecosystem::Winget, &["a"])],
+            vec!["msix could not be read: powershell failed".into()],
+        );
+        assert!(merged.notes.iter().any(|n| n.contains("msix could not be read")));
     }
 }

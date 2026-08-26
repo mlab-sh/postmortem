@@ -26,6 +26,9 @@ fn purl_type(eco: Ecosystem) -> &'static str {
         Ecosystem::Nix => "nix",
         Ecosystem::Apk => "apk",
         Ecosystem::Winget => "winget",
+        // MSIX has no purl type of its own; `appx` is what SPDX/CycloneDX
+        // tooling uses for Windows app packages.
+        Ecosystem::Msix => "appx",
     }
 }
 

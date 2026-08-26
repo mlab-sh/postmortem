@@ -48,7 +48,8 @@ pub(super) fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) ->
         | Ecosystem::Dnf
         | Ecosystem::Nix
         | Ecosystem::Apk
-        | Ecosystem::Winget => return None,
+        | Ecosystem::Winget
+        | Ecosystem::Msix => return None,
     })
 }
 
@@ -264,7 +265,8 @@ pub(super) fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<Stri
         | Ecosystem::Dnf
         | Ecosystem::Nix
         | Ecosystem::Apk
-        | Ecosystem::Winget => Vec::new(),
+        | Ecosystem::Winget
+        | Ecosystem::Msix => Vec::new(),
     }
 }
 
