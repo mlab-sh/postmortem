@@ -1,4 +1,4 @@
-# Privilege posture
+# Privilege posture & trust policy
 
 A [`system`](System) backend, and one of the [Windows](Windows) layers.
 
@@ -63,6 +63,42 @@ Steam grants every user full control of its own install directory, and it
 Everything else on the reference machine sits at its default — `EnableLUA=1`,
 `RunAsPPL=2`, WDigest unset, no `AlwaysInstallElevated`, and no user-writable
 directory anywhere on the machine `PATH`.
+
+## Policy that weakens trust
+
+The same layer reads the configuration that decides how much verification the
+machine still does. The scoring principle above is what makes this section
+usable rather than a wall of red on every consumer machine.
+
+| Reading | Finding | Severity |
+| --- | --- | --- |
+| Defender real-time protection off | | Critical |
+| Defender tamper protection off | Its own settings can be rewritten | High |
+| A **broad** Defender exclusion | A drive root, a profile root, `Downloads`, a package manager's directory | High |
+| A narrow Defender exclusion | One program or file | Medium |
+| Secure Boot disabled **on UEFI firmware** | | High |
+| Test signing enabled | Unsigned drivers load | High |
+| Memory integrity (HVCI) not running | Not enabled by default on all hardware | Low |
+| Machine execution policy `Unrestricted` / `Bypass` | | High |
+| SmartScreen switched off | | Medium |
+| Application-control policy in **audit** mode | It logs, it does not block | Low |
+| No WDAC or AppLocker policy | postmortem cannot know if this machine was meant to be gated | Info |
+| Script block logging / transcription off | Missing evidence, not a weakened protection | Info |
+| Controlled Folder Access off | | Info |
+
+### Two readings that would otherwise mislead
+
+**Secure Boot** reads the firmware type first. `Confirm-SecureBootUEFI` returns
+false on legacy BIOS too — that is a different machine, not a weakened one, so
+only `UEFISecureBootEnabled = 0` on UEFI firmware is reported.
+
+**Defender exclusions** are counted after filtering: `@($null).Count` is 1 in
+PowerShell, so an empty exclusion list reports one of each unless the empty
+entries are dropped first. A machine with no exclusions must say zero.
+
+Developer mode and MSIX sideloading are read by [MSIX](MSIX); Store certificate
+pinning by [WinGet](WinGet); the per-user PowerShell execution policy by
+[Scoop](Scoop).
 
 ## Not covered yet
 

@@ -170,9 +170,167 @@ pub(crate) fn signals_for(r: &Reading) -> Option<SysSignal> {
                 r.detail
             ),
         ),
+        // --- policy that weakens trust ---------------------------------------
+        // Turning real-time protection off is never incidental.
+        "Defender\\RealTime" => {
+            if r.value != "False" {
+                return None;
+            }
+            (
+                Severity::Critical,
+                50,
+                "Defender real-time protection is off".to_string(),
+            )
+        }
+        "Defender\\TamperProtection" => {
+            if r.value != "False" {
+                return None;
+            }
+            (
+                Severity::High,
+                40,
+                "Defender tamper protection is off — its own settings can be rewritten"
+                    .to_string(),
+            )
+        }
+        // An exclusion is a hole by design; how big a hole is the question.
+        "Defender\\Exclusion" => {
+            let (sev, pts, kind) = if is_broad_exclusion(&r.detail) {
+                (Severity::High, 40, "a broad")
+            } else {
+                (Severity::Medium, 20, "an")
+            };
+            (
+                sev,
+                pts,
+                format!("Defender has {kind} exclusion ({}: {})", r.value, r.detail),
+            )
+        }
+        // The firmware type is read first: `Confirm-SecureBootUEFI` is also
+        // false on legacy BIOS, which is a different machine, not a weakened one.
+        "Boot\\SecureBoot" => {
+            if r.value != "0" || r.detail != "Uefi" {
+                return None;
+            }
+            (
+                Severity::High,
+                40,
+                "Secure Boot is disabled on UEFI firmware".to_string(),
+            )
+        }
+        "Boot\\TestSigning" => {
+            if r.value != "1" {
+                return None;
+            }
+            (
+                Severity::High,
+                40,
+                "test signing is enabled — unsigned drivers load".to_string(),
+            )
+        }
+        // Not enabled by default on all hardware, so absence is a gap.
+        "Boot\\HVCI" => {
+            if r.value == "1" {
+                return None;
+            }
+            (
+                Severity::Low,
+                10,
+                "memory integrity (HVCI) is not running".to_string(),
+            )
+        }
+        "PowerShell\\ExecutionPolicy" => {
+            if !matches!(r.value.as_str(), "Unrestricted" | "Bypass") {
+                return None;
+            }
+            (
+                Severity::High,
+                40,
+                format!("the machine PowerShell execution policy is {}", r.value),
+            )
+        }
+        // Rarely enabled anywhere; their absence is a gap in evidence, not a
+        // weakened protection.
+        "PowerShell\\ScriptBlockLogging" | "PowerShell\\Transcription" => {
+            if r.value == "1" {
+                return None;
+            }
+            (
+                Severity::Info,
+                0,
+                format!("{} is not enabled", r.check.replace("PowerShell\\", "PowerShell ")),
+            )
+        }
+        "Defender\\SmartScreen" => {
+            if !r.value.eq_ignore_ascii_case("Off") {
+                return None;
+            }
+            (Severity::Medium, 20, "SmartScreen is switched off".to_string())
+        }
+        "Defender\\ControlledFolderAccess" => {
+            if r.value == "1" {
+                return None;
+            }
+            (
+                Severity::Info,
+                0,
+                "Controlled Folder Access is not enabled".to_string(),
+            )
+        }
+        // Absence is only a finding on a machine that claims to be gated, which
+        // postmortem cannot know. Reported so the claim can be checked.
+        "AppControl\\Policy" => match r.value.as_str() {
+            "audit" => (
+                Severity::Low,
+                10,
+                "an application-control policy is in audit mode — it logs, it does not block"
+                    .to_string(),
+            ),
+            "none" => (
+                Severity::Info,
+                0,
+                "no WDAC or AppLocker policy is in force".to_string(),
+            ),
+            _ => return None,
+        },
         _ => return None,
     };
-    Some(SysSignal::new(label, Category::WeakAcl, severity, points))
+    // Permission findings and configuration findings are different lenses, and
+    // the category is what carries that into JSON and SARIF.
+    let category = if r.check.starts_with("ACL\\") || r.check.starts_with("PATH\\") {
+        Category::WeakAcl
+    } else {
+        Category::Policy
+    };
+    Some(SysSignal::new(label, category, severity, points))
+}
+
+
+/// Does this exclusion cover a whole tree rather than one program?
+///
+/// A drive root, a user-profile root, or a package manager's own directory
+/// turns the exclusion into "and also, do not look here" for everything the
+/// machine installs.
+pub(crate) fn is_broad_exclusion(path: &str) -> bool {
+    let p = path.trim().trim_end_matches('\\').to_ascii_lowercase();
+    // A bare drive root.
+    if p.len() <= 3 && p.contains(':') {
+        return true;
+    }
+    const BROAD: &[&str] = &[
+        r"c:\users",
+        r"c:\programdata",
+        r"c:\program files",
+        r"c:\program files (x86)",
+        r"c:\windows",
+        r"c:\temp",
+        "downloads",
+    ];
+    if BROAD.iter().any(|b| p == *b || p.ends_with(b)) {
+        return true;
+    }
+    // A wildcard that is not anchored to a file.
+    p.ends_with('*') && p.matches('\\').count() <= 2
 }
 
 // --- enumeration ---------------------------------------------------------------
@@ -238,6 +396,41 @@ foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
 $sg = Join-Path $env:ProgramData 'scoop'
 $w = Writable $sg
 if ($w) { Emit 'ACL\ScoopGlobal' $w $sg }
+
+# --- policy that weakens trust ------------------------------------------------
+$mp = Get-MpPreference
+$ms = Get-MpComputerStatus
+Emit 'Defender\RealTime' $ms.RealTimeProtectionEnabled ''
+Emit 'Defender\TamperProtection' $ms.IsTamperProtected ''
+Emit 'Defender\ControlledFolderAccess' $mp.EnableControlledFolderAccess ''
+# `@($null).Count` is 1, so an empty exclusion list must be filtered before it
+# is counted - otherwise a clean machine reports one of each.
+foreach ($kind in @('ExclusionPath','ExclusionProcess','ExclusionExtension')) {
+  foreach ($v in ($mp.$kind | Where-Object { $_ })) { Emit 'Defender\Exclusion' $kind $v }
+}
+Emit 'Defender\SmartScreen' (V 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer' 'SmartScreenEnabled') ''
+
+# Read the firmware type too: `Confirm-SecureBootUEFI` is also false on legacy
+# BIOS, which is a different machine rather than a weakened one.
+$fw = (Get-CimInstance Win32_ComputerSystem).PCSystemType
+$fwType = if (Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State') { 'Uefi' } else { 'Bios' }
+Emit 'Boot\SecureBoot' (V 'HKLM:\SYSTEM\CurrentControlSet\Control\SecureBoot\State' 'UEFISecureBootEnabled') $fwType
+$bcd = (& bcdedit /enum '{current}') -join "`n"
+Emit 'Boot\TestSigning' $(if ($bcd -match 'testsigning\s+Yes') { 1 } else { 0 }) ''
+$dg = Get-CimInstance Win32_DeviceGuard -Namespace root\Microsoft\Windows\DeviceGuard
+Emit 'Boot\HVCI' $(if (@($dg.SecurityServicesRunning) -contains 2) { 1 } else { 0 }) ''
+
+$ps = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell'
+Emit 'PowerShell\ScriptBlockLogging' (V ($ps + '\ScriptBlockLogging') 'EnableScriptBlockLogging') ''
+Emit 'PowerShell\Transcription' (V ($ps + '\Transcription') 'EnableTranscripting') ''
+$mach = (Get-ExecutionPolicy -List | Where-Object { $_.Scope -eq 'LocalMachine' }).ExecutionPolicy
+Emit 'PowerShell\ExecutionPolicy' $mach ''
+
+# WDAC user-mode enforcement, else AppLocker, else nothing in force.
+$umci = [int]$dg.UsermodeCodeIntegrityPolicyEnforcementStatus
+$applocker = @(@(Get-AppLockerPolicy -Effective).RuleCollections | Where-Object { $_.Count -gt 0 }).Count
+$state = if ($umci -eq 2) { 'enforced' } elseif ($umci -eq 1) { 'audit' } elseif ($applocker -gt 0) { 'enforced' } else { 'none' }
+Emit 'AppControl\Policy' $state ''
 "#;
 
 pub(crate) fn parse_readings(stdout: &str) -> Vec<Reading> {
@@ -418,6 +611,124 @@ mod tests {
 
         let scoop = signals_for(&r("ACL\\ScoopGlobal", "Everyone: FullControl", r"C:\ProgramData\scoop")).unwrap();
         assert_eq!(scoop.severity, Severity::Critical);
+    }
+
+    /// Turning real-time protection off, or letting its own settings be
+    /// rewritten, is never incidental.
+    #[test]
+    fn defender_switched_off_is_the_heaviest_finding_here() {
+        assert_eq!(
+            signals_for(&r("Defender\\RealTime", "False", "")).unwrap().severity,
+            Severity::Critical
+        );
+        assert!(signals_for(&r("Defender\\RealTime", "True", "")).is_none());
+        assert_eq!(
+            signals_for(&r("Defender\\TamperProtection", "False", "")).unwrap().severity,
+            Severity::High
+        );
+    }
+
+    /// An exclusion is a hole by design; how big a hole is the question.
+    #[test]
+    fn a_broad_exclusion_outweighs_a_narrow_one() {
+        for broad in [
+            r"C:\",
+            r"C:\Users",
+            r"C:\ProgramData",
+            r"C:\Users\alice\Downloads",
+            r"D:\",
+            r"C:\ProgramData\*",
+        ] {
+            assert!(is_broad_exclusion(broad), "{broad}");
+        }
+        for narrow in [
+            r"C:\Program Files\Vendor\app.exe",
+            r"C:\ProgramData\Vendor\cache\db.bin",
+            "",
+        ] {
+            assert!(!is_broad_exclusion(narrow), "{narrow}");
+        }
+
+        let wide = signals_for(&r("Defender\\Exclusion", "ExclusionPath", r"C:\")).unwrap();
+        assert_eq!(wide.severity, Severity::High);
+        let one = signals_for(&r("Defender\\Exclusion", "ExclusionPath", r"C:\Vendor\app.exe")).unwrap();
+        assert_eq!(one.severity, Severity::Medium);
+    }
+
+    /// `Confirm-SecureBootUEFI` is false on legacy BIOS too — a different
+    /// machine, not a weakened one.
+    #[test]
+    fn secure_boot_is_only_a_finding_on_uefi_firmware() {
+        let uefi_off = signals_for(&r("Boot\\SecureBoot", "0", "Uefi")).unwrap();
+        assert_eq!(uefi_off.severity, Severity::High);
+        assert!(signals_for(&r("Boot\\SecureBoot", "1", "Uefi")).is_none());
+        assert!(
+            signals_for(&r("Boot\\SecureBoot", "0", "Bios")).is_none(),
+            "legacy firmware has no Secure Boot to disable"
+        );
+    }
+
+    #[test]
+    fn test_signing_outweighs_absent_memory_integrity() {
+        assert_eq!(
+            signals_for(&r("Boot\\TestSigning", "1", "")).unwrap().severity,
+            Severity::High
+        );
+        assert!(signals_for(&r("Boot\\TestSigning", "0", "")).is_none());
+        // Not enabled by default on all hardware: a gap, not a decision.
+        assert_eq!(
+            signals_for(&r("Boot\\HVCI", "0", "")).unwrap().severity,
+            Severity::Low
+        );
+        assert!(signals_for(&r("Boot\\HVCI", "1", "")).is_none());
+    }
+
+    #[test]
+    fn a_machine_wide_bypass_execution_policy_is_a_finding() {
+        for p in ["Unrestricted", "Bypass"] {
+            assert_eq!(
+                signals_for(&r("PowerShell\\ExecutionPolicy", p, "")).unwrap().severity,
+                Severity::High,
+                "{p}"
+            );
+        }
+        for p in ["Undefined", "RemoteSigned", "AllSigned", "Restricted"] {
+            assert!(signals_for(&r("PowerShell\\ExecutionPolicy", p, "")).is_none(), "{p}");
+        }
+    }
+
+    /// Absent logging is missing evidence, not a weakened protection — and it
+    /// is absent nearly everywhere.
+    #[test]
+    fn absent_logging_and_absent_app_control_are_recorded_not_scored() {
+        for check in ["PowerShell\\ScriptBlockLogging", "PowerShell\\Transcription"] {
+            let s = signals_for(&r(check, "", "")).unwrap();
+            assert_eq!(s.severity, Severity::Info);
+            assert_eq!(s.points, 0);
+            assert!(signals_for(&r(check, "1", "")).is_none());
+        }
+
+        // Application control: enforced is silent, audit-only is a gap worth a
+        // word, absent is recorded because postmortem cannot know whether this
+        // machine was meant to be gated.
+        assert!(signals_for(&r("AppControl\\Policy", "enforced", "")).is_none());
+        assert_eq!(signals_for(&r("AppControl\\Policy", "audit", "")).unwrap().severity, Severity::Low);
+        assert_eq!(signals_for(&r("AppControl\\Policy", "none", "")).unwrap().points, 0);
+    }
+
+    /// Permissions and configuration are different lenses, and the category is
+    /// what carries that distinction into JSON and SARIF.
+    #[test]
+    fn acl_findings_and_policy_findings_carry_different_categories() {
+        let acl = signals_for(&r("ACL\\ProgramFiles", "BUILTIN\\Users: FullControl", r"C:\x")).unwrap();
+        assert_eq!(acl.category, Category::WeakAcl);
+        let path = signals_for(&r("PATH\\UserWritable", "1", r"C:\Users\alice\bin")).unwrap();
+        assert_eq!(path.category, Category::WeakAcl);
+
+        let policy = signals_for(&r("Defender\\RealTime", "False", "")).unwrap();
+        assert_eq!(policy.category, Category::Policy);
+        let uac = signals_for(&r("UAC\\EnableLUA", "0", "")).unwrap();
+        assert_eq!(uac.category, Category::Policy);
     }
 
     #[test]
