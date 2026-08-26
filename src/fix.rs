@@ -258,6 +258,8 @@ pub fn upgrade_command(eco: Ecosystem, name: &str, target: &str) -> Option<Strin
         Ecosystem::Scoop => format!("scoop update {name}"),
         // An ARP entry has no manager to upgrade it through — that is the point.
         Ecosystem::Arp => return None,
+        // An auto-start entry is not a package; there is nothing to upgrade.
+        Ecosystem::Asep | Ecosystem::Task => return None,
     })
 }
 

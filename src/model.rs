@@ -32,6 +32,11 @@ pub enum Ecosystem {
     Choco,
     /// Windows `scoop` — a user-scope OS package manager (`system` command).
     Scoop,
+    /// Windows auto-start extensibility points — what the machine runs at
+    /// logon, whether or not a package owns it (`system`).
+    Asep,
+    /// Windows scheduled tasks — what the machine runs on a trigger (`system`).
+    Task,
     /// Windows Add/Remove Programs entries — what the registry records as
     /// installed, whether or not a package manager claims it (`system`).
     Arp,
@@ -58,6 +63,8 @@ impl Ecosystem {
             Ecosystem::Choco => "choco",
             Ecosystem::Scoop => "scoop",
             Ecosystem::Arp => "arp",
+            Ecosystem::Asep => "asep",
+            Ecosystem::Task => "task",
         }
     }
 }

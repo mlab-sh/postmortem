@@ -34,6 +34,8 @@ fn purl_type(eco: Ecosystem) -> &'static str {
         // No registered purl type for scoop; `generic` is the spec's escape hatch.
         Ecosystem::Scoop => "generic",
         Ecosystem::Arp => "generic",
+        Ecosystem::Asep => "generic",
+        Ecosystem::Task => "generic",
     }
 }
 

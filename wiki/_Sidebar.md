@@ -42,6 +42,8 @@
 - [Chocolatey](Chocolatey)
 - [Scoop](Scoop)
 - [Add/Remove Programs](Add-Remove-Programs)
+- [Auto-start (ASEP)](Autostart)
+- [Scheduled tasks](Scheduled-Tasks)
 
 **Concepts**
 - [Install-time execution](Install-Time)

@@ -52,7 +52,9 @@ pub(super) fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) ->
         | Ecosystem::Msix
         | Ecosystem::Choco
         | Ecosystem::Scoop
-        | Ecosystem::Arp => return None,
+        | Ecosystem::Arp
+        | Ecosystem::Asep
+        | Ecosystem::Task => return None,
     })
 }
 
@@ -272,7 +274,9 @@ pub(super) fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<Stri
         | Ecosystem::Msix
         | Ecosystem::Choco
         | Ecosystem::Scoop
-        | Ecosystem::Arp => Vec::new(),
+        | Ecosystem::Arp
+        | Ecosystem::Asep
+        | Ecosystem::Task => Vec::new(),
     }
 }
 

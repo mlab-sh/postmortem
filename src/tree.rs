@@ -497,7 +497,7 @@ fn render_vulns(packages: &[crate::vuln::VulnPackage]) {
         println!(
             "  {}{} {}",
             p.name,
-            format!("@{}", p.version).dimmed(),
+            version_suffix(&p.version).dimmed(),
             ids.join(", ")
         );
     }
@@ -599,6 +599,18 @@ fn recap_counts(tree: &Tree) -> Counts {
         walk(r, &mut seen, &mut c);
     }
     c
+}
+
+/// `@version`, or nothing at all when there is no version to show.
+///
+/// Not every node is a package: an auto-start entry has a location and a
+/// command, and no version. Rendering `name@` for those is an artefact.
+fn version_suffix(version: &str) -> String {
+    if version.is_empty() {
+        String::new()
+    } else {
+        format!("@{version}")
+    }
 }
 
 /// gochi's closing recap: the overall scores and a per-category headcount,
@@ -776,7 +788,7 @@ fn render_node(node: &Node, prefix: &str, is_last: bool, scored: bool) {
     let mut label = format!(
         "{}{}",
         paint(&node.name, node),
-        format!("@{}", node.version).dimmed()
+        version_suffix(&node.version).dimmed()
     );
     if let Some(stars) = node.stars {
         label.push_str(&format!(" {}", format!("★{stars}").dimmed()));
@@ -864,7 +876,7 @@ fn render_flagged(tree: &Tree) {
         println!(
             "  {}{} {} {}",
             tint(name, flag.severity, &flag.signals),
-            format!("@{version}").dimmed(),
+            version_suffix(version).dimmed(),
             format!("[{repo}]").dimmed(),
             tint(&flag.signals.join(", "), flag.severity, &flag.signals)
         );
@@ -906,6 +918,15 @@ mod tests {
         let mut node = n(name, Some(sev), vec![]);
         node.signals = signals.iter().map(|s| s.to_string()).collect();
         node
+    }
+
+    /// Not every node is a package. An auto-start entry has no version, and
+    /// `name@` is an artefact rather than information.
+    #[test]
+    fn a_node_without_a_version_renders_without_the_separator() {
+        assert_eq!(version_suffix("1.2.3"), "@1.2.3");
+        assert_eq!(version_suffix("unknown"), "@unknown");
+        assert_eq!(version_suffix(""), "");
     }
 
     /// `unmanaged` is an independent axis, not a bucket: a package the manager

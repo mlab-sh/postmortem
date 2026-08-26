@@ -230,9 +230,14 @@ pub(crate) fn signals_for(info: &SigInfo) -> Vec<SysSignal> {
 
     // The remaining checks only mean something on a signature that verified.
     if info.status.eq_ignore_ascii_case("Valid") {
-        if info.expired {
+        // An expired certificate only matters when nothing pins *when* the
+        // signing happened. A countersignature is exactly that, which is why
+        // Windows still reports these as Valid — `MicrosoftEdgeUpdate.exe` on
+        // the reference machine is signed by a certificate that expired in May
+        // and is perfectly sound.
+        if info.expired && !info.timestamped {
             out.push(SysSignal::new(
-                format!("{file}: signing certificate has expired"),
+                format!("{file}: signing certificate has expired, and the signature is not timestamped"),
                 Category::Unsigned,
                 Severity::High,
                 40,
@@ -364,11 +369,29 @@ mod tests {
         assert_eq!(signals_for(&unsigned).len(), 1, "one finding, not three");
     }
 
+    /// Timestamping exists precisely so a signature outlives its certificate.
+    /// `MicrosoftEdgeUpdate.exe` on the reference machine is signed by a
+    /// certificate that expired in May, is countersigned, and Windows reports
+    /// it `Valid` — flagging it would be flagging correct practice.
     #[test]
-    fn expiry_timestamp_and_sha1_are_each_flagged() {
-        let mut expired = info(PUTTY);
-        expired.expired = true;
-        assert!(signals_for(&expired).iter().any(|s| s.label.contains("expired")));
+    fn an_expired_certificate_only_matters_without_a_timestamp() {
+        let mut expired_but_timestamped = info(PUTTY);
+        expired_but_timestamped.expired = true;
+        expired_but_timestamped.timestamped = true;
+        assert!(
+            !signals_for(&expired_but_timestamped).iter().any(|s| s.label.contains("expired")),
+            "a countersignature pins when the signing happened"
+        );
+
+        let mut expired_and_bare = info(PUTTY);
+        expired_and_bare.expired = true;
+        expired_and_bare.timestamped = false;
+        let sigs = signals_for(&expired_and_bare);
+        assert!(sigs.iter().any(|s| s.label.contains("expired")));
+    }
+
+    #[test]
+    fn missing_timestamp_and_sha1_are_each_flagged() {
 
         let mut untimed = info(PUTTY);
         untimed.timestamped = false;
