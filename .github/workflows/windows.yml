@@ -1,0 +1,55 @@
+name: Windows
+
+# Portability gate for the Windows port. There is no `system` backend for
+# Windows yet (see src/system/mod.rs), but everything else — parsers, tree,
+# resolve, gate — must keep building and passing on `x86_64-pc-windows-msvc`,
+# so the port starts from a green baseline instead of a pile of accumulated
+# unix-only assumptions.
+#
+# Deliberately separate from `release.yml`: that workflow packages tarballs with
+# bash/tar and ships a `postmortem` binary with no extension. Windows needs
+# `.exe` + zip, which is a release-artifact decision to make once there is
+# actually a Windows backend worth shipping.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build + test (x86_64-pc-windows-msvc)
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-win-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+
+      - name: Test
+        run: cargo test --all --locked
+
+      # Exercises detect -> parse -> tree against the repo's own Cargo.lock.
+      # This is where portability bugs actually surface: path separators, and
+      # any lockfile discovery that assumes `/`.
+      - name: Smoke test
+        run: |
+          $exe = ".\target\x86_64-pc-windows-msvc\release\postmortem.exe"
+          & $exe --version
+          & $exe tree

@@ -3,7 +3,7 @@
 //! All payloads are INERT — see `tests/fixtures/README.md`.
 
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 fn bin() -> &'static str {
@@ -16,6 +16,22 @@ fn cmd() -> Command {
     let mut c = Command::new(bin());
     c.arg("scan");
     c
+}
+
+/// Recursively copy the *contents* of `src` into `dst`, creating `dst` as
+/// needed. Done in Rust rather than shelling out to `cp`, which does not exist
+/// on Windows and made the caller below fail there for the wrong reason.
+fn copy_dir_all(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let to = dst.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir_all(&entry.path(), &to);
+        } else {
+            std::fs::copy(entry.path(), &to).unwrap();
+        }
+    }
 }
 
 fn fixture(name: &str) -> PathBuf {
@@ -2603,12 +2619,7 @@ fn scripts_reports_an_approved_package_whose_script_turned_hostile() {
     for f in ["package.json", "package-lock.json"] {
         std::fs::copy(src.join(f), dir.join(f)).unwrap();
     }
-    let out = Command::new("cp")
-        .arg("-r")
-        .arg(src.join("node_modules"))
-        .arg(&dir)
-        .output();
-    assert!(out.is_ok());
+    copy_dir_all(&src.join("node_modules"), &dir.join("node_modules"));
     let pkg = dir.join("package.json");
     let mut v: Value = serde_json::from_str(&std::fs::read_to_string(&pkg).unwrap()).unwrap();
     v["allowScripts"] = serde_json::json!({ "flatmap-stream": true });
@@ -2647,11 +2658,20 @@ fn git_repo(tag: &str) -> PathBuf {
     let d = std::env::temp_dir().join(format!("pm-git-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(&d).unwrap();
-    let _ = Command::new("git")
+    // Swallowing this with `let _` turned "git is not installed" into a
+    // confusing "not a git repository" assertion several lines later — which is
+    // exactly how it failed on Windows. Fail here, where the cause is obvious.
+    let out = Command::new("git")
         .arg("init")
         .arg("-q")
         .current_dir(&d)
-        .output();
+        .output()
+        .expect("this test needs `git` on PATH, but it could not be run");
+    assert!(
+        out.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     d
 }
 

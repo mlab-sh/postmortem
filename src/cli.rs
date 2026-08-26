@@ -468,7 +468,7 @@ pub struct SbomArgs {
     pub path: PathBuf,
 
     /// Write output to file. Pass `-` for stdout. When omitted, a file named
-    /// `postmortem-sbom-[MM.DD.YYYY::HH:MM].json` is written in the cwd.
+    /// `postmortem-sbom-[MM.DD.YYYY-HH.MM].json` is written in the cwd.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
@@ -788,7 +788,7 @@ pub struct TreeArgs {
     pub html: bool,
 
     /// Write output to file. Pass `-` to force stdout. When omitted for --json a
-    /// file named `postmortem-tree-[MM.DD.YYYY::HH:MM].json` is written in the cwd.
+    /// file named `postmortem-tree-[MM.DD.YYYY-HH.MM].json` is written in the cwd.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
@@ -887,7 +887,7 @@ pub struct ScanArgs {
 
     /// Write output to file. Pass `-` to force stdout. When omitted for
     /// `--json` / `--html` / `--sarif`, a file named
-    /// `postmortem-report-[MM.DD.YYYY::HH:MM].<ext>` is written in the cwd.
+    /// `postmortem-report-[MM.DD.YYYY-HH.MM].<ext>` is written in the cwd.
     #[arg(short, long)]
     pub output: Option<PathBuf>,
 
@@ -1004,8 +1004,11 @@ impl OutputTarget {
     }
 }
 
-/// `postmortem-<stem>-[MM.DD.YYYY::HH:MM].<ext>` in the current working dir.
+/// `postmortem-<stem>-[MM.DD.YYYY-HH.MM].<ext>` in the current working dir.
 pub fn default_named(stem: &str, ext: &str) -> PathBuf {
-    let stamp = chrono::Local::now().format("%m.%d.%Y::%H:%M");
+    // No `:` in the stamp: it is illegal in a Windows filename (drive and
+    // alternate-data-stream separator), and a default output path is exactly
+    // where that bites. One format on every platform, so the docs stay honest.
+    let stamp = chrono::Local::now().format("%m.%d.%Y-%H.%M");
     PathBuf::from(format!("postmortem-{stem}-[{stamp}].{ext}"))
 }
