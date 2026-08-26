@@ -17,8 +17,22 @@ postmortem can actually audit:
 detected package managers: homebrew
 ```
 
-Recognized: `brew`, `apt`, `dpkg`, `pacman`, `dnf`, `rpm`, `nix`, `apk`, `port`.
-If no **supported** manager is found, it exits `2`.
+Recognized: `brew`, `apt`, `dpkg`, `pacman`, `dnf`, `rpm`, `nix`, `apk`, `port`,
+and on Windows `winget`, `msix`, `choco`, `scoop`, `arp`. If no **supported**
+manager is found, it exits `2`.
+
+On Windows, executables are resolved through `PATHEXT` - what sits on disk is
+`winget.exe`, never `winget`.
+
+### One manager, or all of them
+
+A Linux box has a single distro manager, so `system` audits the first supported
+one it finds. **Windows layers coexist** - WinGet, MSIX, Chocolatey, Scoop and
+the registry all describe the same machine - so there `system` reads every layer
+it can and merges them into one forest. See [Windows](Windows).
+
+`--manager <name>` pins the audit to a single manager on any platform. An
+unknown name, or one detected but unusable, exits `2`.
 
 ## Supported managers
 
@@ -33,6 +47,11 @@ manager.
 | dnf / rpm | supported | [DNF](Dnf) |
 | Nix | supported | [Nix](Nix) |
 | apk (Alpine) | supported | [apk](Apk) |
+| WinGet | supported | [WinGet](WinGet) |
+| MSIX / AppX | supported | [MSIX](MSIX) |
+| Chocolatey | supported | [Chocolatey](Chocolatey) |
+| Scoop | supported | [Scoop](Scoop) |
+| Add/Remove Programs | supported | [Add/Remove Programs](Add-Remove-Programs) |
 | macports | planned | (roadmap) |
 
 ## Common options
@@ -46,6 +65,8 @@ manager.
 | `--release <id:ver>` | Override the detected OS release for the vuln lookup (e.g. `debian:12`). |
 | `--depth <N>` | Limit tree depth. |
 | `--json` | Emit the resolved forest as JSON. |
+| `--manager <name>` | Audit this manager instead of the detected default. |
+| `--no-signatures` | Skip [binary trust](Binary-Trust) verification (Windows). |
 | `--no-progress` | Disable the animated progress UI. |
 
 The output reuses the [`tree`](Tree) model: a forest with `(risk:dep)` scores,

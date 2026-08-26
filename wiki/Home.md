@@ -26,7 +26,7 @@ locally.
 | [`why`](Why) | Explain why a package is installed — and with `--blast`, what a compromise of it would reach. |
 | [`diff`](Diff) | Compare two project states — or a GitHub PR by URL — and assess what the change introduces. |
 | [`sbom`](Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |
-| [`system`](System) | Audit the machine's OS package managers (Homebrew, pacman/AUR, apt/dpkg, dnf/rpm, Nix, and apk) with the same risk scoring. |
+| [`system`](System) | Audit the machine's OS package managers (Homebrew, pacman/AUR, apt/dpkg, dnf/rpm, Nix, apk, and on [Windows](Windows) WinGet, MSIX, Chocolatey, Scoop and the registry) with the same risk scoring. |
 | [`scripts`](Install-Time) | Which dependencies execute code at install time, whether each is approved, and what its script does. |
 | [`hook`](Install-Time) | The git pre-commit hook that scans staged dependency changes. |
 | [`watch`](Install-Time) | Re-scan whenever a lockfile changes. |
@@ -48,6 +48,9 @@ locally.
 - **[Dependency scopes](Dependency-Scopes)** - what `--omit dev` removes, and why
   a package your app also uses is never dropped.
 - **[System package managers](System)** - the Homebrew, [pacman](Pacman), [apt](Apt), [dnf](Dnf), [Nix](Nix), and [apk](Apk) backends in depth.
+- **[Windows](Windows)** - the five coexisting layers ([WinGet](WinGet), [MSIX](MSIX),
+  [Chocolatey](Chocolatey), [Scoop](Scoop), [Add/Remove Programs](Add-Remove-Programs))
+  and per-binary [trust](Binary-Trust).
 - **[CI gate](CI-Gate)** - turn scores and vulns into a pass/fail build, from
   `tree`, `audit` or `system`.
 - **[CI templates](CI-Templates)** - generated pipelines for GitLab, Azure and

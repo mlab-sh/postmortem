@@ -36,6 +36,13 @@
 - [Nix](Nix)
 - [apk](Apk)
 
+**Windows** ([overview](Windows))
+- [WinGet](WinGet)
+- [MSIX / AppX](MSIX)
+- [Chocolatey](Chocolatey)
+- [Scoop](Scoop)
+- [Add/Remove Programs](Add-Remove-Programs)
+
 **Concepts**
 - [Install-time execution](Install-Time)
 - [Typosquatting](Typosquatting)
@@ -43,5 +50,6 @@
 - [Source-code scanning](Source-Code-Scanning)
 - [GitHub Actions](GitHub-Actions)
 - [Online resolution](Online-Resolution)
+- [Binary trust](Binary-Trust)
 - [CI gate](CI-Gate)
 - [Configuration](Configuration)
