@@ -254,6 +254,19 @@ pub fn orphan_inventory(opts: Opts) -> Result<Inventory> {
 /// manager was ever going to claim; flagging them would turn the finding into
 /// 90% of the machine and make it worthless.
 pub fn flag_unclaimed(inv: &mut Inventory) {
+    // "Nobody claims this" is only sayable once somebody was asked. Scanning
+    // the registry alone (`--manager arp`) reads every entry as an orphan by
+    // construction, which is an unsupported claim, not a finding — so it is
+    // stated as a caveat instead.
+    if !inv.deps.iter().any(|d| d.ecosystem != Ecosystem::Arp) {
+        inv.notes.push(
+            "no package manager layer was read alongside Add/Remove Programs, so nothing \
+             could be cross-referenced — this view cannot tell managed installs from \
+             orphaned ones"
+                .to_string(),
+        );
+        return;
+    }
     let claims = claims_from(
         inv.deps
             .iter()
@@ -375,6 +388,21 @@ mod tests {
             summary: String::new(),
             notes: Vec::new(),
         };
+        // Another layer must have been read, or nothing can be pronounced
+        // orphaned at all.
+        inv.deps.push(Dependency {
+            name: "Some.WingetPackage".into(),
+            version: "1.0".into(),
+            ecosystem: Ecosystem::Winget,
+            direct: true,
+            scope: Scope::Prod,
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
+            resolved_url: None,
+            integrity: None,
+            parents: Vec::new(),
+        });
+
         // The hidden runtime carries the marker the real backend attaches.
         push_signal(
             &mut inv.signals,
@@ -397,6 +425,43 @@ mod tests {
         assert!(!unclaimed("Microsoft Visual C++ 2022 X86 Additional Runtime"));
         assert!(unclaimed("NVIDIA PhysX"), "a visible unclaimed install is the finding");
         assert!(unclaimed("Discord"));
+    }
+
+    /// Scanning the registry on its own would make every entry an orphan,
+    /// because there is nothing to compare against. That is an artefact of the
+    /// question not being asked, so it is reported as a caveat rather than as
+    /// 163 findings.
+    #[test]
+    fn the_registry_alone_cannot_pronounce_anything_orphaned() {
+        let mut inv = Inventory {
+            manager: "arp",
+            deps: entries()
+                .iter()
+                .map(|e| Dependency {
+                    name: e.name.clone(),
+                    version: e.version.clone(),
+                    ecosystem: Ecosystem::Arp,
+                    direct: true,
+                    scope: Scope::Prod,
+                    licenses: Vec::new(),
+                    license_source: LicenseSource::Unknown,
+                    resolved_url: None,
+                    integrity: None,
+                    parents: Vec::new(),
+                })
+                .collect(),
+            repos: Vec::new(),
+            signals: HashMap::new(),
+            claims: Vec::new(),
+            summary: String::new(),
+            notes: Vec::new(),
+        };
+        flag_unclaimed(&mut inv);
+        assert!(inv.signals.is_empty(), "nothing may be pronounced orphaned");
+        assert!(
+            inv.notes.iter().any(|n| n.contains("cross-referenced")),
+            "and the reason must be stated"
+        );
     }
 
     /// The false positive this alias exists for: winget reports the package as
