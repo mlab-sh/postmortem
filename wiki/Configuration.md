@@ -171,6 +171,40 @@ The command exits non-zero. A webhook that quietly stopped arriving is worse
 than one that never worked — something downstream is waiting for it, so a run
 that could not deliver must not report success.
 
+### Authentication
+
+The credential is **never a command-line argument**. `ps` shows it to every user
+on the machine, shells record it, and CI prints the command it ran. It comes
+from the environment or from `config.yml`, like the registry tokens:
+
+```bash
+export POSTMORTEM_WEBHOOK_TOKEN=...
+postmortem system --webhook https://collector.example/postmortem
+```
+
+```yaml
+webhook:
+  auth: bearer          # bearer | basic | a header name
+  token: ...            # or $POSTMORTEM_WEBHOOK_TOKEN
+  username: ...         # basic only, or $POSTMORTEM_WEBHOOK_USER
+  headers:              # routing and tagging, not secrets
+    X-Env: prod
+```
+
+| `auth` | Sent as |
+| --- | --- |
+| `bearer` | `Authorization: Bearer <token>` |
+| `basic` | `Authorization: Basic base64(username:token)` |
+| any other value | that header name carrying the token, e.g. `X-API-Key: <token>` |
+| unset | a bare token means `bearer`; a token with a username means `basic` |
+
+A scheme configured with no credential behind it is an **error**, not a silent
+anonymous POST — that configuration would authenticate as nobody and the
+collector would be the only one to notice.
+
+The credential is applied after `headers`, so a stray entry there cannot quietly
+replace it with something weaker.
+
 ### Proxies and clear text
 
 Delivery goes through the [`network.proxy`](#corporate-networks---network)
@@ -187,6 +221,17 @@ text. Use https:// unless the collector is on this machine.
 A collector on `localhost` is exempt — that is a real deployment, not an
 oversight. The check recognises the address, not the name: `127.evil.test` is a
 hostname whose owner decides where it points.
+
+**A credential over plain HTTP is refused outright**, not warned about:
+
+```
+Error: refusing to send webhook credentials over plain HTTP to
+http://collector.corp/h — use https://, or point the webhook at a collector on
+this machine
+```
+
+Sending the report in clear text is a trade-off you may accept. Handing a bearer
+token to anything on the path is not one, and no scan is worth it.
 
 ## Cache
 

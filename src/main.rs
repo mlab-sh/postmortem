@@ -45,6 +45,7 @@ mod typosquat;
 mod ui;
 mod vuln;
 mod watch;
+mod encoding;
 mod webhook;
 mod why;
 

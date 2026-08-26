@@ -69,6 +69,112 @@ pub struct Settings {
     pub tree: TreeSettings,
     /// Corporate-network plumbing: proxy and per-service endpoint overrides.
     pub network: NetworkSettings,
+    /// How `--webhook` authenticates to the collector.
+    pub webhook: WebhookSettings,
+}
+
+/// How a report authenticates to the collector `--webhook` posts it to.
+///
+/// The credential is **never** a command-line argument: `ps` shows it to every
+/// user on the box, shells record it, and CI prints the command it ran. It
+/// comes from this file or from the environment, the same way the registry
+/// tokens do.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebhookSettings {
+    /// `bearer`, `basic` or a header name. Left unset, a token alone means
+    /// `bearer` and a username means `basic`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth: Option<String>,
+    /// The credential. Falls back to `$POSTMORTEM_WEBHOOK_TOKEN`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    /// Basic auth only. Falls back to `$POSTMORTEM_WEBHOOK_USER`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    /// Headers sent with every report — routing and tagging, not secrets.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub headers: std::collections::BTreeMap<String, String>,
+}
+
+/// The authentication a report carries, resolved from settings and environment.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WebhookAuth {
+    /// No credential configured.
+    None,
+    /// `Authorization: Bearer <token>`.
+    Bearer(String),
+    /// `Authorization: Basic base64(user:token)`.
+    Basic { username: String, token: String },
+    /// A named header carrying the token, e.g. `X-API-Key`.
+    Header { name: String, token: String },
+}
+
+impl WebhookSettings {
+    /// The credential, from this file or the environment.
+    pub fn credential(&self) -> Option<String> {
+        self.token
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .or_else(|| std::env::var("POSTMORTEM_WEBHOOK_TOKEN").ok())
+            .filter(|t| !t.trim().is_empty())
+    }
+
+    fn user(&self) -> Option<String> {
+        self.username
+            .clone()
+            .filter(|u| !u.trim().is_empty())
+            .or_else(|| std::env::var("POSTMORTEM_WEBHOOK_USER").ok())
+            .filter(|u| !u.trim().is_empty())
+    }
+
+    /// Work out which scheme to use.
+    ///
+    /// An explicit `auth` decides. Otherwise a username implies `basic` and a
+    /// bare token implies `bearer`, which is what a collector expects by
+    /// default — and guessing wrong is a 401, not a leak.
+    pub fn resolve(&self) -> Result<WebhookAuth> {
+        let Some(token) = self.credential() else {
+            // A scheme named with no credential behind it is a configuration
+            // that will silently authenticate as nobody.
+            if let Some(a) = self.auth.as_deref().filter(|a| !a.trim().is_empty()) {
+                anyhow::bail!(
+                    "webhook.auth is set to {a:?} but no credential is configured — set                      webhook.token or $POSTMORTEM_WEBHOOK_TOKEN"
+                );
+            }
+            return Ok(WebhookAuth::None);
+        };
+        let scheme = self
+            .auth
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(str::to_ascii_lowercase);
+
+        match scheme.as_deref() {
+            Some("bearer") => Ok(WebhookAuth::Bearer(token)),
+            Some("basic") => match self.user() {
+                Some(username) => Ok(WebhookAuth::Basic { username, token }),
+                None => anyhow::bail!(
+                    "webhook.auth is \"basic\" but no username is configured — set                      webhook.username or $POSTMORTEM_WEBHOOK_USER"
+                ),
+            },
+            // Anything else names the header to carry the token.
+            Some(name) => Ok(WebhookAuth::Header {
+                name: self
+                    .auth
+                    .clone()
+                    .unwrap_or_else(|| name.to_string())
+                    .trim()
+                    .to_string(),
+                token,
+            }),
+            None => match self.user() {
+                Some(username) => Ok(WebhookAuth::Basic { username, token }),
+                None => Ok(WebhookAuth::Bearer(token)),
+            },
+        }
+    }
 }
 
 /// How postmortem reaches the network.
@@ -462,6 +568,80 @@ fn restrict_perms(_p: &Path) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The credential is never a command-line argument: `ps` shows it to every
+    /// user on the box, shells record it, and CI prints the command it ran.
+    /// It comes from the config file or the environment.
+    #[test]
+    fn a_bare_token_means_bearer_and_a_username_means_basic() {
+        let bearer = WebhookSettings { token: Some("t".into()), ..Default::default() };
+        assert_eq!(bearer.resolve().unwrap(), WebhookAuth::Bearer("t".into()));
+
+        let basic = WebhookSettings {
+            token: Some("t".into()),
+            username: Some("alice".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            basic.resolve().unwrap(),
+            WebhookAuth::Basic { username: "alice".into(), token: "t".into() }
+        );
+    }
+
+    #[test]
+    fn an_explicit_scheme_wins_and_any_other_name_is_a_header() {
+        let forced = WebhookSettings {
+            auth: Some("bearer".into()),
+            token: Some("t".into()),
+            username: Some("alice".into()),
+            ..Default::default()
+        };
+        assert_eq!(forced.resolve().unwrap(), WebhookAuth::Bearer("t".into()));
+
+        let header = WebhookSettings {
+            auth: Some("X-API-Key".into()),
+            token: Some("t".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            header.resolve().unwrap(),
+            WebhookAuth::Header { name: "X-API-Key".into(), token: "t".into() }
+        );
+    }
+
+    /// A configuration that would authenticate as nobody is a mistake worth
+    /// stopping on, not a silent anonymous POST.
+    #[test]
+    fn a_scheme_without_a_credential_is_refused() {
+        let orphan = WebhookSettings { auth: Some("bearer".into()), ..Default::default() };
+        let err = orphan.resolve().unwrap_err().to_string();
+        assert!(err.contains("no credential"), "{err}");
+
+        let no_user = WebhookSettings {
+            auth: Some("basic".into()),
+            token: Some("t".into()),
+            ..Default::default()
+        };
+        assert!(no_user.resolve().unwrap_err().to_string().contains("no username"));
+    }
+
+    /// Nothing configured is not an error — most collectors are unauthenticated
+    /// internal endpoints.
+    #[test]
+    fn no_credential_at_all_is_not_a_finding() {
+        // Only true when the environment does not supply one either.
+        if std::env::var("POSTMORTEM_WEBHOOK_TOKEN").is_ok() {
+            return;
+        }
+        assert_eq!(WebhookSettings::default().resolve().unwrap(), WebhookAuth::None);
+    }
+
+    /// Whitespace is not a credential.
+    #[test]
+    fn a_blank_token_counts_as_absent() {
+        let blank = WebhookSettings { token: Some("   ".into()), ..Default::default() };
+        assert!(blank.credential().is_none() || std::env::var("POSTMORTEM_WEBHOOK_TOKEN").is_ok());
+    }
 
     /// Windows sets `USERPROFILE`, not `HOME`. Reading only `HOME` left the
     /// cache, `config.yml`, the `[gate]` policy and the allowlist quietly

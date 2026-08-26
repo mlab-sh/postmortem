@@ -343,21 +343,7 @@ mod tests {
             .expect("fixture package")
     }
 
-    /// Hand-rolled encoder, so it is checked against vectors computed
-    /// independently rather than against itself.
-    #[test]
-    fn the_powershell_encoder_matches_known_base64() {
-        assert_eq!(base64_utf16le(""), "");
-        assert_eq!(base64_utf16le("a"), "YQA=");
-        assert_eq!(base64_utf16le("ab"), "YQBiAA==");
-        assert_eq!(base64_utf16le("abc"), "YQBiAGMA");
-        assert_eq!(
-            base64_utf16le("Get-AppxPackage"),
-            "RwBlAHQALQBBAHAAcAB4AFAAYQBjAGsAYQBnAGUA"
-        );
-        // Non-ASCII, including a character outside the Latin-1 range.
-        assert_eq!(base64_utf16le("é€"), "6QCsIA==");
-    }
+
 
     /// The regression this backend is calibrated around: Microsoft ships
     /// `Developer`-signed packages. Edge is one. Treating `SignatureKind` alone

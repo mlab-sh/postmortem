@@ -11,7 +11,7 @@
 
 use anyhow::{Context, Result};
 
-use crate::settings::NetworkSettings;
+use crate::settings::{NetworkSettings, WebhookAuth, WebhookSettings};
 
 /// How long to wait on the endpoint before giving up.
 const TIMEOUT_SECS: u64 = 30;
@@ -21,18 +21,23 @@ const TIMEOUT_SECS: u64 = 30;
 /// `--webhook` implies producing the JSON, so a caller passing only the webhook
 /// still builds the report; `--json` alongside it also prints.
 pub fn deliver_opt(url: Option<&str>, body: &str) -> Result<()> {
-    match url {
-        // The proxy configuration is read here rather than threaded through
-        // every call site: a corporate runner has one, and a webhook that
-        // ignores it fails for a reason nobody can see.
-        Some(u) => deliver(u, body, &crate::settings::Settings::load_or_warn().network),
-        None => Ok(()),
-    }
+    let Some(u) = url else { return Ok(()) };
+    // Proxy and credentials are read here rather than threaded through every
+    // call site: a corporate runner has both, and a webhook that ignores them
+    // fails for a reason nobody can see.
+    let settings = crate::settings::Settings::load_or_warn();
+    deliver(u, body, &settings.network, &settings.webhook)
 }
 
 /// POST `body` to `url` as `application/json`.
-pub fn deliver(url: &str, body: &str, net: &NetworkSettings) -> Result<()> {
-    warn_if_cleartext(url);
+pub fn deliver(
+    url: &str,
+    body: &str,
+    net: &NetworkSettings,
+    creds: &WebhookSettings,
+) -> Result<()> {
+    let auth = creds.resolve()?;
+    guard_cleartext(url, &auth)?;
 
     let agent = net
         .apply(
@@ -41,11 +46,29 @@ pub fn deliver(url: &str, body: &str, net: &NetworkSettings) -> Result<()> {
         )
         .build();
 
-    let response = agent
+    let mut request = agent
         .post(url)
         .set("content-type", "application/json")
-        .set("user-agent", concat!("postmortem/", env!("CARGO_PKG_VERSION")))
-        .send_string(body);
+        .set("user-agent", concat!("postmortem/", env!("CARGO_PKG_VERSION")));
+    for (name, value) in &creds.headers {
+        request = request.set(name, value);
+    }
+    // The credential is applied last so a stray `headers` entry cannot quietly
+    // replace it with something weaker.
+    match &auth {
+        WebhookAuth::None => {}
+        WebhookAuth::Bearer(token) => {
+            request = request.set("authorization", &format!("Bearer {token}"));
+        }
+        WebhookAuth::Basic { username, token } => {
+            let encoded = crate::encoding::base64(format!("{username}:{token}").as_bytes());
+            request = request.set("authorization", &format!("Basic {encoded}"));
+        }
+        WebhookAuth::Header { name, token } => {
+            request = request.set(name, token);
+        }
+    }
+    let response = request.send_string(body);
 
     match response {
         Ok(r) => {
@@ -70,19 +93,27 @@ pub fn deliver(url: &str, body: &str, net: &NetworkSettings) -> Result<()> {
     }
 }
 
-/// A report carries an inventory of the machine or the project. Sending that in
-/// clear text is the caller's call to make, but not one to make unknowingly.
-fn warn_if_cleartext(url: &str) {
-    if !url.starts_with("http://") {
-        return;
+/// Decide what plain HTTP is allowed to carry.
+///
+/// A report in clear text is the caller's call to make. **A credential is not**:
+/// putting a bearer token on the wire in plain text hands it to anything on the
+/// path, and no scan is worth that. So the report warns and the credential
+/// refuses.
+fn guard_cleartext(url: &str, auth: &WebhookAuth) -> Result<()> {
+    if !url.starts_with("http://") || is_loopback(url) {
+        return Ok(());
     }
-    if is_loopback(url) {
-        return;
+    if *auth != WebhookAuth::None {
+        anyhow::bail!(
+            "refusing to send webhook credentials over plain HTTP to {url} — use https://, \
+             or point the webhook at a collector on this machine"
+        );
     }
     eprintln!(
         "warning: {url} is plain HTTP — the report travels in clear text. Use https:// unless \
          the collector is on this machine."
     );
+    Ok(())
 }
 
 /// Is this URL pointed at the local machine?
@@ -139,6 +170,21 @@ mod tests {
         ] {
             assert!(!is_loopback(url), "{url}");
         }
+    }
+
+    /// A report in clear text is the caller's call to make. A credential is
+    /// not: putting a bearer token on the wire in plain text hands it to
+    /// anything on the path.
+    #[test]
+    fn credentials_refuse_plain_http_while_a_bare_report_only_warns() {
+        let bearer = WebhookAuth::Bearer("t".into());
+        assert!(guard_cleartext("http://collector.corp/h", &bearer).is_err());
+        assert!(guard_cleartext("https://collector.corp/h", &bearer).is_ok());
+        // A collector on this machine is a real deployment, not an oversight.
+        assert!(guard_cleartext("http://127.0.0.1:8080/h", &bearer).is_ok());
+
+        // Without a credential the report goes, with a warning.
+        assert!(guard_cleartext("http://collector.corp/h", &WebhookAuth::None).is_ok());
     }
 
     /// Without a webhook nothing is delivered and the network is never touched.
