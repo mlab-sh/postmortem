@@ -73,6 +73,19 @@ impl Task {
         self.path.to_ascii_lowercase().starts_with(r"\microsoft\")
     }
 
+    /// Does the action run from inside the Windows directory?
+    ///
+    /// The folder a task lives in attests where it was *registered*, not what
+    /// it runs. A task under `\Microsoft\Windows\Application Experience\`
+    /// whose action was repointed elsewhere is exactly the hijack the folder
+    /// rule would otherwise excuse.
+    pub fn target_in_windows_dir(&self) -> bool {
+        let t = self.target.to_ascii_lowercase();
+        // A bare name carries no directory; Windows resolves it through PATH,
+        // and the signature check is what judges it.
+        !t.contains('\\') || t.starts_with(r"c:\windows\")
+    }
+
     /// Runs with more authority than the user who registered it.
     pub fn is_privileged(&self) -> bool {
         let u = self.user.to_ascii_uppercase();
@@ -168,6 +181,23 @@ pub(crate) fn signals_for(task: &Task) -> Vec<SysSignal> {
             Category::Persistence,
             severity,
             points,
+        ));
+    }
+
+    // The folder says where the task was registered. When a Windows-registered
+    // task runs something from outside the Windows directory, the folder stops
+    // vouching for it and the signature has to — measured first: 7 of the
+    // machine's own tasks legitimately do this (Defender under ProgramData,
+    // Windows Media Player), so this is a signal to verify, not a finding.
+    if first_party && !task.target.is_empty() && !task.target_in_windows_dir() {
+        out.push(SysSignal::new(
+            format!(
+                "task registered by Windows runs from outside the Windows directory ({})",
+                task.target
+            ),
+            Category::Persistence,
+            Severity::Info,
+            0,
         ));
     }
 
@@ -320,9 +350,17 @@ pub fn task_inventory(opts: Opts) -> Result<Inventory> {
     // ones: verifying 243 Microsoft tasks would cost time to restate that
     // Windows signs Windows.
     if opts.signatures {
+        // Third-party tasks, plus any Windows-registered task running from
+        // outside the Windows directory — the set where a signature actually
+        // decides something. Verifying all 243 Microsoft tasks would restate
+        // that Windows signs Windows, slowly.
         let targets: Vec<&Task> = tasks
             .iter()
-            .filter(|t| t.exists && !t.target.is_empty() && !t.is_microsoft_folder())
+            .filter(|t| {
+                t.exists
+                    && !t.target.is_empty()
+                    && (!t.is_microsoft_folder() || !t.target_in_windows_dir())
+            })
             .collect();
         if !targets.is_empty() {
             let paths: Vec<String> = targets.iter().map(|t| t.target.clone()).collect();
@@ -441,6 +479,48 @@ mod tests {
             .expect("should flag");
         assert_eq!(s.severity, Severity::Medium);
         assert_eq!(s.category, Category::Persistence);
+    }
+
+    /// The folder attests where a task was *registered*, not what it runs.
+    /// A task under `\Microsoft\Windows\Application Experience\` whose action
+    /// was repointed is the hijack the folder rule would otherwise excuse.
+    #[test]
+    fn a_windows_task_running_from_outside_windows_is_surfaced() {
+        let mut appraiser = task(r"\Microsoft\Windows\Application Experience\", "SYSTEM", "Highest", &["Daily"]);
+        appraiser.target = r"C:\WINDOWS\system32\compattelrunner.exe".into();
+        assert!(appraiser.target_in_windows_dir());
+        assert!(!signals_for(&appraiser).iter().any(|s| s.label.contains("outside the Windows directory")));
+
+        // Repointed at somebody else's binary.
+        let mut hijacked = appraiser.clone();
+        hijacked.target = r"C:\Users\alice\AppData\Local\Temp\evil.exe".into();
+        assert!(!hijacked.target_in_windows_dir());
+        assert!(signals_for(&hijacked).iter().any(|s| s.label.contains("outside the Windows directory")));
+    }
+
+    /// Measured before choosing the rule: 7 of the machine's own tasks
+    /// legitimately run from outside `%WINDIR%` — Defender under ProgramData,
+    /// Windows Media Player. So this is context to verify, never a finding on
+    /// its own.
+    #[test]
+    fn legitimate_windows_tasks_outside_windir_are_only_context() {
+        for target in [
+            r"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.26070.9-0\MpCmdRun.exe",
+            r"C:\Program Files\Windows Media Player\wmpnscfg.exe",
+        ] {
+            let mut t = task(r"\Microsoft\Windows\Defender\", "SYSTEM", "Highest", &["Daily"]);
+            t.target = target.into();
+            let s = signals_for(&t)
+                .into_iter()
+                .find(|s| s.label.contains("outside the Windows directory"))
+                .expect("surfaced");
+            assert_eq!(s.severity, Severity::Info);
+            assert_eq!(s.points, 0);
+        }
+        // A bare name resolved through PATH is not "outside" anything.
+        let mut bare = task(r"\Microsoft\Windows\Bluetooth\", "SYSTEM", "Highest", &["Daily"]);
+        bare.target = "BthUdTask.exe".into();
+        assert!(bare.target_in_windows_dir());
     }
 
     /// The reference machine's own third-party tasks run as the user, and must

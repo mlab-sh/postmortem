@@ -115,6 +115,33 @@ pub(crate) fn signals_for(entry: &JobEntry) -> Option<SysSignal> {
             20,
             "a third-party provisioning package is installed".to_string(),
         ),
+        // An application-compatibility shim database rewrites how a process
+        // starts — the original in-memory patching mechanism, and still a
+        // persistence one. Both registry locations are empty on a healthy
+        // machine.
+        "AppCompat\\InstalledSDB" => (
+            Severity::High,
+            40,
+            "a custom application-compatibility shim database is installed".to_string(),
+        ),
+        "AppCompat\\Custom" => (
+            Severity::High,
+            40,
+            format!("a shim database is applied to {}", entry.name),
+        ),
+        // The spooler loads printer drivers into a SYSTEM process.
+        "PrinterDriver" => (
+            Severity::High,
+            40,
+            format!("printer driver outside the driver store ({})", entry.value),
+        ),
+        // Weak on its own: a terminal profile only runs when someone opens that
+        // profile. Recorded so an odd command line is visible.
+        "WindowsTerminal" => (
+            Severity::Info,
+            0,
+            format!("terminal profile runs a custom command ({})", entry.name),
+        ),
         _ => return None,
     };
 
@@ -204,6 +231,33 @@ foreach ($a in @("$env:WINDIR\Panther\unattend.xml", "$env:WINDIR\System32\Syspr
 # Persistent BITS transfers.
 foreach ($j in (Get-BitsTransfer -AllUsers)) {
   Emit 'BITS' ([string]$j.DisplayName) ([string]$j.JobId + ' -> ' + ([string]($j.FileList | Select-Object -First 1).RemoteName))
+}
+
+# Application-compatibility shim databases rewrite how a process starts.
+foreach ($k in (Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\InstalledSDB')) {
+  $p = Get-ItemProperty $k.PSPath
+  Emit 'AppCompat\InstalledSDB' $k.PSChildName ([string]$p.DatabasePath)
+}
+foreach ($k in (Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Custom')) {
+  Emit 'AppCompat\Custom' $k.PSChildName ($k.Property -join ',')
+}
+
+# Printer drivers are loaded into the spooler, which runs as SYSTEM. A driver
+# outside the protected driver store is the PrintNightmare shape.
+foreach ($d in (Get-PrinterDriver)) {
+  $inf = [string]$d.InfPath
+  if ($inf -and $inf -notmatch 'DriverStore\\FileRepository') { Emit 'PrinterDriver' ([string]$d.Name) $inf }
+}
+
+# A Windows Terminal profile can carry its own command line.
+$wt = "$env:LOCALAPPDATA\Packages\Microsoft.WindowsTerminal_8wekyb3d8bbwe\LocalState\settings.json"
+if (Test-Path -LiteralPath $wt) {
+  $j = Get-Content -LiteralPath $wt -Raw | ConvertFrom-Json
+  foreach ($prof in $j.profiles.list) {
+    if ($prof.commandline -and $prof.source -ne 'Windows.Terminal.PowershellCore') {
+      Emit 'WindowsTerminal' ([string]$prof.name) ([string]$prof.commandline)
+    }
+  }
 }
 
 # Provisioning packages apply arbitrary configuration.
@@ -400,6 +454,39 @@ mod tests {
         // The real token still matches.
         let real = signals_for(&e("Provisioning", "x.ppkg", "iex http://198.51.100.7/a")).unwrap();
         assert_eq!(real.severity, Severity::Critical);
+    }
+
+    /// Both shim-database locations are empty on a healthy machine, which is
+    /// what makes them worth reading at all.
+    #[test]
+    fn a_custom_shim_database_is_a_finding() {
+        let sdb = signals_for(&e("AppCompat\\InstalledSDB", "{GUID}", r"C:\x\evil.sdb")).unwrap();
+        assert_eq!(sdb.severity, Severity::High);
+        let custom = signals_for(&e("AppCompat\\Custom", "target.exe", "{GUID}.sdb")).unwrap();
+        assert!(custom.label.contains("target.exe"), "{}", custom.label);
+    }
+
+    /// The spooler loads drivers into a SYSTEM process. Every driver on the
+    /// reference machine sits in the protected driver store, so only one
+    /// outside it is emitted at all.
+    #[test]
+    fn a_printer_driver_outside_the_driver_store_is_a_finding() {
+        let s = signals_for(&e("PrinterDriver", "Vendor PCL", r"C:\vendor\drv.inf")).unwrap();
+        assert_eq!(s.severity, Severity::High);
+        assert!(s.label.contains(r"C:\vendor\drv.inf"), "{}", s.label);
+    }
+
+    /// A terminal profile only runs when somebody opens that profile, so it is
+    /// recorded rather than scored.
+    #[test]
+    fn a_terminal_profile_is_recorded_not_scored() {
+        let s = signals_for(&e("WindowsTerminal", "Ubuntu", "wsl.exe -d Ubuntu")).unwrap();
+        assert_eq!(s.severity, Severity::Info);
+        assert_eq!(s.points, 0);
+
+        // Unless it carries an interpreter, which outranks the location.
+        let bad = signals_for(&e("WindowsTerminal", "x", "powershell -enc SQBFAFgA")).unwrap();
+        assert_eq!(bad.severity, Severity::Critical);
     }
 
     #[test]

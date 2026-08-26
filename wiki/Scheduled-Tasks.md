@@ -31,6 +31,18 @@ provenance signal the surface actually offers — only **9** tasks sat outside
 | `task command uses <interpreter>` | Info / High | `rundll32`, `mshta`, encoded PowerShell… Info for Windows' own tasks — 22 of them drive `rundll32` — and High for anyone else's. |
 | `third-party task runs a COM handler` | Low | No executable to verify. 155 of 252 tasks use one, so it is only surfaced outside `\Microsoft\`. |
 
+### The folder attests registration, not execution
+
+A task under `\Microsoft\Windows\Application Experience\` whose action was
+repointed at somebody else's binary is a documented hijack — and the folder rule
+above would excuse it. So when a Windows-registered task runs something from
+**outside the Windows directory**, the folder stops vouching for it: the entry is
+surfaced and its target is signature-verified.
+
+Measured before choosing that rule: **7** of the machine's own tasks legitimately
+do this — Defender's platform under `%ProgramData%`, Windows Media Player. So it
+is context at `Info`, never a finding on its own; the signature is what decides.
+
 ### Hidden tasks
 
 A task present in the scheduler's registry cache but absent from the task
