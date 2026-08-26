@@ -62,7 +62,7 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
     let opts = system::Opts {
         online: args.online,
         force_aur: args.force_aur,
-        signatures: args.signatures,
+        signatures: !args.no_signatures,
     };
     let mut read = Vec::new();
     let mut unread = Vec::new();
@@ -387,12 +387,25 @@ fn merge_inventories(mut invs: Vec<system::Inventory>, unread: Vec<String>) -> s
         notes: Vec::new(),
     };
     for inv in invs {
+        let eco = inv
+            .deps
+            .first()
+            .map(|d| d.ecosystem.as_str().to_string())
+            .unwrap_or_default();
         merged.deps.extend(inv.deps);
         merged.repos.extend(inv.repos);
         merged.notes.extend(inv.notes);
         merged.claims.extend(inv.claims);
+        // Signal keys are package names, which stop being unique the moment
+        // layers are merged: `jq` exists in both Chocolatey and Scoop, and an
+        // unqualified key hands each layer's findings to the other's package —
+        // doubling both scores. Qualify by ecosystem on the way in.
         for (name, sigs) in inv.signals {
-            merged.signals.entry(name).or_default().extend(sigs);
+            merged
+                .signals
+                .entry(system::qualify(&eco, &name))
+                .or_default()
+                .extend(sigs);
         }
     }
     merged.notes.extend(unread);
@@ -461,32 +474,45 @@ mod tests {
         );
     }
 
-    /// Signals from different layers about the same package name accumulate
-    /// rather than one silently replacing the other.
+    /// Two layers can carry the same package name — `jq` exists in both
+    /// Chocolatey and Scoop. Merging their signals under a bare name handed
+    /// each layer's findings to the other's package and doubled both scores.
+    /// They must stay attributed to the layer that raised them.
     #[test]
-    fn signals_from_two_layers_accumulate() {
-        let mut a = inv("winget", Ecosystem::Winget, &["shared"]);
-        a.signals.insert(
-            "shared".into(),
+    fn same_named_packages_in_two_layers_do_not_inherit_each_others_signals() {
+        let mut choco = inv("choco", Ecosystem::Choco, &["jq"]);
+        choco.signals.insert(
+            "jq".into(),
             vec![system::SysSignal {
-                label: "x".into(),
+                label: "from-choco".into(),
                 category: Category::Unsigned,
                 severity: Severity::Low,
-                points: 1,
+                points: 40,
             }],
         );
-        let mut b = inv("msix", Ecosystem::Msix, &["shared"]);
-        b.signals.insert(
-            "shared".into(),
+        let mut scoop = inv("scoop", Ecosystem::Scoop, &["jq"]);
+        scoop.signals.insert(
+            "jq".into(),
             vec![system::SysSignal {
-                label: "y".into(),
+                label: "from-scoop".into(),
                 category: Category::Tamper,
                 severity: Severity::High,
-                points: 2,
+                points: 40,
             }],
         );
-        let merged = merge_inventories(vec![a, b], vec![]);
-        assert_eq!(merged.signals["shared"].len(), 2);
+
+        let merged = merge_inventories(vec![choco, scoop], vec![]);
+        let choco_key = system::qualify(Ecosystem::Choco.as_str(), "jq");
+        let scoop_key = system::qualify(Ecosystem::Scoop.as_str(), "jq");
+
+        assert_eq!(merged.signals[&choco_key].len(), 1);
+        assert_eq!(merged.signals[&choco_key][0].label, "from-choco");
+        assert_eq!(merged.signals[&scoop_key].len(), 1);
+        assert_eq!(merged.signals[&scoop_key][0].label, "from-scoop");
+        assert!(
+            !merged.signals.contains_key("jq"),
+            "nothing may remain under the ambiguous bare name"
+        );
     }
 
     /// A layer that could not be read is stated as a caveat. Staying silent

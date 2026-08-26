@@ -278,7 +278,11 @@ pub fn flag_unclaimed(inv: &mut Inventory) {
     );
 
     for dep in inv.deps.iter().filter(|d| d.ecosystem == Ecosystem::Arp) {
-        let hidden = inv.signals.get(&dep.name).is_some_and(|sigs| {
+        // Merged inventories key signals by ecosystem; a bare lookup here would
+        // miss the system-hidden marker and hand 130 runtimes back to the
+        // orphan finding.
+        let key = qualify(dep.ecosystem.as_str(), &dep.name);
+        let hidden = inv.signals.get(&key).is_some_and(|sigs| {
             sigs.iter()
                 .any(|s| s.label.starts_with("hidden-from-add-remove"))
         });
@@ -296,7 +300,7 @@ pub fn flag_unclaimed(inv: &mut Inventory) {
         }
         push_signal(
             &mut inv.signals,
-            &dep.name,
+            &key,
             SysSignal::new(
                 "unclaimed (no package manager reports this install)",
                 Category::ThirdPartySource,
@@ -406,7 +410,7 @@ mod tests {
         // The hidden runtime carries the marker the real backend attaches.
         push_signal(
             &mut inv.signals,
-            "Microsoft Visual C++ 2022 X86 Additional Runtime",
+            &qualify(Ecosystem::Arp.as_str(), "Microsoft Visual C++ 2022 X86 Additional Runtime"),
             SysSignal::new(
                 "hidden-from-add-remove (SystemComponent)",
                 Category::Policy,
@@ -419,7 +423,7 @@ mod tests {
 
         let unclaimed = |name: &str| {
             inv.signals
-                .get(name)
+                .get(&qualify(Ecosystem::Arp.as_str(), name))
                 .is_some_and(|s| s.iter().any(|x| x.label.starts_with("unclaimed")))
         };
         assert!(!unclaimed("Microsoft Visual C++ 2022 X86 Additional Runtime"));
@@ -500,13 +504,13 @@ mod tests {
         // Without the alias, the winget id does not match the display name.
         let mut bare = build(Vec::new(), vec![arp.clone(), winget.clone()]);
         flag_unclaimed(&mut bare);
-        assert!(bare.signals.contains_key("Ubisoft Connect"));
+        assert!(bare.signals.contains_key(&qualify(Ecosystem::Arp.as_str(), "Ubisoft Connect")));
 
         // With it, the entry is correctly recognised as managed.
         let mut aliased = build(vec!["Ubisoft Connect".into()], vec![arp, winget]);
         flag_unclaimed(&mut aliased);
         assert!(
-            !aliased.signals.contains_key("Ubisoft Connect"),
+            !aliased.signals.contains_key(&qualify(Ecosystem::Arp.as_str(), "Ubisoft Connect")),
             "the display-name alias must claim it"
         );
     }
@@ -549,6 +553,6 @@ mod tests {
             notes: Vec::new(),
         };
         flag_unclaimed(&mut inv);
-        assert!(inv.signals.get("NVIDIA PhysX").is_none());
+        assert!(inv.signals.get(&qualify(Ecosystem::Arp.as_str(), "NVIDIA PhysX")).is_none());
     }
 }

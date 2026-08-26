@@ -199,8 +199,9 @@ pub struct Opts {
     pub online: bool,
     /// Force foreign/AUR detection past the un-synced-DB guard (pacman).
     pub force_aur: bool,
-    /// Verify Authenticode signatures on installed binaries (Windows). Off by
-    /// default because Windows charges roughly 120 ms a file.
+    /// Verify Authenticode signatures on installed binaries (Windows). On by
+    /// default from the CLI; `Opts::default()` leaves it off so a caller has to
+    /// ask, which keeps the tests explicit about what they exercise.
     pub signatures: bool,
 }
 
@@ -279,6 +280,14 @@ fn push_signal(map: &mut HashMap<String, Vec<SysSignal>>, name: &str, sig: SysSi
     map.entry(name.to_string()).or_default().push(sig);
 }
 
+/// A signal key scoped to one ecosystem.
+///
+/// The separator is a control character so it cannot occur in a package name —
+/// Windows entries in particular carry backslashes, spaces and braces.
+pub fn qualify(ecosystem: &str, name: &str) -> String {
+    format!("{ecosystem}\u{1f}{name}")
+}
+
 // --- risk annotation ----------------------------------------------------------
 
 /// Merge the offline system signals onto the tree, keyed by package name. Each
@@ -289,7 +298,11 @@ fn push_signal(map: &mut HashMap<String, Vec<SysSignal>>, name: &str, sig: SysSi
 /// `risk:dep` reflects both provenance and repo reputation.
 pub fn annotate(tree: &mut Tree, signals: &HashMap<String, Vec<SysSignal>>) {
     fn walk(n: &mut Node, signals: &HashMap<String, Vec<SysSignal>>) {
-        if let Some(list) = signals.get(&n.name) {
+        // Qualified first, so a merged multi-layer inventory attributes each
+        // finding to the layer that raised it; bare second, because a
+        // single-backend run has nothing to disambiguate.
+        let qualified = qualify(&n.ecosystem, &n.name);
+        if let Some(list) = signals.get(&qualified).or_else(|| signals.get(&n.name)) {
             for s in list {
                 if !n.signals.contains(&s.label) {
                     n.signals.push(s.label.clone());
