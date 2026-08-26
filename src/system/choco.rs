@@ -310,6 +310,7 @@ pub fn choco_inventory(opts: Opts) -> Result<Inventory> {
         deps,
         repos,
         signals,
+        claims: Vec::new(),
         summary,
         notes,
     })

@@ -255,6 +255,9 @@ pub fn upgrade_command(eco: Ecosystem, name: &str, target: &str) -> Option<Strin
         // there is no per-package command to hand the user.
         Ecosystem::Msix => return None,
         Ecosystem::Choco => format!("choco upgrade {name} -y"),
+        Ecosystem::Scoop => format!("scoop update {name}"),
+        // An ARP entry has no manager to upgrade it through — that is the point.
+        Ecosystem::Arp => return None,
     })
 }
 

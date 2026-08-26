@@ -57,6 +57,10 @@ impl Origin {
 /// the display language. `Id` is stable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Row {
+    /// The localized display name. Kept **only** as a cross-reference alias —
+    /// it is the registry's `DisplayName` for the entries winget covers — and
+    /// never used as this package's identity.
+    pub name: String,
     pub id: String,
     pub version: String,
     /// The newer version winget knows about, when it knows of one. Empty is the
@@ -181,6 +185,7 @@ pub(crate) fn parse_list(stdout: &str) -> Option<Vec<Row>> {
                 return None;
             }
             Some(Row {
+                name: slice_chars(l, start(0), end(0)),
                 id,
                 version: slice_chars(l, start(c_ver), end(c_ver)),
                 available: slice_chars(l, start(c_avail), end(c_avail)),
@@ -308,9 +313,19 @@ pub fn winget_inventory(opts: Opts) -> Result<Inventory> {
 
     let mut signals: HashMap<String, Vec<SysSignal>> = HashMap::new();
     let mut deps = Vec::with_capacity(rows.len());
+    // The `Name` column is the registry's own DisplayName for the entries it
+    // covers. It is localized, which is why it is never an identity here — but
+    // it is localized *the same way* as the registry on this machine, so it is
+    // exactly the right alias for cross-referencing. Without it, a package
+    // winget resolves to its own source (`Ubisoft.Connect`) leaves the registry
+    // entry (`Ubisoft Connect`) looking unclaimed.
+    let mut claims: Vec<String> = Vec::new();
     let (mut msix, mut arp) = (0usize, 0usize);
 
     for r in &rows {
+        if !r.name.is_empty() {
+            claims.push(r.name.clone());
+        }
         let origin = Origin::of(&r.id);
         match origin {
             Origin::Msix => msix += 1,
@@ -400,6 +415,7 @@ pub fn winget_inventory(opts: Opts) -> Result<Inventory> {
         deps,
         repos,
         signals,
+        claims,
         summary,
         notes,
     })

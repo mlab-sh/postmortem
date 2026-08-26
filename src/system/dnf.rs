@@ -187,6 +187,7 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
         deps,
         repos: dnf_repos(),
         signals,
+        claims: Vec::new(),
         summary,
         notes: warnings,
     })

@@ -192,6 +192,7 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
         deps,
         repos,
         signals,
+        claims: Vec::new(),
         summary,
         notes: warnings,
     })

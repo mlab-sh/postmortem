@@ -31,6 +31,9 @@ fn purl_type(eco: Ecosystem) -> &'static str {
         Ecosystem::Msix => "appx",
         // Chocolatey packages are NuGet packages underneath.
         Ecosystem::Choco => "nuget",
+        // No registered purl type for scoop; `generic` is the spec's escape hatch.
+        Ecosystem::Scoop => "generic",
+        Ecosystem::Arp => "generic",
     }
 }
 

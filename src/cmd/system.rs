@@ -92,7 +92,10 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
     if read.is_empty() {
         anyhow::bail!("none of the detected managers could be read: {}", unread.join("; "));
     }
-    let inv = merge_inventories(read, unread);
+    let mut inv = merge_inventories(read, unread);
+    // Only meaningful once every layer has been read: an Add/Remove entry is
+    // orphaned relative to what the *other* managers claim.
+    system::flag_unclaimed(&mut inv);
     // Surface backend caveats (weakened signing trust, tampered files, un-synced
     // DB, …) as a gochi alert followed by one bullet per caveat, so a system with
     // many caveats stays readable instead of collapsing into one run-on line.
@@ -378,6 +381,7 @@ fn merge_inventories(mut invs: Vec<system::Inventory>, unread: Vec<String>) -> s
         deps: Vec::new(),
         repos: Vec::new(),
         signals: std::collections::HashMap::new(),
+        claims: Vec::new(),
         summary,
         notes: Vec::new(),
     };
@@ -385,6 +389,7 @@ fn merge_inventories(mut invs: Vec<system::Inventory>, unread: Vec<String>) -> s
         merged.deps.extend(inv.deps);
         merged.repos.extend(inv.repos);
         merged.notes.extend(inv.notes);
+        merged.claims.extend(inv.claims);
         for (name, sigs) in inv.signals {
             merged.signals.entry(name).or_default().extend(sigs);
         }
@@ -419,6 +424,7 @@ mod tests {
             deps,
             repos: Vec::new(),
             signals: std::collections::HashMap::new(),
+            claims: Vec::new(),
             summary: format!("{} package(s)", names.len()),
             notes: Vec::new(),
         }

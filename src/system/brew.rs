@@ -160,6 +160,7 @@ pub fn brew_inventory() -> Result<Inventory> {
         deps,
         repos,
         signals,
+        claims: Vec::new(),
         summary,
         notes: Vec::new(),
     })

@@ -124,6 +124,7 @@ pub fn nix_inventory(opts: Opts) -> Result<Inventory> {
         deps,
         repos: nix_substituters(),
         signals,
+        claims: Vec::new(),
         summary,
         notes,
     })

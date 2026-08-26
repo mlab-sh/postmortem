@@ -121,6 +121,7 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
         deps,
         repos: pacman_repos(),
         signals,
+        claims: Vec::new(),
         summary,
         notes: warnings,
     })

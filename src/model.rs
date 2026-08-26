@@ -30,6 +30,11 @@ pub enum Ecosystem {
     Msix,
     /// Windows `chocolatey` — an OS-level package manager (`system` command).
     Choco,
+    /// Windows `scoop` — a user-scope OS package manager (`system` command).
+    Scoop,
+    /// Windows Add/Remove Programs entries — what the registry records as
+    /// installed, whether or not a package manager claims it (`system`).
+    Arp,
 }
 
 impl Ecosystem {
@@ -51,6 +56,8 @@ impl Ecosystem {
             Ecosystem::Winget => "winget",
             Ecosystem::Msix => "msix",
             Ecosystem::Choco => "choco",
+            Ecosystem::Scoop => "scoop",
+            Ecosystem::Arp => "arp",
         }
     }
 }

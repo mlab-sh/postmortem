@@ -18,6 +18,8 @@
 //! - [`winget`] — Windows' winget sources and the installed table behind them.
 //! - [`msix`] — Windows MSIX/AppX packages, their signing and their capabilities.
 //! - [`choco`] — Chocolatey's install posture, sources and configuration drift.
+//! - [`scoop`] — Scoop's buckets and per-manifest hashes and hooks.
+//! - [`orphan`] — Add/Remove Programs: what is installed that no manager claims.
 //!
 //! Two cross-cutting concerns are factored out rather than duplicated per
 //! backend: [`recipe`] statically analyzes the install code a third-party package
@@ -49,9 +51,11 @@ mod choco;
 mod dnf;
 mod msix;
 mod nix;
+mod orphan;
 mod pacman;
 mod privilege;
 mod recipe;
+mod scoop;
 mod winget;
 
 /// A known OS package manager and whether it's usable on this machine.
@@ -77,6 +81,9 @@ const KNOWN: &[(&str, &str, bool)] = &[
     // what gates whether postmortem can read it at all.
     ("msix", "powershell", true),
     ("choco", "choco", true),
+    ("scoop", "scoop", true),
+    // No CLI of its own: the registry is reached through PowerShell.
+    ("arp", "powershell", true),
     ("macports", "port", false),
 ];
 
@@ -167,11 +174,20 @@ pub struct Inventory {
     pub signals: HashMap<String, Vec<SysSignal>>,
     /// A one-line human count, e.g. `117 formula(e) + 2 cask(s)`.
     pub summary: String,
+    /// Extra identities this layer accounts for, beyond its package names.
+    ///
+    /// Needed because a layer's package *name* is not always the name another
+    /// layer knows it by: winget reports `Ubisoft.Connect` while the registry
+    /// records `Ubisoft Connect`. Without the alias, cross-referencing calls a
+    /// winget-managed package unclaimed.
+    pub claims: Vec<String>,
     /// Machine-wide caveats to surface after loading (un-synced DB, weakened
     /// signing trust, tampered files, …) — one per entry, rendered as a list so
     /// a system with many caveats stays readable.
     pub notes: Vec<String>,
 }
+
+pub use orphan::flag_unclaimed;
 
 /// Options for [`inventory`].
 #[derive(Default, Clone, Copy)]
@@ -195,6 +211,8 @@ pub fn inventory(manager: &str, opts: Opts) -> Result<Inventory> {
         "winget" => winget::winget_inventory(opts),
         "msix" => msix::msix_inventory(opts),
         "choco" => choco::choco_inventory(opts),
+        "scoop" => scoop::scoop_inventory(opts),
+        "arp" => orphan::orphan_inventory(opts),
         other => anyhow::bail!("no inventory backend for '{other}'"),
     }
 }

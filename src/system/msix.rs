@@ -319,6 +319,7 @@ pub fn msix_inventory(opts: Opts) -> Result<Inventory> {
         deps,
         repos: Vec::new(),
         signals,
+        claims: Vec::new(),
         summary,
         notes,
     })
