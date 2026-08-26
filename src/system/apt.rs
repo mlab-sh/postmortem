@@ -57,7 +57,7 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
             push_signal(
                 &mut signals,
                 &d.name,
-                SysSignal::new(format!("third-party-source ({src})"), Severity::Medium, 30),
+                SysSignal::new(format!("third-party-source ({src})"), Category::ThirdPartySource, Severity::Medium, 30),
             );
         }
         // Community / non-free archive component (universe, multiverse, non-free…):
@@ -68,7 +68,7 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
             push_signal(
                 &mut signals,
                 &d.name,
-                SysSignal::new(format!("component ({comp})"), Severity::Info, 0),
+                SysSignal::new(format!("component ({comp})"), Category::ThirdPartySource, Severity::Info, 0),
             );
         }
         // Held back: excluded from upgrades, so stuck on its current version.
@@ -76,7 +76,7 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
             push_signal(
                 &mut signals,
                 &d.name,
-                SysSignal::new("held (upgrades pinned off)", Severity::Low, 10),
+                SysSignal::new("held (upgrades pinned off)", Category::Policy, Severity::Low, 10),
             );
         }
         // Installed solely for a non-native architecture (e.g. a pure i386 package
@@ -85,7 +85,7 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
             push_signal(
                 &mut signals,
                 &d.name,
-                SysSignal::new(format!("foreign-arch ({arch})"), Severity::Low, 5),
+                SysSignal::new(format!("foreign-arch ({arch})"), Category::Policy, Severity::Low, 5),
             );
         }
         // Maintainer scripts (preinst/postinst/…): install-time code execution.
@@ -94,7 +94,7 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
             push_signal(
                 &mut signals,
                 &d.name,
-                SysSignal::new("install-script (runs code at install)", Severity::Info, 0),
+                SysSignal::new("install-script (runs code at install)", Category::InstallHook, Severity::Info, 0),
             );
             // Static-analyze them for third-party packages (the untrusted ones).
             if source.is_some() {
@@ -118,6 +118,7 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
                 &d.name,
                 SysSignal::new(
                     format!("dpkg-divert (overrides {path})"),
+                    Category::Tamper,
                     Severity::Medium,
                     20,
                 ),

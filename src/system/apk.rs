@@ -41,7 +41,7 @@ pub fn apk_inventory(opts: Opts) -> Result<Inventory> {
         push_signal(
             &mut signals,
             &d.name,
-            SysSignal::new("install-script (runs code at install)", Severity::Info, 0),
+            SysSignal::new("install-script (runs code at install)", Category::InstallHook, Severity::Info, 0),
         );
         for sig in analyze_recipe(&d.name, &code, "sh") {
             push_signal(&mut signals, &d.name, sig);

@@ -32,6 +32,7 @@ pub(super) fn analyze_recipe(name: &str, code: &str, ext: &str) -> Vec<SysSignal
     if pipe.is_match(code) {
         sigs.push(SysSignal::new(
             "install-remote-exec (pipe to shell)",
+            Category::InstallHook,
             Severity::High,
             40,
         ));
@@ -53,7 +54,9 @@ fn finding_to_signal(f: &crate::model::Finding) -> SysSignal {
         f.category.as_str(),
         crate::analyze::util::snippet(&f.detail, 40)
     );
-    SysSignal::new(label, f.severity, points)
+    // The analyzer already classified this — carry its category through
+    // rather than flattening every recipe finding into one bucket.
+    SysSignal::new(label, f.category, f.severity, points)
 }
 
 /// Write a recipe to a fresh temp dir as `recipe.<ext>`, so the directory-oriented

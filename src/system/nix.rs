@@ -92,14 +92,14 @@ pub fn nix_inventory(opts: Opts) -> Result<Inventory> {
             push_signal(
                 &mut signals,
                 &name,
-                SysSignal::new("unverified (no trusted signature)", Severity::Medium, 30),
+                SysSignal::new("unverified (no trusted signature)", Category::Unsigned, Severity::Medium, 30),
             );
         }
         if pi.is_some_and(|i| i.ultimate) {
             push_signal(
                 &mut signals,
                 &name,
-                SysSignal::new("built-locally", Severity::Info, 0),
+                SysSignal::new("built-locally", Category::Unsigned, Severity::Info, 0),
             );
         }
         deps.push(Dependency {

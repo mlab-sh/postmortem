@@ -49,6 +49,7 @@ pub(super) fn persistence_signals(
     if files.iter().any(|f| is_systemd_unit(f, ".service")) {
         out.push(SysSignal::new(
             "installs-service (runs at boot)",
+            Category::Persistence,
             Severity::Info,
             0,
         ));
@@ -56,6 +57,7 @@ pub(super) fn persistence_signals(
     if files.iter().any(|f| is_cron_or_timer(f)) {
         out.push(SysSignal::new(
             "installs-scheduled-task (cron/timer)",
+            Category::Persistence,
             Severity::Info,
             0,
         ));
@@ -63,6 +65,7 @@ pub(super) fn persistence_signals(
     if files.iter().any(|f| is_auth_config(f)) {
         out.push(SysSignal::new(
             "modifies-auth (sudoers.d/pam)",
+            Category::WeakAcl,
             Severity::Info,
             0,
         ));
@@ -71,6 +74,7 @@ pub(super) fn persistence_signals(
         let name = p.rsplit('/').next().unwrap_or(p);
         out.push(SysSignal::new(
             format!("setuid-binary ({name})"),
+            Category::WeakAcl,
             Severity::Low,
             10,
         ));

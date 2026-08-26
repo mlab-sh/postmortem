@@ -304,24 +304,24 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> 
 
 /// The provenance signal for a package installed from a non-official tap.
 fn third_party_tap(tap: &str) -> SysSignal {
-    SysSignal::new(format!("third-party-tap ({tap})"), Severity::Medium, 30)
+    SysSignal::new(format!("third-party-tap ({tap})"), Category::ThirdPartySource, Severity::Medium, 30)
 }
 
 /// A deprecated/disabled package — unmaintained, likely to accrue unfixed bugs.
 fn deprecated_signal() -> SysSignal {
-    SysSignal::new("deprecated", Severity::Medium, 20)
+    SysSignal::new("deprecated", Category::Outdated, Severity::Medium, 20)
 }
 
 /// The formula installs a launchd/systemd service — it runs automatically at
 /// boot/login. Higher attack surface; informational (many are legitimate).
 fn service_signal() -> SysSignal {
-    SysSignal::new("installs-service (runs at boot/login)", Severity::Info, 0)
+    SysSignal::new("installs-service (runs at boot/login)", Category::Persistence, Severity::Info, 0)
 }
 
 /// The prebuilt binary is pulled from a bottle registry outside Homebrew's
 /// official `ghcr.io/v2/homebrew/*` — an arbitrary binary host.
 fn unofficial_bottle_signal(host: &str) -> SysSignal {
-    SysSignal::new(format!("unofficial-bottle ({host})"), Severity::Medium, 30)
+    SysSignal::new(format!("unofficial-bottle ({host})"), Category::ThirdPartySource, Severity::Medium, 30)
 }
 
 /// Is a bottle `root_url` Homebrew's official registry?
@@ -335,6 +335,7 @@ fn tap_remote_signal(remote: &str) -> Option<SysSignal> {
     if remote.starts_with("http://") {
         return Some(SysSignal::new(
             "insecure-tap-remote (http)",
+            Category::Unsigned,
             Severity::High,
             40,
         ));
@@ -342,6 +343,7 @@ fn tap_remote_signal(remote: &str) -> Option<SysSignal> {
     match host_domain(remote) {
         Some(host) if !TRUSTED_DL_HOSTS.contains(&host.as_str()) => Some(SysSignal::new(
             format!("exotic-tap-host ({host})"),
+            Category::ThirdPartySource,
             Severity::Low,
             10,
         )),
@@ -358,13 +360,14 @@ fn cask_signals(c: &Cask) -> Vec<SysSignal> {
     if c.sha256.as_deref() == Some("no_check") {
         out.push(SysSignal::new(
             "unverified-download (sha256 :no_check)",
+            Category::Unsigned,
             Severity::High,
             40,
         ));
     }
     if let Some(url) = &c.url {
         if url.starts_with("http://") {
-            out.push(SysSignal::new("insecure-url (http)", Severity::High, 40));
+            out.push(SysSignal::new("insecure-url (http)", Category::Unsigned, Severity::High, 40));
         }
         // Download host unrelated to the homepage and not a known release mirror.
         if let (Some(home), Some(dl)) = (
@@ -375,6 +378,7 @@ fn cask_signals(c: &Cask) -> Vec<SysSignal> {
         {
             out.push(SysSignal::new(
                 format!("download-host-mismatch ({dl})"),
+                Category::ThirdPartySource,
                 Severity::Low,
                 10,
             ));
@@ -383,11 +387,11 @@ fn cask_signals(c: &Cask) -> Vec<SysSignal> {
     // A pkg/installer artifact runs an installer (elevated) rather than a plain
     // app drop — worth surfacing (informational).
     if c.artifacts.iter().any(is_installer_artifact) {
-        out.push(SysSignal::new("runs-installer", Severity::Info, 0));
+        out.push(SysSignal::new("runs-installer", Category::InstallHook, Severity::Info, 0));
     }
     // Self-updating outside brew — later versions bypass this audit.
     if c.auto_updates == Some(true) {
-        out.push(SysSignal::new("auto-updates", Severity::Info, 0));
+        out.push(SysSignal::new("auto-updates", Category::Policy, Severity::Info, 0));
     }
     if c.deprecated || c.disabled {
         out.push(deprecated_signal());

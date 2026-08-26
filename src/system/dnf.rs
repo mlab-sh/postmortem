@@ -83,7 +83,7 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
                 push_signal(
                     &mut signals,
                     &n.name,
-                    SysSignal::new(label, Severity::Medium, 30),
+                    SysSignal::new(label, Category::ThirdPartySource, Severity::Medium, 30),
                 );
                 true
             }
@@ -95,7 +95,7 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
             push_signal(
                 &mut signals,
                 &n.name,
-                SysSignal::new("unsigned", Severity::High, 40),
+                SysSignal::new("unsigned", Category::Unsigned, Severity::High, 40),
             );
         }
         // Scriptlets run code at install/upgrade/erase. Surfaced for all; analyzed
@@ -104,7 +104,7 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
             push_signal(
                 &mut signals,
                 &n.name,
-                SysSignal::new("install-script (runs code at install)", Severity::Info, 0),
+                SysSignal::new("install-script (runs code at install)", Category::InstallHook, Severity::Info, 0),
             );
             if third_party {
                 // rpm scriptlets are usually shell but may be Lua (`-p <lua>`);
@@ -131,7 +131,7 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
             push_signal(
                 &mut signals,
                 &n.name,
-                SysSignal::new("held (version locked)", Severity::Low, 10),
+                SysSignal::new("held (version locked)", Category::Policy, Severity::Low, 10),
             );
         }
         // Installed only for a non-native architecture (pure multilib package).
@@ -139,7 +139,7 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
             push_signal(
                 &mut signals,
                 &n.name,
-                SysSignal::new(format!("foreign-arch ({arch})"), Severity::Low, 5),
+                SysSignal::new(format!("foreign-arch ({arch})"), Category::Policy, Severity::Low, 5),
             );
         }
         // Installed but offered by no enabled repo (removed upstream / local build).
@@ -147,7 +147,7 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
             push_signal(
                 &mut signals,
                 &n.name,
-                SysSignal::new("orphan (not in any repo)", Severity::Low, 10),
+                SysSignal::new("orphan (not in any repo)", Category::ThirdPartySource, Severity::Low, 10),
             );
         }
         deps.push(Dependency {

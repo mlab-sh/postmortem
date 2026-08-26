@@ -36,7 +36,7 @@ use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use serde::Deserialize;
 
-use crate::model::{DepRef, Dependency, Ecosystem, LicenseSource, Scope, Severity};
+use crate::model::{Category, DepRef, Dependency, Ecosystem, LicenseSource, Scope, Severity};
 use crate::tree::{Node, Tree};
 
 mod apk;
@@ -94,14 +94,19 @@ fn in_path(bin: &str) -> bool {
 /// to the package's own risk score.
 pub struct SysSignal {
     pub label: String,
+    /// Which lens this signal belongs to. Carried so an OS-level signal reaches
+    /// JSON/SARIF in the same vocabulary the language analyzers already use,
+    /// instead of arriving as an uncategorised label.
+    pub category: Category,
     pub severity: Severity,
     pub points: u8,
 }
 
 impl SysSignal {
-    fn new(label: impl Into<String>, severity: Severity, points: u8) -> Self {
+    fn new(label: impl Into<String>, category: Category, severity: Severity, points: u8) -> Self {
         SysSignal {
             label: label.into(),
+            category,
             severity,
             points,
         }
@@ -164,6 +169,7 @@ pub fn inventory(manager: &str, opts: Opts) -> Result<Inventory> {
 fn outdated_signal(installed: &str, current: &str) -> SysSignal {
     SysSignal::new(
         format!("outdated ({installed} → {current})"),
+        Category::Outdated,
         Severity::Low,
         10,
     )

@@ -64,6 +64,27 @@ pub enum Category {
     Obfuscation,
     InstallHook,
     SensitiveApi,
+    /// The artefact carries no valid signature, or its download was never
+    /// verified against one (Authenticode, a repo key, a checksum).
+    Unsigned,
+    /// It came from a source outside the curated/official set — a Homebrew tap,
+    /// the AUR, a PPA, a custom winget source, a scoop bucket.
+    ThirdPartySource,
+    /// It installs something that runs on its own afterwards: a boot service, a
+    /// scheduled task, an autorun entry.
+    Persistence,
+    /// The permissions on what it installed are wider than they need to be
+    /// (setuid, a world-writable path on an execution surface).
+    WeakAcl,
+    /// What is on disk no longer matches what the package database says should
+    /// be there — modified files, a diversion.
+    Tamper,
+    /// The machine's own trust configuration is weakened or unverifiable: an
+    /// un-synced package DB, relaxed signature checking.
+    Policy,
+    /// A version behind the current one. Not provenance and not persistence —
+    /// running old code simply means missing upstream fixes.
+    Outdated,
 }
 
 impl Category {
@@ -73,6 +94,13 @@ impl Category {
             Category::Obfuscation => "obfuscation",
             Category::InstallHook => "install_hook",
             Category::SensitiveApi => "sensitive_api",
+            Category::Unsigned => "unsigned",
+            Category::ThirdPartySource => "third_party_source",
+            Category::Persistence => "persistence",
+            Category::WeakAcl => "weak_acl",
+            Category::Tamper => "tamper",
+            Category::Policy => "policy",
+            Category::Outdated => "outdated",
         }
     }
 }

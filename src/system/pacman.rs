@@ -292,6 +292,7 @@ fn read_pacman_outdated() -> HashMap<String, (String, String)> {
 fn foreign_signals(aur: Option<&AurPkg>) -> Vec<SysSignal> {
     let mut v = vec![SysSignal::new(
         "foreign-package (not from an official repo)",
+        Category::ThirdPartySource,
         Severity::Medium,
         30,
     )];
@@ -299,17 +300,19 @@ fn foreign_signals(aur: Option<&AurPkg>) -> Vec<SysSignal> {
         if p.maintainer.is_none() {
             v.push(SysSignal::new(
                 "aur-orphaned (no maintainer)",
+                Category::ThirdPartySource,
                 Severity::Medium,
                 30,
             ));
         }
         if p.out_of_date.is_some() {
-            v.push(SysSignal::new("aur-out-of-date", Severity::Medium, 20));
+            v.push(SysSignal::new("aur-out-of-date", Category::Outdated, Severity::Medium, 20));
         }
         let votes = p.num_votes.unwrap_or(0);
         if votes < 10 {
             v.push(SysSignal::new(
                 format!("aur-unpopular ({votes} votes)"),
+                Category::ThirdPartySource,
                 Severity::Low,
                 10,
             ));
@@ -389,14 +392,14 @@ fn pacman_graph(text: &str) -> (Vec<Dependency>, HashMap<String, Vec<SysSignal>>
             push_signal(
                 &mut signals,
                 &p.name,
-                SysSignal::new("unsigned", Severity::High, 40),
+                SysSignal::new("unsigned", Category::Unsigned, Severity::High, 40),
             );
         }
         if p.has_install {
             push_signal(
                 &mut signals,
                 &p.name,
-                SysSignal::new("install-script (runs code at install)", Severity::Info, 0),
+                SysSignal::new("install-script (runs code at install)", Category::InstallHook, Severity::Info, 0),
             );
         }
         deps.push(Dependency {

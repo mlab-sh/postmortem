@@ -270,6 +270,48 @@ fn rule_for(c: Category) -> Value {
             "note",
             "3.0",
         ),
+        Category::Unsigned => (
+            "Artefact installed without a verified signature",
+            "The package was installed from a download that carries no valid signature, or whose signature was never checked (Authenticode, a repository key, a recorded checksum). Signing is what ties an artefact to the party that claims to have built it; without it, nothing distinguishes the vendor's build from a substituted one.",
+            "error",
+            "7.0",
+        ),
+        Category::ThirdPartySource => (
+            "Package came from an unvetted source",
+            "The package was installed from outside the curated set — a third-party Homebrew tap, the AUR, a PPA, a custom winget source, a scoop bucket. Official repositories are reviewed before publication; these are not, which is where the OS-level equivalent of a typosquat lives. Provenance context, not proof of compromise on its own.",
+            "warning",
+            "5.0",
+        ),
+        Category::Persistence => (
+            "Package installs something that runs on its own",
+            "The package registers an execution surface that survives reboot or triggers without the user: a boot service, a scheduled task, an autorun entry. Plenty of legitimate software does this, so the finding is the surface itself — combine it with signing and source provenance to judge whether that surface is warranted.",
+            "warning",
+            "6.0",
+        ),
+        Category::WeakAcl => (
+            "Over-broad permissions on an installed file",
+            "A file the package installed carries permissions wider than it needs — a setuid bit, or a path writable by unprivileged users that something privileged executes. This turns a plain file write into privilege escalation, and it is the classic way a low-value bug becomes a root compromise.",
+            "error",
+            "7.5",
+        ),
+        Category::Tamper => (
+            "Installed files no longer match the package database",
+            "What is on disk differs from what the package manager records as installed — modified files, or a diversion redirecting a path elsewhere. Either the package was altered after installation, or something is deliberately shadowing it. This is machine state that no lockfile can tell you about.",
+            "error",
+            "9.0",
+        ),
+        Category::Policy => (
+            "Machine trust configuration is weakened or unverifiable",
+            "The host's own verification posture is degraded: an un-synced package database, relaxed or disabled signature checking. This does not indict any single package — it says the other signals on this machine were computed against a weaker guarantee than they appear to carry.",
+            "warning",
+            "4.0",
+        ),
+        Category::Outdated => (
+            "Installed version is behind the current release",
+            "A newer release exists upstream. Mild on its own and not a provenance signal, but running old code means missing whatever the maintainers have fixed since — including fixes never assigned a CVE and therefore invisible to the vulnerability scan.",
+            "note",
+            "2.0",
+        ),
     };
     json!({
         "id": id,
