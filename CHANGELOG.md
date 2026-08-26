@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attestations need a per-file request that is not made — all three now read as
   unevaluated rather than clean. The full matrix is in the online-resolution
   documentation.
+- **`main.rs` and `resolve.rs` were split up.** `main.rs` had grown to 2 489
+  lines holding every command's orchestration and rendering, and `resolve.rs` to
+  2 369 holding repository identity, registry reads, history reads, scoring and
+  the network layer at once. Both were the files any further work on provenance
+  had to touch. `main.rs` is now dispatch only, with one module per command
+  under `cmd/` and the shared work in `cmd::common` / `cmd::gate_policy`;
+  `resolve` became a module split by concern (`repo`, `registry`, `history`,
+  `signal`, `net`). No behaviour changed: the code moved verbatim, and each
+  test moved next to what it tests.
 - **Cache record format 4 → 5**, for that shape change. Entries written by 2.2.0
   and earlier are refetched on first use: no action needed, the first online run
   is simply slower.

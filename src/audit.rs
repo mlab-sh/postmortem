@@ -2,7 +2,7 @@
 //! signals the other commands surface separately: the static malware [`scan`], the
 //! dependency inventory + graph health from [`tree`], and (opt-in) the online
 //! reputation and known-vulnerability layers. The orchestration lives in
-//! `main.rs::run_audit`; this module is the pure summary → grade → render.
+//! [`crate::cmd::audit`]; this module is the pure summary → grade → render.
 
 use owo_colors::OwoColorize;
 

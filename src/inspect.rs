@@ -227,7 +227,7 @@ fn audit_clone(
     let (agent, cache, token, scan_url) = vuln_ctx;
     let mut vulns = 0;
     for d in &detect::detect(dir).unwrap_or_default() {
-        if let Some((lock, fmt)) = crate::mlab_target(d)
+        if let Some((lock, fmt)) = crate::cmd::common::mlab_target(d)
             && let Ok(v) = crate::vuln::scan(agent, cache, token.as_deref(), lock, fmt, scan_url)
         {
             vulns += v.iter().map(|p| p.vulns.len()).sum::<usize>();
