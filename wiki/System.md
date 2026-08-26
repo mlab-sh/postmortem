@@ -18,7 +18,7 @@ detected package managers: homebrew
 ```
 
 Recognized: `brew`, `apt`, `dpkg`, `pacman`, `dnf`, `rpm`, `nix`, `apk`, `port`,
-and on Windows `winget`, `msix`, `choco`, `scoop`, `arp`, `asep`, `task`, `service`, `jobs`. If no **supported**
+and on Windows `winget`, `msix`, `choco`, `scoop`, `arp`, `asep`, `task`, `service`, `jobs`, `posture`. If no **supported**
 manager is found, it exits `2`.
 
 On Windows, executables are resolved through `PATHEXT` - what sits on disk is
@@ -56,6 +56,7 @@ manager.
 | Scheduled tasks | supported | [Scheduled tasks](Scheduled-Tasks) |
 | Services & drivers | supported | [Services](Services) |
 | Jobs & file-based | supported | [Jobs](Jobs) |
+| Privilege posture | supported | [Privilege posture](Privilege-Posture) |
 | macports | planned | (roadmap) |
 
 ## Common options

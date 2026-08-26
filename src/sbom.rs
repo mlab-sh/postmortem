@@ -38,6 +38,7 @@ fn purl_type(eco: Ecosystem) -> &'static str {
         Ecosystem::Task => "generic",
         Ecosystem::Service => "generic",
         Ecosystem::Job => "generic",
+        Ecosystem::Posture => "generic",
     }
 }
 

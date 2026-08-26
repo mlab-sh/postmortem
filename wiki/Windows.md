@@ -19,6 +19,7 @@ into one forest. `--manager <name>` narrows it to one.
 | Scheduled tasks | [Scheduled tasks](Scheduled-Tasks) | What the machine runs on a trigger. |
 | Services & drivers | [Services & drivers](Services) | What the machine runs before anyone logs in. |
 | Jobs & file-based | [Jobs & file-based](Jobs) | Image hijacks, setup scripts, BITS jobs, answer files. |
+| Privilege posture | [Privilege posture](Privilege-Posture) | UAC, LSA, PATH and ACL — Windows' privilege primitives. |
 
 Every binary those layers install is then checked against
 [binary trust](Binary-Trust).

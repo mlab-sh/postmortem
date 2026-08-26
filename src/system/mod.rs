@@ -24,6 +24,7 @@
 //! - [`task`] — scheduled tasks, and the ones hiding from the task listing.
 //! - [`service`] — services and drivers, and unquoted image paths.
 //! - [`jobs`] — image hijacks, setup scripts, BITS jobs and answer files.
+//! - [`posture`] — UAC, LSA, PATH and ACL: Windows' privilege primitives.
 //!
 //! Three cross-cutting concerns are factored out rather than duplicated per
 //! backend: [`recipe`] statically analyzes the install code a third-party package
@@ -62,6 +63,7 @@ mod msix;
 mod nix;
 mod orphan;
 mod pacman;
+mod posture;
 mod privilege;
 mod recipe;
 mod scoop;
@@ -99,6 +101,7 @@ const KNOWN: &[(&str, &str, bool)] = &[
     ("task", "powershell", true),
     ("service", "powershell", true),
     ("jobs", "powershell", true),
+    ("posture", "powershell", true),
     ("macports", "port", false),
 ];
 
@@ -236,6 +239,7 @@ pub fn inventory(manager: &str, opts: Opts) -> Result<Inventory> {
         "task" => task::task_inventory(opts),
         "service" => service::service_inventory(opts),
         "jobs" => jobs::jobs_inventory(opts),
+        "posture" => posture::posture_inventory(opts),
         other => anyhow::bail!("no inventory backend for '{other}'"),
     }
 }

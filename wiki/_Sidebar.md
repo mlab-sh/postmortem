@@ -46,6 +46,7 @@
 - [Scheduled tasks](Scheduled-Tasks)
 - [Services & drivers](Services)
 - [Jobs & file-based](Jobs)
+- [Privilege posture](Privilege-Posture)
 
 **Concepts**
 - [Install-time execution](Install-Time)

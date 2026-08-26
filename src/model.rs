@@ -41,6 +41,8 @@ pub enum Ecosystem {
     Service,
     /// Windows job- and file-based persistence (IFEO, BITS, answer files).
     Job,
+    /// Windows privilege posture — UAC, LSA, PATH and ACL readings.
+    Posture,
     /// Windows Add/Remove Programs entries — what the registry records as
     /// installed, whether or not a package manager claims it (`system`).
     Arp,
@@ -71,6 +73,7 @@ impl Ecosystem {
             Ecosystem::Task => "task",
             Ecosystem::Service => "service",
             Ecosystem::Job => "job",
+            Ecosystem::Posture => "posture",
         }
     }
 }
