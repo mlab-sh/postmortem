@@ -45,6 +45,7 @@
 - [Auto-start (ASEP)](Autostart)
 - [Scheduled tasks](Scheduled-Tasks)
 - [Services & drivers](Services)
+- [Jobs & file-based](Jobs)
 
 **Concepts**
 - [Install-time execution](Install-Time)

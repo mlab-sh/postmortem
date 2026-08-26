@@ -83,6 +83,7 @@ on the build and means the same thing either way.
 
 ## Not covered yet
 
-This page covers **logon** persistence only. Services, scheduled tasks, WMI
-subscriptions, COM hijacks, drivers and the rest of the Autoruns surface are not
-enumerated yet.
+This page covers the **logon registry and Startup folders**.
+[Scheduled tasks](Scheduled-Tasks), [services and drivers](Services) and
+[jobs and file-based persistence](Jobs) have their own pages. WMI subscriptions
+and COM hijacks are not enumerated yet.

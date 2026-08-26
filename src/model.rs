@@ -39,6 +39,8 @@ pub enum Ecosystem {
     Task,
     /// Windows services and drivers — what runs before anyone logs in.
     Service,
+    /// Windows job- and file-based persistence (IFEO, BITS, answer files).
+    Job,
     /// Windows Add/Remove Programs entries — what the registry records as
     /// installed, whether or not a package manager claims it (`system`).
     Arp,
@@ -68,6 +70,7 @@ impl Ecosystem {
             Ecosystem::Asep => "asep",
             Ecosystem::Task => "task",
             Ecosystem::Service => "service",
+            Ecosystem::Job => "job",
         }
     }
 }

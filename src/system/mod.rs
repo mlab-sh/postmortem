@@ -23,6 +23,7 @@
 //! - [`asep`] — the auto-start points the machine runs at logon.
 //! - [`task`] — scheduled tasks, and the ones hiding from the task listing.
 //! - [`service`] — services and drivers, and unquoted image paths.
+//! - [`jobs`] — image hijacks, setup scripts, BITS jobs and answer files.
 //!
 //! Three cross-cutting concerns are factored out rather than duplicated per
 //! backend: [`recipe`] statically analyzes the install code a third-party package
@@ -56,6 +57,7 @@ mod authenticode;
 mod brew;
 mod choco;
 mod dnf;
+mod jobs;
 mod msix;
 mod nix;
 mod orphan;
@@ -96,6 +98,7 @@ const KNOWN: &[(&str, &str, bool)] = &[
     ("asep", "powershell", true),
     ("task", "powershell", true),
     ("service", "powershell", true),
+    ("jobs", "powershell", true),
     ("macports", "port", false),
 ];
 
@@ -232,6 +235,7 @@ pub fn inventory(manager: &str, opts: Opts) -> Result<Inventory> {
         "asep" => asep::asep_inventory(opts),
         "task" => task::task_inventory(opts),
         "service" => service::service_inventory(opts),
+        "jobs" => jobs::jobs_inventory(opts),
         other => anyhow::bail!("no inventory backend for '{other}'"),
     }
 }

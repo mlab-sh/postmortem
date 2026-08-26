@@ -55,7 +55,8 @@ pub(super) fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) ->
         | Ecosystem::Arp
         | Ecosystem::Asep
         | Ecosystem::Task
-        | Ecosystem::Service => return None,
+        | Ecosystem::Service
+        | Ecosystem::Job => return None,
     })
 }
 
@@ -278,7 +279,8 @@ pub(super) fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<Stri
         | Ecosystem::Arp
         | Ecosystem::Asep
         | Ecosystem::Task
-        | Ecosystem::Service => Vec::new(),
+        | Ecosystem::Service
+        | Ecosystem::Job => Vec::new(),
     }
 }
 

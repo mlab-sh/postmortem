@@ -9,7 +9,7 @@
 //!
 //! So privilege is scored **in combination** with provenance, never alone.
 
-use super::asep::{LOLBIN_ARGS, split_command};
+use super::asep::split_command;
 use super::*;
 
 /// One scheduled task, as emitted by [`PS_TASKS`].
@@ -156,22 +156,19 @@ pub(crate) fn signals_for(task: &Task) -> Vec<SysSignal> {
     // 22 of the machine's own tasks drive `rundll32`. It is a finding when the
     // task did not come from Windows, and context when it did — the same rule
     // the MSIX capabilities follow.
-    let line = format!("{} {}", task.execute, task.arguments).to_ascii_lowercase();
-    for (needle, why) in LOLBIN_ARGS {
-        if line.contains(needle) {
-            let (severity, points) = if first_party {
-                (Severity::Info, 0)
-            } else {
-                (Severity::High, 40)
-            };
-            out.push(SysSignal::new(
-                format!("task command uses {why}"),
-                Category::Persistence,
-                severity,
-                points,
-            ));
-            break;
-        }
+    let line = format!("{} {}", task.execute, task.arguments);
+    if let Some(why) = super::asep::lolbin_in(&line) {
+        let (severity, points) = if first_party {
+            (Severity::Info, 0)
+        } else {
+            (Severity::High, 40)
+        };
+        out.push(SysSignal::new(
+            format!("task command uses {why}"),
+            Category::Persistence,
+            severity,
+            points,
+        ));
     }
 
     // A COM handler runs an in-process class rather than a named executable, so
