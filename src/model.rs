@@ -24,6 +24,8 @@ pub enum Ecosystem {
     Nix,
     /// Alpine `apk` — an OS-level package manager (`system` command).
     Apk,
+    /// Windows `winget` — an OS-level package manager (`system` command).
+    Winget,
 }
 
 impl Ecosystem {
@@ -42,6 +44,7 @@ impl Ecosystem {
             Ecosystem::Dnf => "dnf",
             Ecosystem::Nix => "nix",
             Ecosystem::Apk => "apk",
+            Ecosystem::Winget => "winget",
         }
     }
 }

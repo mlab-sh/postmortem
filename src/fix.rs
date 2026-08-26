@@ -241,6 +241,16 @@ pub fn upgrade_command(eco: Ecosystem, name: &str, target: &str) -> Option<Strin
         Ecosystem::Dnf => format!("dnf upgrade {name}"),
         Ecosystem::Nix => return None,
         Ecosystem::Apk => format!("apk upgrade {name}"),
+        // `winget list` also reports MSIX and registry-uninstall entries under
+        // synthetic ids; those are not winget's to upgrade, so there is no
+        // command to offer.
+        Ecosystem::Winget => {
+            let up = name.to_ascii_uppercase();
+            if up.starts_with("MSIX\\") || up.starts_with("ARP\\") {
+                return None;
+            }
+            format!("winget upgrade --id {name}")
+        }
     })
 }
 

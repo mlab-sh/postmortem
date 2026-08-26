@@ -15,6 +15,7 @@
 //! - [`dnf`] — Fedora/RHEL `dnf`/`rpm`, repo and vendor provenance.
 //! - [`nix`] — the store closure reachable from the installed profiles.
 //! - [`apk`] — Alpine's installed DB as a capability graph.
+//! - [`winget`] — Windows' winget sources and the installed table behind them.
 //!
 //! Two cross-cutting concerns are factored out rather than duplicated per
 //! backend: [`recipe`] statically analyzes the install code a third-party package
@@ -47,6 +48,7 @@ mod nix;
 mod pacman;
 mod privilege;
 mod recipe;
+mod winget;
 
 /// A known OS package manager and whether it's usable on this machine.
 pub struct Manager {
@@ -66,6 +68,7 @@ const KNOWN: &[(&str, &str, bool)] = &[
     ("dnf", "dnf", true),
     ("nix", "nix-store", true),
     ("apk", "apk", true),
+    ("winget", "winget", true),
     ("macports", "port", false),
 ];
 
@@ -82,11 +85,32 @@ pub fn detect() -> Vec<Manager> {
 }
 
 /// Is `bin` present as a file on any `$PATH` entry?
+///
+/// Windows resolves a bare command name through `PATHEXT`, so what sits on disk
+/// is `winget.exe`, never `winget`. Probing the bare name alone finds nothing
+/// there and every Windows backend would report itself as absent.
 fn in_path(bin: &str) -> bool {
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
-    std::env::split_paths(&path).any(|dir| dir.join(bin).is_file())
+    let exts = path_exts();
+    std::env::split_paths(&path).any(|dir| {
+        dir.join(bin).is_file() || exts.iter().any(|e| dir.join(format!("{bin}{e}")).is_file())
+    })
+}
+
+/// The executable suffixes to try alongside the bare name. Empty off Windows,
+/// where a bare name is the whole story.
+fn path_exts() -> Vec<String> {
+    if !cfg!(windows) {
+        return Vec::new();
+    }
+    std::env::var("PATHEXT")
+        .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+        .split(';')
+        .map(|e| e.trim().to_ascii_lowercase())
+        .filter(|e| e.starts_with('.'))
+        .collect()
 }
 
 /// One offline system risk signal attached to a package by name: a label, its
@@ -160,6 +184,7 @@ pub fn inventory(manager: &str, opts: Opts) -> Result<Inventory> {
         "dnf" => dnf::dnf_inventory(opts),
         "nix" => nix::nix_inventory(opts),
         "apk" => apk::apk_inventory(opts),
+        "winget" => winget::winget_inventory(opts),
         other => anyhow::bail!("no inventory backend for '{other}'"),
     }
 }

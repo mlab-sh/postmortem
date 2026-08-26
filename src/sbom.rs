@@ -25,6 +25,7 @@ fn purl_type(eco: Ecosystem) -> &'static str {
         Ecosystem::Dnf => "rpm",
         Ecosystem::Nix => "nix",
         Ecosystem::Apk => "apk",
+        Ecosystem::Winget => "winget",
     }
 }
 

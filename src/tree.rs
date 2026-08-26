@@ -548,23 +548,29 @@ pub fn render_diagnostics(diags: &[crate::model::Diagnostic]) {
     }
 }
 
-/// gochi's closing recap: the overall scores and a per-category headcount,
-/// deduped by name@version. Packages flagged only by **soft** signals (version
-/// drift / persistence) get their own yellow lines instead of the amber
-/// "suspicious" bucket. gochi's face reacts to the worst *real* tier present.
-fn render_recap(tree: &Tree) {
-    #[derive(Default)]
-    struct Counts {
-        high: usize,
-        suspicious: usize,
-        unchecked: usize,
-        outdated: usize,
-        services: usize,
-    }
+#[derive(Default)]
+struct Counts {
+    high: usize,
+    suspicious: usize,
+    unchecked: usize,
+    outdated: usize,
+    services: usize,
+    unmanaged: usize,
+}
+
+/// The recap's headcount, deduped by `name@version`. Split out of the renderer
+/// so the tallying rules can be tested without capturing stdout.
+fn recap_counts(tree: &Tree) -> Counts {
     let mut seen = HashSet::new();
     let mut c = Counts::default();
     fn walk(node: &Node, seen: &mut HashSet<DepRef>, c: &mut Counts) {
         if node.severity.is_some() && seen.insert((node.name.clone(), node.version.clone())) {
+            // Counted on its own axis, not as a bucket: a package the manager
+            // does not govern can also be outdated, or suspicious. Removing it
+            // from those tallies would understate them.
+            if node.signals.iter().any(|s| s.starts_with("unmanaged-by-")) {
+                c.unmanaged += 1;
+            }
             if soft_tint(&node.signals) {
                 // Soft-only: count under the yellow lines (a package can be both).
                 if node.signals.iter().any(|s| s.starts_with("outdated")) {
@@ -592,6 +598,15 @@ fn render_recap(tree: &Tree) {
     for r in &tree.roots {
         walk(r, &mut seen, &mut c);
     }
+    c
+}
+
+/// gochi's closing recap: the overall scores and a per-category headcount,
+/// deduped by name@version. Packages flagged only by **soft** signals (version
+/// drift / persistence) get their own yellow lines instead of the amber
+/// "suspicious" bucket. gochi's face reacts to the worst *real* tier present.
+fn render_recap(tree: &Tree) {
+    let c = recap_counts(tree);
 
     // Soft-only packages don't alarm gochi — only real risk tiers do.
     let mood = crate::gochi::Mood::from_tiers(c.high, c.suspicious);
@@ -640,6 +655,14 @@ fn render_recap(tree: &Tree) {
             yellow(pad(c.services)),
             yellow("services".into()),
             "runs at boot/login".dimmed()
+        );
+    }
+    if c.unmanaged > 0 {
+        println!(
+            "    {}  {}   {}",
+            pad(c.unmanaged).dimmed(),
+            "unmanaged".dimmed(),
+            "present on the machine, not installed through this manager".dimmed()
         );
     }
     let vulns: usize = tree.vulnerabilities.iter().map(|p| p.vulns.len()).sum();
@@ -876,6 +899,60 @@ mod tests {
             languages: None,
             children,
         }
+    }
+
+    /// Build a node with explicit signals, for the recap tallies.
+    fn sig_node(name: &str, sev: Severity, signals: &[&str]) -> Node {
+        let mut node = n(name, Some(sev), vec![]);
+        node.signals = signals.iter().map(|s| s.to_string()).collect();
+        node
+    }
+
+    /// `unmanaged` is an independent axis, not a bucket: a package the manager
+    /// does not govern still belongs in whatever risk tier it earned. Counting
+    /// it as a bucket instead would silently understate the others.
+    #[test]
+    fn unmanaged_is_counted_without_emptying_the_other_tallies() {
+        let c = recap_counts(&tree_of(vec![
+            // unmanaged AND outdated — must land in both tallies.
+            sig_node("a", Severity::Info, &["unmanaged-by-winget", "outdated (1 → 2)"]),
+            // unmanaged AND genuinely risky — stays high, and is still unmanaged.
+            sig_node("b", Severity::High, &["unmanaged-by-winget", "unsigned"]),
+            // managed, outdated only.
+            sig_node("c", Severity::Info, &["outdated (1 → 2)"]),
+        ]));
+        assert_eq!(c.unmanaged, 2);
+        assert_eq!(c.high, 1, "an unmanaged package does not stop being high-risk");
+
+        // Documented interaction rather than an aspiration: `soft_tint` requires
+        // EVERY signal on a node to be soft, and `unmanaged-by-` is not one — so
+        // "a" is tallied as unchecked, not outdated. Making `unmanaged-by-` soft
+        // would fix the count but paint every unmanaged package yellow (53 of 88
+        // on the reference machine), which is worse. Left as is deliberately.
+        assert_eq!(c.outdated, 1, "only the managed-and-outdated package is tallied");
+        assert_eq!(c.unchecked, 1, "unmanaged+outdated currently lands here");
+    }
+
+    /// The prefix is matched, not the whole label, so a future backend gets the
+    /// line for free without touching the renderer.
+    #[test]
+    fn any_backend_can_raise_the_unmanaged_line() {
+        let c = recap_counts(&tree_of(vec![sig_node(
+            "x",
+            Severity::Info,
+            &["unmanaged-by-choco"],
+        )]));
+        assert_eq!(c.unmanaged, 1);
+    }
+
+    /// Deduped by name@version like every other tally.
+    #[test]
+    fn the_same_package_seen_twice_is_counted_once() {
+        let c = recap_counts(&tree_of(vec![
+            sig_node("dup", Severity::Info, &["unmanaged-by-winget"]),
+            sig_node("dup", Severity::Info, &["unmanaged-by-winget"]),
+        ]));
+        assert_eq!(c.unmanaged, 1);
     }
 
     fn tree_of(roots: Vec<Node>) -> Tree {
