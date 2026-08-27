@@ -48,6 +48,14 @@ graph, and flags what real compromises look like.
   install-time hooks, setuid binaries and file diversions, weakened signing
   trust, and tampered files — plus `system --vulns` for known CVEs (OSV for
   apt/apk/dnf, the Arch Security Tracker for pacman).
+* **Windows too, all of it.** A Windows machine has no single package manager, so
+  `system` reads every layer and merges them into one view: WinGet, MSIX/AppX,
+  Chocolatey, Scoop, and everything Add/Remove Programs records — including what
+  no manager claims. On top of that it reads what the machine *runs*: auto-start
+  entries, scheduled tasks, services and drivers, image hijacks and BITS jobs,
+  and its privilege posture (UAC, LSA, PATH and ACL weaknesses, Defender policy,
+  firmware) — with network posture (hosts, proxies, DNS, root CAs) under
+  `--deep`. Every binary is checked against its Authenticode signature.
 * **Deep source inspection.** `system inspect <pkg> --deep` clones every
   dependency's real source and runs the full detection suite over it.
 * **CI-ready.** Every command has a machine format — JSON throughout, SARIF for
@@ -131,7 +139,7 @@ cd postmortem && cargo build --release
 | [`why`](https://github.com/mlab-sh/postmortem/wiki/Why) | Explain why a package is installed — and with `--blast`, what a compromise of it would reach. |
 | [`diff`](https://github.com/mlab-sh/postmortem/wiki/Diff) | Compare two project states — or a GitHub PR by URL — and assess what the change introduces. |
 | [`sbom`](https://github.com/mlab-sh/postmortem/wiki/Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |
-| [`system`](https://github.com/mlab-sh/postmortem/wiki/System) | Audit your machine's OS package managers, and deep-inspect any package's real source. |
+| [`system`](https://github.com/mlab-sh/postmortem/wiki/System) | Audit your machine's OS package managers — Linux, macOS and [Windows](https://github.com/mlab-sh/postmortem/wiki/Windows) — and deep-inspect any package's real source. |
 | [`scripts`](https://github.com/mlab-sh/postmortem/wiki/Install-Time) | Which dependencies execute code at install time, whether each is approved, and what its script does. |
 | [`hook`](https://github.com/mlab-sh/postmortem/wiki/Install-Time) | Git pre-commit hook for staged dependency changes. |
 | [`timeline`](https://github.com/mlab-sh/postmortem/wiki/Timeline) | Lay a package's release history out in order: handovers, install scripts, repository moves. |
@@ -154,6 +162,7 @@ The full manual lives in the
 * [Online resolution and scoring](https://github.com/mlab-sh/postmortem/wiki/Online-Resolution)
 * [Licenses](https://github.com/mlab-sh/postmortem/wiki/Licenses) and [dependency scopes](https://github.com/mlab-sh/postmortem/wiki/Dependency-Scopes)
 * [Source-code scanning](https://github.com/mlab-sh/postmortem/wiki/Source-Code-Scanning)
+* [Windows](https://github.com/mlab-sh/postmortem/wiki/Windows): the merged layer-by-layer machine audit
 * [CI gate](https://github.com/mlab-sh/postmortem/wiki/CI-Gate), [CI templates](https://github.com/mlab-sh/postmortem/wiki/CI-Templates) and [Configuration](https://github.com/mlab-sh/postmortem/wiki/Configuration)
 
 ## License
