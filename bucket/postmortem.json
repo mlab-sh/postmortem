@@ -1,13 +1,13 @@
 {
-    "version": "2.3.0",
+    "version": "2.3.1",
     "description": "Supply-chain scanner. Flags malicious install code, typosquats, and shady provenance across your dependencies and your OS packages. Repo-reputation scoring, known-CVE intel, no telemetry.",
     "homepage": "https://github.com/mlab-sh/postmortem",
     "license": "Apache-2.0",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/mlab-sh/postmortem/releases/download/v2.3.0/postmortem-2.3.0-x86_64-pc-windows-msvc.zip",
-            "hash": "6bac836558eeefe4793f4de5409e7db4ac176d27559604b81c2f736abb870fd0",
-            "extract_dir": "postmortem-2.3.0-x86_64-pc-windows-msvc"
+  "url": "https://github.com/mlab-sh/postmortem/releases/download/v2.3.1/postmortem-2.3.1-x86_64-pc-windows-msvc.zip",
+  "hash": "69f7f4fc45b7f238605bfb149417e2354d0fbc88d7ce637a2cb500a8c466eddd",
+  "extract_dir": "postmortem-2.3.1-x86_64-pc-windows-msvc"
         }
     },
     "bin": "postmortem.exe",
@@ -16,10 +16,10 @@
     },
     "autoupdate": {
         "architecture": {
-            "64bit": {
-                "url": "https://github.com/mlab-sh/postmortem/releases/download/v$version/postmortem-$version-x86_64-pc-windows-msvc.zip",
-                "extract_dir": "postmortem-$version-x86_64-pc-windows-msvc"
-            }
+  "64bit": {
+      "url": "https://github.com/mlab-sh/postmortem/releases/download/v$version/postmortem-$version-x86_64-pc-windows-msvc.zip",
+      "extract_dir": "postmortem-$version-x86_64-pc-windows-msvc"
+  }
         }
     }
 }
