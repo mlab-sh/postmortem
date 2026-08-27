@@ -159,8 +159,13 @@ jobs:
         id: hashes
         run: |
           VERSION="${{ needs.version.outputs.version }}"
-          for target in x86_64-apple-darwin aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
-            FILE="dist/postmortem-${VERSION}-${target}.tar.gz"
+          for target in x86_64-apple-darwin aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-msvc; do
+            # Windows ships a zip, every other target a tarball — same rule as
+            # the packaging step, so adding a target stays a one-word change.
+            case "$target" in
+              *windows*) FILE="dist/postmortem-${VERSION}-${target}.zip" ;;
+              *)         FILE="dist/postmortem-${VERSION}-${target}.tar.gz" ;;
+            esac
             HASH=$(sha256sum "$FILE" | cut -d' ' -f1)
             key=$(echo "$target" | tr '[:lower:]-' '[:upper:]_')
             echo "${key}=${HASH}" >> "$GITHUB_OUTPUT"
@@ -210,15 +215,54 @@ jobs:
           sed -i 's/^          //' Formula/postmortem.rb
           cat Formula/postmortem.rb
 
-      - name: Commit updated formula
+      # Scoop's equivalent of the tap: a bucket is just a git repo, and Scoop
+      # looks in `bucket/` when that directory exists. Keeping the manifest here
+      # rather than in a separate repo means one release job bumps both package
+      # managers, and `scoop bucket add` points straight at this repo.
+      - name: Generate bucket/postmortem.json
         run: |
-          if git diff --quiet Formula/postmortem.rb; then
-            echo "Formula unchanged, skipping commit"
+          VERSION="${{ needs.version.outputs.version }}"
+          NAME="postmortem-${VERSION}-x86_64-pc-windows-msvc"
+          mkdir -p bucket
+          cat > bucket/postmortem.json <<EOF
+          {
+              "version": "${VERSION}",
+              "description": "Supply-chain scanner. Flags malicious install code, typosquats, and shady provenance across your dependencies and your OS packages. Repo-reputation scoring, known-CVE intel, no telemetry.",
+              "homepage": "https://github.com/mlab-sh/postmortem",
+              "license": "Apache-2.0",
+              "architecture": {
+                  "64bit": {
+                      "url": "https://github.com/mlab-sh/postmortem/releases/download/v${VERSION}/${NAME}.zip",
+                      "hash": "${{ steps.hashes.outputs.X86_64_PC_WINDOWS_MSVC }}",
+                      "extract_dir": "${NAME}"
+                  }
+              },
+              "bin": "postmortem.exe",
+              "checkver": {
+                  "github": "https://github.com/mlab-sh/postmortem"
+              },
+              "autoupdate": {
+                  "architecture": {
+                      "64bit": {
+                          "url": "https://github.com/mlab-sh/postmortem/releases/download/v\$version/postmortem-\$version-x86_64-pc-windows-msvc.zip",
+                          "extract_dir": "postmortem-\$version-x86_64-pc-windows-msvc"
+                      }
+                  }
+              }
+          }
+          EOF
+          sed -i 's/^          //' bucket/postmortem.json
+          cat bucket/postmortem.json
+
+      - name: Commit updated formula and bucket manifest
+        run: |
+          if git diff --quiet Formula/postmortem.rb bucket/postmortem.json; then
+            echo "Formula and manifest unchanged, skipping commit"
           else
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add Formula/postmortem.rb
-            git commit -m "chore: bump Homebrew formula to v${{ needs.version.outputs.version }}"
+            git add Formula/postmortem.rb bucket/postmortem.json
+            git commit -m "chore: bump Homebrew formula and Scoop manifest to v${{ needs.version.outputs.version }}"
             git push origin HEAD:${{ github.ref_name }}
           fi
 

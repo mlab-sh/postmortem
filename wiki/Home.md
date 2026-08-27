@@ -78,6 +78,17 @@ brew tap mlab-sh/postmortem https://github.com/mlab-sh/postmortem
 brew install postmortem
 ```
 
+**Scoop** (Windows; the bucket is the repo itself, same as the tap):
+
+```powershell
+scoop bucket add postmortem https://github.com/mlab-sh/postmortem.git
+scoop install postmortem
+```
+
+**Prebuilt binary**: a tarball per target — a zip on Windows — on the
+[releases page](https://github.com/mlab-sh/postmortem/releases), for macOS,
+Linux and Windows on x86_64, plus arm64 on macOS and Linux.
+
 ## Quick start
 
 ```bash

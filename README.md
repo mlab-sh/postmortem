@@ -101,7 +101,15 @@ brew tap mlab-sh/postmortem https://github.com/mlab-sh/postmortem.git
 brew install postmortem
 ```
 
-**Prebuilt binary** (macOS and Linux, arm64 and x86_64): grab a tarball from the
+**Scoop** (Windows)
+
+```powershell
+scoop bucket add postmortem https://github.com/mlab-sh/postmortem.git
+scoop install postmortem
+```
+
+**Prebuilt binary** (macOS, Linux and Windows, arm64 and x86_64): grab a tarball
+— or a zip on Windows — from the
 [releases page](https://github.com/mlab-sh/postmortem/releases).
 
 **From source** (a recent Rust toolchain):
