@@ -1,7 +1,33 @@
 [package]
 name = "postmortem"
-version = "2.3.0"
+version = "2.3.1"
 edition = "2024"
+description = "Supply-chain scanner. Flags malicious install code, typosquats, and shady provenance across your dependencies and your OS packages."
+license = "Apache-2.0"
+repository = "https://github.com/mlab-sh/postmortem"
+homepage = "https://github.com/mlab-sh/postmortem"
+readme = "README.md"
+keywords = ["security", "supply-chain", "sbom", "dependencies", "audit"]
+categories = ["command-line-utilities", "development-tools"]
+
+# Debian packaging for the apt repo at https://apt.mlab.sh. The binary is
+# already stripped by the release profile below, so the CI passes --no-strip:
+# letting cargo-deb strip again would run the host's strip against an
+# aarch64 binary and fail the cross build.
+[package.metadata.deb]
+maintainer = "mlab <hello@mlab.sh>"
+section = "utils"
+priority = "optional"
+extended-description = """\
+postmortem resolves your dependency graph offline, then optionally enriches it \
+with repository reputation, maintainer provenance and known-CVE intelligence. \
+It also audits the OS package managers installed on the machine."""
+depends = "$auto"
+assets = [
+    ["target/release/postmortem", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/postmortem/README.md", "644"],
+    ["LICENSE", "usr/share/doc/postmortem/copyright", "644"],
+]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

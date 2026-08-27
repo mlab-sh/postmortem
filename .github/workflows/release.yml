@@ -137,8 +137,38 @@ jobs:
           name: ${{ steps.pkg.outputs.name }}
           path: ${{ steps.pkg.outputs.file }}
 
+      # Debian packages, for the apt repository at https://apt.mlab.sh. Only
+      # the glibc Linux targets: .deb is meaningless for macOS and Windows.
+      # --no-strip because the release profile already strips; letting
+      # cargo-deb strip again would run the host strip against the aarch64
+      # binary and fail the cross build.
+      - name: Build .deb
+        id: deb
+        if: contains(matrix.target, 'linux-gnu')
+        run: |
+          VERSION="${{ needs.version.outputs.version }}"
+          case "${{ matrix.target }}" in
+            x86_64-*)  DEB_ARCH=amd64 ;;
+            aarch64-*) DEB_ARCH=arm64 ;;
+          esac
+          cargo install cargo-deb --locked
+          FILE="postmortem_${VERSION}_${DEB_ARCH}.deb"
+          cargo deb --no-build --no-strip \
+            --target "${{ matrix.target }}" \
+            --deb-version "$VERSION" \
+            --output "$FILE"
+          echo "file=${FILE}" >> "$GITHUB_OUTPUT"
+          echo "artifact=postmortem-deb-${DEB_ARCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload .deb artifact
+        if: contains(matrix.target, 'linux-gnu')
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.deb.outputs.artifact }}
+          path: ${{ steps.deb.outputs.file }}
+
   release:
-    name: Publish release + brew formula
+    name: Publish release + package manifests
     needs: [version, build]
     runs-on: ubuntu-latest
     steps:
@@ -152,7 +182,7 @@ jobs:
       - name: Flatten artifacts
         run: |
           mkdir -p dist
-          find artifacts \( -name '*.tar.gz' -o -name '*.zip' \) -exec cp {} dist/ \;
+          find artifacts \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.deb' \) -exec cp {} dist/ \;
           ls -la dist
 
       - name: Compute sha256 hashes
@@ -254,15 +284,86 @@ jobs:
           sed -i 's/^          //' bucket/postmortem.json
           cat bucket/postmortem.json
 
-      - name: Commit updated formula and bucket manifest
+      # ---- apt repository (https://apt.mlab.sh) ---------------------------
+      # The whole dists/ tree is regenerated from the stanzas committed under
+      # apt/stanzas/, so the index keeps advertising every version ever
+      # published without CI re-downloading the history. The pool/ upload is
+      # additive: R2 keeps the older .deb files it already holds.
+      - name: Build and sign the apt index
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          APT_GPG_KEY_ID: ${{ secrets.APT_GPG_KEY_ID }}
         run: |
-          if git diff --quiet Formula/postmortem.rb bucket/postmortem.json; then
-            echo "Formula and manifest unchanged, skipping commit"
+          set -euo pipefail
+          if [ -z "${APT_GPG_PRIVATE_KEY}" ]; then
+            echo "::warning::APT_GPG_PRIVATE_KEY unset - skipping the apt repository"
+            echo "APT_READY=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          sudo apt-get update
+          sudo apt-get install -y apt-utils
+
+          # Pool layout apt expects. Filename: in every stanza is relative to
+          # the repository root, so this path is also the public URL path.
+          mkdir -p pool/main/p/postmortem
+          cp dist/*.deb pool/main/p/postmortem/
+
+          apt-ftparchive packages pool | python3 apt/split-stanzas.py
+
+          for arch in amd64 arm64; do
+            dir="dists/stable/main/binary-${arch}"
+            mkdir -p "$dir"
+            cat apt/stanzas/"${arch}"/*.stanza > "${dir}/Packages"
+            gzip -9kf "${dir}/Packages"
+          done
+
+          apt-ftparchive -c apt/ftparchive.conf release dists/stable > dists/stable/Release
+
+          printf '%s' "${APT_GPG_PRIVATE_KEY}" | gpg --batch --import
+          gpg --batch --yes --local-user "${APT_GPG_KEY_ID}" \
+            --clearsign --output dists/stable/InRelease dists/stable/Release
+          gpg --batch --yes --local-user "${APT_GPG_KEY_ID}" \
+            --detach-sign --armor --output dists/stable/Release.gpg dists/stable/Release
+
+          echo "APT_READY=true" >> "$GITHUB_ENV"
+
+      # dists/ must never be cached long: a stale InRelease hides the release
+      # that was just published. The pool/ objects are immutable per version.
+      - name: Publish the apt repository to R2
+        if: env.APT_READY == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        run: |
+          set -euo pipefail
+          aws s3 sync pool/ s3://apt-mlab-sh/pool/ \
+            --endpoint-url "$ENDPOINT" \
+            --cache-control "public, max-age=31536000, immutable"
+          aws s3 sync dists/ s3://apt-mlab-sh/dists/ \
+            --endpoint-url "$ENDPOINT" \
+            --cache-control "public, max-age=300"
+          if [ -f apt/postmortem.asc ]; then
+            aws s3 cp apt/postmortem.asc s3://apt-mlab-sh/postmortem.asc \
+              --endpoint-url "$ENDPOINT" \
+              --cache-control "public, max-age=3600"
+          fi
+
+      - name: Commit updated packaging metadata
+        run: |
+          # Separate `git add` calls on purpose: a single call with a path that
+          # does not exist fails outright and stages nothing, and apt/stanzas is
+          # absent whenever the apt repository step was skipped.
+          git add Formula/postmortem.rb bucket/postmortem.json
+          if [ -d apt/stanzas ]; then git add apt/stanzas; fi
+          if git diff --cached --quiet; then
+            echo "Packaging metadata unchanged, skipping commit"
           else
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add Formula/postmortem.rb bucket/postmortem.json
-            git commit -m "chore: bump Homebrew formula and Scoop manifest to v${{ needs.version.outputs.version }}"
+            git commit -m "chore: bump packaging metadata to v${{ needs.version.outputs.version }}"
             git push origin HEAD:${{ github.ref_name }}
           fi
 
@@ -275,3 +376,4 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.deb

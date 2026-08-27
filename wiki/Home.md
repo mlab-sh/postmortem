@@ -85,6 +85,26 @@ scoop bucket add postmortem https://github.com/mlab-sh/postmortem.git
 scoop install postmortem
 ```
 
+**apt** (Debian / Ubuntu)
+
+```bash
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://apt.mlab.sh/postmortem.asc -o /etc/apt/keyrings/postmortem.asc
+sudo tee /etc/apt/sources.list.d/postmortem.sources >/dev/null <<'EOF'
+Types: deb
+URIs: https://apt.mlab.sh
+Suites: stable
+Components: main
+Architectures: amd64 arm64
+Signed-By: /etc/apt/keyrings/postmortem.asc
+EOF
+sudo apt update && sudo apt install postmortem
+```
+
+The signing key fingerprint is `717894BC C0E057E4 F9BBF3CA C0E287DD 9609A065` — check it
+with `gpg --show-keys --with-fingerprint /etc/apt/keyrings/postmortem.asc` before trusting
+the repository.
+
 **Prebuilt binary**: a tarball per target — a zip on Windows — on the
 [releases page](https://github.com/mlab-sh/postmortem/releases), for macOS,
 Linux and Windows on x86_64, plus arm64 on macOS and Linux.
