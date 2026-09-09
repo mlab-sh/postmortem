@@ -55,6 +55,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verification switched off, and no `USER` instruction. A `FROM` naming an earlier
   stage of the same file is not an unpinned base, and a valueless `ARG NPM_TOKEN`
   bakes nothing in; neither is flagged.
+- **`tree --image <ref> --layers` stacks the image itself and attributes every
+  package to the build step that introduced it.** Acquisition goes through `save`
+  rather than `export`, so no container is created at all, and each layer carries
+  the instruction from the image's own build history. The result is a report that
+  names the line to change: not "this image contains a vulnerable curl" but
+  "curl entered at `RUN apt-get install -y --no-install-recommends curl`". It
+  costs roughly twice the image's size in scratch space, which is why it is
+  opt-in. Whiteouts are applied in order, so a file the author deliberately
+  deleted in a later layer stays deleted — verified end to end against the
+  runtime's own flattening: identical package sets on Alpine, Debian, Ubuntu and
+  a purpose-built three-layer image.
+- **`diff` compares two container images.** An `image://<ref>` on either side
+  compares built artifacts instead of source trees, which is the review a lockfile
+  diff cannot give you: the OS layer moves underneath the application, and that is
+  where compromises land. A source tree on one side and an image on the other
+  works too, and answers what the build added on top of what the project declares.
 - **Vulnerability intelligence spans both layers of an image.** Lockfiles go
   through the mlab SBOM scan, OS packages through the OSV route `system --vulns`
   already used, and the OS release is read from the **image's** `etc/os-release`.
@@ -64,6 +80,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **The tree hid packages nothing depends on.** Roots were the direct
+  dependencies, falling back to parent-less nodes only when *nothing* was marked
+  direct. A package that was neither declared direct nor reachable from one
+  rendered nowhere at all, while still being counted, scanned and exported — the
+  tree quietly understated what was installed. Roots are now the direct
+  dependencies *and* anything nothing else depends on. Real data produces this:
+  Alpine's `ssl_client` has no reverse dependency in the apk database, and a
+  package sitting in an image with no manifest naming it has no parent either.
 - **A signal whose premise could not be checked is reported but not scored.**
   Inside an image no package can be shown to come from a third party, so install
   scripts and rpm scriptlets are still statically analyzed — reading an untrusted

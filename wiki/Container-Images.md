@@ -46,9 +46,29 @@ configure.
 
 Apple's `container` is **not** supported. Its `export` materialises a container's
 root filesystem only once the container has been *started*, and starting an image
-is exactly what a tool built to read untrusted artifacts must never do.
-Supporting it means unpacking `container image save` layer by layer instead,
-which is a different acquisition path rather than another name on this list.
+is exactly what a tool built to read untrusted artifacts must never do. It needs
+the `save`-based path below rather than another name on this list.
+
+### `--layers`
+
+`tree --image <ref> --layers` acquires through `save` instead and stacks the
+layers itself. Two things come out of that:
+
+- **Attribution.** Every file remembers the layer that last wrote it and every
+  layer remembers its build instruction, so a finding names the line that caused
+  it: not "this image contains a vulnerable curl" but "curl entered at
+  `RUN apt-get install -y --no-install-recommends curl`".
+- **No container at all.** `save` reads the image store directly, so unlike
+  `export` there is nothing to create, leak or clean up.
+
+It costs roughly twice the image's size in scratch space and noticeably more
+time, which is why it is opt-in.
+
+A layer removes a file from the layers below by adding a marker rather than
+deleting anything (`.wh.<name>`, and `.wh..wh..opq` for a whole directory).
+Applying those in order is what separates stacking from concatenating: get it
+wrong and a credential or build tool the author deliberately removed reappears in
+the report as though it shipped.
 
 A reference that is not present locally is pulled. A reference that cannot be
 resolved is an error and exits non-zero: an image postmortem could not read must
@@ -190,3 +210,24 @@ postmortem scan .
 A `FROM` that names an earlier stage of the same file is not an unpinned base,
 and a bare `ARG NPM_TOKEN` with no value bakes nothing in — both are the correct
 patterns and neither is flagged.
+
+
+## Comparing two images
+
+`diff` takes an `image://` reference on either side.
+
+```bash
+postmortem diff image://acme/api:1.2.0 image://acme/api:1.2.1
+```
+
+This is the review a lockfile diff cannot give you, because the OS layer moves
+underneath the application and that is where compromises land. Both sides are
+filtered identically, and `--online` / `--vulns` assess only what the change
+*introduces*.
+
+A source tree on one side and an image on the other works too, and answers a
+different question: what the build added on top of what the project declares.
+
+```bash
+postmortem diff ./api image://acme/api:1.2.1
+```

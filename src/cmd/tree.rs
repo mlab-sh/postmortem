@@ -37,9 +37,12 @@ struct Prepared {
     /// The image's own OS release, pinned so the OS vuln scan can never fall
     /// through to this machine's.
     release: Option<osv_release::Pinned>,
-    /// Holds the extracted image alive: the lockfiles the vuln scan uploads live
-    /// inside it, so it must outlive the whole iteration.
-    _image: Option<image::Image>,
+    /// The image itself, when the target was one. Held for the whole iteration
+    /// because the lockfiles the vuln scan uploads live inside its extraction,
+    /// and because `--layers` attribution is answered from it.
+    image: Option<image::Image>,
+    /// `package name → the files it installed`, for layer attribution.
+    files: std::collections::HashMap<String, Vec<String>>,
 }
 
 /// A release formatted the way `--release` accepts it, so the shared OS vuln
@@ -148,7 +151,8 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
             diags,
             inventory,
             release,
-            _image,
+            image,
+            files,
         } = match job {
             Job::Path(path) => {
                 let target = match path.canonicalize() {
@@ -195,13 +199,14 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
                     diags,
                     inventory: None,
                     release: None,
-                    _image: None,
+                    image: None,
+                    files: std::collections::HashMap::new(),
                 }
             }
             // An image that cannot be acquired is a configuration error for the
             // same reason a missing path is: an empty tree would read as clean.
             Job::Image(reference) => {
-                match common::open_image(reference, &ui, &cli::OmitSet::scopes(&args.omit)) {
+                match common::open_image(reference, args.layers, &ui, &cli::OmitSet::scopes(&args.omit)) {
                     Ok(scan) => {
                         let ecosystems = scan.ecosystems();
                         let common::ImageScan {
@@ -211,6 +216,7 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
                             diags,
                             inventory,
                             release,
+                            files,
                         } = scan;
                         Prepared {
                             root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
@@ -221,7 +227,8 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
                             diags,
                             inventory,
                             release: release.as_ref().map(osv_release::Pinned::of),
-                            _image: Some(image),
+                            image: Some(image),
+                            files,
                         }
                     }
                     Err(e) => {
@@ -322,6 +329,11 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
         // several targets land in a single document. The terminal view streams.
         if !machine {
             tree::render(&forest);
+            if let Some(img) = &image
+                && args.layers
+            {
+                render_layers(img, &files, &forest);
+            }
         }
 
         // CI gate: turn the online scores / vuln scan into a pass/fail exit code.
@@ -433,4 +445,70 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
         std::process::exit(2);
     }
     std::process::exit(if gate_tripped { 1 } else { 0 });
+}
+
+
+/// Render the image's layer stack, and attribute its packages to the build step
+/// that introduced them.
+///
+/// The point of the table is the last column. "This image contains a vulnerable
+/// openssl" sends you looking; "openssl entered at `RUN apt-get install -y
+/// curl`" tells you which line to change.
+fn render_layers(
+    img: &image::Image,
+    files: &std::collections::HashMap<String, Vec<String>>,
+    forest: &tree::Tree,
+) {
+    use owo_colors::OwoColorize;
+
+    if img.layers.is_empty() {
+        return;
+    }
+    // package name → layer index.
+    let mut by_layer: std::collections::HashMap<usize, Vec<&str>> = std::collections::HashMap::new();
+    for (name, paths) in files {
+        if let Some(layer) = img.layer_for_files(paths.iter().map(String::as_str)) {
+            by_layer.entry(layer.index).or_default().push(name.as_str());
+        }
+    }
+    let vulnerable: std::collections::HashSet<&str> = forest
+        .vulnerabilities
+        .iter()
+        .map(|v| v.name.as_str())
+        .collect();
+    let counts = img.files_per_layer();
+
+    println!("\n{}", "layers".bold());
+    for layer in &img.layers {
+        let pkgs = by_layer.get(&layer.index).map(Vec::as_slice).unwrap_or(&[]);
+        let hits: Vec<&&str> = pkgs.iter().filter(|p| vulnerable.contains(**p)).collect();
+        let files_here = counts.get(layer.index).copied().unwrap_or(0);
+        let tail = match pkgs.len() {
+            0 => format!("{files_here} file(s)"),
+            n => format!("{files_here} file(s) · {n} package(s)"),
+        };
+        println!("  {}  {}", layer.summary().bold(), tail.dimmed());
+        if !hits.is_empty() {
+            let mut names: Vec<&str> = hits.into_iter().copied().collect();
+            names.sort_unstable();
+            println!(
+                "      {} {}",
+                "known vulnerabilities in".red(),
+                names.join(", ").red()
+            );
+        }
+    }
+    // Packages whose files no layer claims: the attribution is incomplete, and
+    // saying so beats letting a layer look emptier than it is.
+    let attributed: usize = by_layer.values().map(Vec::len).sum();
+    if attributed < files.len() {
+        println!(
+            "  {}",
+            format!(
+                "{} package(s) could not be attributed to a layer",
+                files.len() - attributed
+            )
+            .dimmed()
+        );
+    }
 }

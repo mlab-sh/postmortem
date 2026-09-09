@@ -303,6 +303,9 @@ pub(crate) struct ImageScan {
     pub inventory: Option<system::Inventory>,
     /// The release the OS layer belongs to, for the OSV ecosystem string.
     pub release: Option<osv::Release>,
+    /// `package name → the files it installed`, for layer attribution. Empty
+    /// unless the image was acquired layer by layer and its backend indexes files.
+    pub files: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl ImageScan {
@@ -332,10 +335,11 @@ impl ImageScan {
 /// indistinguishable from "postmortem did not look".
 pub(crate) fn open_image(
     reference: &str,
+    layered: bool,
     ui: &ui::Ui,
     omit: &[model::Scope],
 ) -> Result<ImageScan> {
-    let image = image::acquire(reference, ui)?;
+    let image = image::acquire(reference, layered, ui)?;
     let root = image.root().to_path_buf();
 
     let mut diags: Vec<model::Diagnostic> = image
@@ -411,6 +415,7 @@ pub(crate) fn open_image(
     let os_phase = ui.phase("reading the image's OS packages");
     let mut inventory = None;
     let mut release = None;
+    let mut files = std::collections::HashMap::new();
     match system::root_manager(&root) {
         Some(manager) => match system::inventory_at(manager, &root, system::Opts::default()) {
             Ok(inv) => {
@@ -426,6 +431,11 @@ pub(crate) fn open_image(
                     });
                 }
                 deps.extend(inv.deps.iter().cloned());
+                // Only worth the directory walk when there are layers to
+                // attribute packages to.
+                if layered {
+                    files = system::file_index_at(manager, &root);
+                }
                 for note in &inv.notes {
                     diags.push(model::Diagnostic {
                         ecosystem: manager.into(),
@@ -463,6 +473,7 @@ pub(crate) fn open_image(
         diags,
         inventory,
         release,
+        files,
     })
 }
 

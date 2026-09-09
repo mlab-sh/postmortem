@@ -325,7 +325,7 @@ fn dnf_provenance_label(repo: Option<&str>, vendor: &str) -> Option<String> {
 
 /// `name → installed files`, from one `rpm -qa` over `FILENAMES`. Multiarch copies
 /// of a package are unioned under the bare name.
-fn rpm_file_index(root: &Path) -> HashMap<String, Vec<String>> {
+pub(super) fn rpm_file_index(root: &Path) -> HashMap<String, Vec<String>> {
     let Ok(text) = rpm_qa(root, "%{NAME}\t[%{FILENAMES},]\n") else {
         return HashMap::new();
     };

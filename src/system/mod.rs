@@ -307,6 +307,19 @@ pub fn inventory_at(manager: &str, root: &std::path::Path, opts: Opts) -> Result
     }
 }
 
+/// `package name → the file paths it installed`, under an alternate root.
+///
+/// Only the backends whose database records file manifests can answer; the rest
+/// return an empty map, and the caller simply attributes nothing rather than
+/// attributing wrongly.
+pub fn file_index_at(manager: &str, root: &std::path::Path) -> HashMap<String, Vec<String>> {
+    match manager {
+        "apt" => apt::apt_file_index_at(root),
+        "dnf" => dnf::rpm_file_index(root),
+        _ => HashMap::new(),
+    }
+}
+
 /// Run a PowerShell script and return its stdout.
 ///
 /// Passed as `-EncodedCommand` (base64 UTF-16LE): it sidesteps every layer of

@@ -25,7 +25,7 @@ pub(crate) fn run_scan(args: cli::ScanArgs) -> Result<()> {
     // An image is a single target and conflicts with paths, so it is handled
     // before the loop rather than inside it.
     if let Some(reference) = &args.image {
-        let scan = match common::open_image(reference, &ui, &cli::OmitSet::scopes(&args.omit)) {
+        let scan = match common::open_image(reference, false, &ui, &cli::OmitSet::scopes(&args.omit)) {
             Ok(s) => s,
             // Matches the exit code `scan` already uses for "nothing could be
             // scanned", so CI cannot read an unreadable image as a clean run.

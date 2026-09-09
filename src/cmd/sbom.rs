@@ -17,7 +17,7 @@ pub(crate) fn run_sbom(args: cli::SbomArgs) -> Result<()> {
     // The image is bound for the whole function: its extracted filesystem has to
     // outlive the license resolution that reads out of it.
     let image = match &args.image {
-        Some(reference) => Some(common::open_image(reference, &ui, &omit)?),
+        Some(reference) => Some(common::open_image(reference, false, &ui, &omit)?),
         None => None,
     };
     let (name, mut deps) = match (&image, &args.path) {

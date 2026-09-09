@@ -883,6 +883,17 @@ pub struct TreeArgs {
     #[arg(long, value_name = "REF", conflicts_with = "paths")]
     pub image: Option<String>,
 
+    /// With --image: stack the image layer by layer and report which build step
+    /// introduced each package.
+    ///
+    /// Acquires through `save` rather than `export`, so no container is created
+    /// at all — but every layer is written to disk before being stacked, which
+    /// costs roughly twice the image's size in scratch space and noticeably more
+    /// time. Without it the runtime flattens the image and there are no layers to
+    /// attribute anything to.
+    #[arg(long, requires = "image")]
+    pub layers: bool,
+
     /// Allow --json/--sarif with several targets. THE OUTPUT SHAPE CHANGES:
     /// --json emits an ARRAY of trees instead of one object, and --sarif emits
     /// one `runs[]` entry per target. Consumers that assume a single tree will

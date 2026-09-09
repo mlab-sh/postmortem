@@ -737,6 +737,17 @@ fn apt_list_index_at(root: &Path) -> HashMap<String, Vec<PathBuf>> {
     idx
 }
 
+/// `package name → the file paths it installed`, for layer attribution.
+///
+/// Separate from [`Inventory`] because only the image path needs it: the
+/// machine's own scan has no layers to attribute anything to.
+pub(super) fn apt_file_index_at(root: &Path) -> HashMap<String, Vec<String>> {
+    apt_list_index_at(root)
+        .into_iter()
+        .map(|(name, paths)| (name, read_pkg_files(&paths)))
+        .collect()
+}
+
 /// The installed file paths a package ships, read from its dpkg `.list` manifest(s).
 fn read_pkg_files(paths: &[PathBuf]) -> Vec<String> {
     paths

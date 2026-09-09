@@ -97,20 +97,21 @@ pub struct Stats {
 
 /// Build the dependency forest for one project.
 pub fn build(root: &str, ecosystems: &[String], deps: &[Dependency], depth: Option<usize>) -> Tree {
-    // Roots: the direct dependencies. Fall back to parent-less nodes if a
-    // lockfile marks nothing direct.
+    // Roots are the direct dependencies **and** anything nothing else depends on.
+    //
+    // The second half is not a fallback. A package that is neither declared
+    // direct nor reachable from one is unreachable in the forest, so it renders
+    // nowhere at all while still being counted, scanned and exported — the tree
+    // silently understates what is installed. Real data produces this: Alpine's
+    // `ssl_client` is in the database with no reverse dependency, and a package
+    // sitting in an image with no manifest naming it has no parent either.
     let mut roots: Vec<DepRef> = deps
         .iter()
-        .filter(|d| d.direct)
+        .filter(|d| d.direct || d.parents.is_empty())
         .map(|d| (d.name.clone(), d.version.clone()))
         .collect();
-    if roots.is_empty() {
-        roots = deps
-            .iter()
-            .filter(|d| d.parents.is_empty())
-            .map(|d| (d.name.clone(), d.version.clone()))
-            .collect();
-    }
+    roots.sort();
+    roots.dedup();
     build_with_roots(root, ecosystems, deps, depth, roots)
 }
 

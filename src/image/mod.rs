@@ -17,6 +17,11 @@
 //! `tar` could not write (device nodes need root). Both reach the caller as
 //! [`Image::notes`].
 
+mod layers;
+
+pub use layers::Layer;
+
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -112,7 +117,15 @@ pub struct Image {
     /// Facts about the acquisition the report must carry: the platform the
     /// reference resolved to, and anything `tar` could not write.
     pub notes: Vec<String>,
+    /// The layer stack, base first. Empty unless the image was acquired layer by
+    /// layer, which only the `--layers` path does.
+    pub layers: Vec<Layer>,
+    /// Path as the image sees it (`/usr/bin/curl`) → the layer that last wrote it.
+    owner: HashMap<String, usize>,
     root: PathBuf,
+    /// Scratch directory holding the saved archive, when there was one. As large
+    /// as the image, so it is deleted with the extraction.
+    archive: Option<PathBuf>,
 }
 
 impl Image {
@@ -121,11 +134,36 @@ impl Image {
     pub fn root(&self) -> &Path {
         &self.root
     }
+
+    /// How many tracked files each layer contributed, indexed like [`Self::layers`].
+    pub fn files_per_layer(&self) -> Vec<usize> {
+        let mut counts = vec![0usize; self.layers.len()];
+        for idx in self.owner.values() {
+            if let Some(c) = counts.get_mut(*idx) {
+                *c += 1;
+            }
+        }
+        counts
+    }
+
+    /// The layer a set of files belongs to.
+    ///
+    /// The **last** layer to write any of them, because that is the build step
+    /// that put the thing in its shipped state: a package installed in one layer
+    /// and patched in a later one belongs to the patch, which is the step whose
+    /// author has to act.
+    pub fn layer_for_files<'a>(&self, files: impl IntoIterator<Item = &'a str>) -> Option<&Layer> {
+        let idx = files.into_iter().filter_map(|f| self.owner.get(f)).max()?;
+        self.layers.get(*idx)
+    }
 }
 
 impl Drop for Image {
     fn drop(&mut self) {
         purge(&self.root);
+        if let Some(a) = &self.archive {
+            purge(a);
+        }
     }
 }
 
@@ -133,7 +171,7 @@ impl Drop for Image {
 ///
 /// Errors when the daemon is unreachable or the reference cannot be resolved:
 /// an image that could not be read must never come back as an empty scan.
-pub fn acquire(reference: &str, ui: &Ui) -> Result<Image> {
+pub fn acquire(reference: &str, layered: bool, ui: &Ui) -> Result<Image> {
     let phase = ui.phase(format!("acquiring image {reference}"));
 
     let rt = match runtime() {
@@ -150,8 +188,42 @@ pub fn acquire(reference: &str, ui: &Ui) -> Result<Image> {
             return Err(e);
         }
     };
-    phase.set(format!("creating container from {reference} ({platform})"));
+    let root = temp_root();
+    let mut notes = vec![format!("platform {platform} (resolved by {rt})")];
 
+    if layered {
+        let archive = layers::archive_dir(&root);
+        let stacked = (|| -> Result<layers::Stacked> {
+            std::fs::create_dir_all(&root)
+                .with_context(|| format!("creating {}", root.display()))?;
+            layers::stack_into(rt, reference, &root, &archive, |m| phase.set(m))
+        })();
+        // The archive is the size of the image; it has served its purpose the
+        // moment the layers are stacked.
+        purge(&archive);
+        let stacked = match stacked {
+            Ok(s) => s,
+            Err(e) => {
+                purge(&root);
+                phase.abandon();
+                return Err(e);
+            }
+        };
+        notes.extend(stacked.notes);
+        phase.done(format!(
+            "stacked {reference} ({platform}, {} layer(s))",
+            stacked.layers.len()
+        ));
+        return Ok(Image {
+            notes,
+            layers: stacked.layers,
+            owner: stacked.owner,
+            root,
+            archive: None,
+        });
+    }
+
+    phase.set(format!("creating container from {reference} ({platform})"));
     let container = match create_container(rt, reference) {
         Ok(c) => c,
         Err(e) => {
@@ -161,7 +233,6 @@ pub fn acquire(reference: &str, ui: &Ui) -> Result<Image> {
     };
 
     // From here on the container exists, so every exit path has to remove it.
-    let root = temp_root();
     let result = (|| -> Result<Vec<String>> {
         std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
         phase.set(format!("exporting {reference} filesystem"));
@@ -178,7 +249,6 @@ pub fn acquire(reference: &str, ui: &Ui) -> Result<Image> {
         }
     };
 
-    let mut notes = vec![format!("platform {platform} (resolved by {rt})")];
     if !skipped.is_empty() {
         notes.push(format!(
             "{} archive entry/entries not extracted (device nodes and special files need root): {}",
@@ -188,7 +258,13 @@ pub fn acquire(reference: &str, ui: &Ui) -> Result<Image> {
     }
 
     phase.done(format!("extracted {reference} ({platform})"));
-    Ok(Image { notes, root })
+    Ok(Image {
+        notes,
+        layers: Vec::new(),
+        owner: HashMap::new(),
+        root,
+        archive: None,
+    })
 }
 
 /// Every project root inside an extracted image.
@@ -262,8 +338,11 @@ fn inspect_platform(rt: &str, reference: &str) -> Result<String> {
     }
     // Not present locally: pull it, then ask again. Pulling is the one network
     // access this path makes, and it is the user's own reference.
+    // Even `--quiet` echoes the resolved reference on stdout, and stdout is where
+    // `--json` goes. A pull is progress, not output.
     let pull = Command::new(rt)
         .args(["pull", "--quiet", reference])
+        .stdout(Stdio::null())
         .status()
         .with_context(|| format!("running `{rt} pull`"))?;
     if !pull.success() {
