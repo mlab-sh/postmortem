@@ -66,6 +66,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deleted in a later layer stays deleted — verified end to end against the
   runtime's own flattening: identical package sets on Alpine, Debian, Ubuntu and
   a purpose-built three-layer image.
+- **The image's own configuration is analyzed.** A Dockerfile is only available
+  to whoever holds the repository; the config is available to anyone who can pull
+  the image, and it is what actually ships. `scan --image` and `audit --image` now
+  report a credential set in `Env` or `Labels` (critical — in a pushed image that
+  is a leaked secret readable by everyone with pull access, and deleting the file
+  later does not take it back out of the config), a start command that fetches a
+  remote script and pipes it to a shell (high — it runs on every start of every
+  container from the image), and a main process running as root (low). The rules
+  are shared with the Dockerfile analyzer rather than restated, so a recipe and
+  the artifact it built cannot be judged by different standards. On stock
+  `alpine`, `debian`, `node:20-alpine` and `distroless`, the only finding is the
+  root one, which is true of all four.
+- **Credential-name matching now works per segment rather than by substring.**
+  `contains("auth")` fired on `AUTHOR_NAME`, and a check that cries wolf on an
+  author's name is a check people switch off.
 - **Distroless images are inventoried.** They keep one dpkg stanza per package
   in `var/lib/dpkg/status.d/` and have no `status` file at all, so postmortem
   reported the images people pick *for* their small attack surface as containing

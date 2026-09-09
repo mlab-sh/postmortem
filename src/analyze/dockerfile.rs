@@ -32,18 +32,21 @@ use crate::analyze::util;
 use crate::model::{Category, Finding, Severity};
 
 /// Environment-variable names that hold a credential. Matched case-insensitively
-/// against the assigned name, so `MY_API_KEY` and `npm_token` both land.
-const SECRET_NAMES: &[&str] = &[
+/// against the *segments* of the assigned name, so `MY_API_KEY` and `npm_token`
+/// both land while `AUTHOR_NAME` does not.
+pub(crate) const SECRET_NAMES: &[&str] = &[
     "token",
     "secret",
+    "secrets",
     "password",
     "passwd",
+    "pwd",
     "apikey",
-    "api_key",
-    "access_key",
-    "private_key",
     "credential",
+    "credentials",
     "auth",
+    "key",
+    "keys",
 ];
 
 /// Flags that switch off the verification the surrounding tooling would do.
@@ -235,8 +238,20 @@ fn logical_lines(text: &str) -> Vec<String> {
     out
 }
 
+/// Does a variable or label name look like it holds a credential?
+///
+/// Matched per segment rather than as a substring: `contains("auth")` fires on
+/// `AUTHOR_NAME`, and a check that cries wolf on an author's name is a check
+/// people switch off. Shared with the image-config analyzer so a rule cannot
+/// drift between the recipe and the artifact it built.
+pub(crate) fn looks_like_secret(name: &str) -> bool {
+    name.split(['_', '-', '.', ' '])
+        .map(str::to_ascii_lowercase)
+        .any(|seg| SECRET_NAMES.contains(&seg.as_str()))
+}
+
 /// Does this line fetch something and hand it to a shell?
-fn pipes_to_shell(l: &str) -> bool {
+pub(crate) fn pipes_to_shell(l: &str) -> bool {
     let fetches = l.contains("curl ") || l.contains("wget ");
     if !fetches {
         return false;
@@ -257,8 +272,7 @@ fn secret_assignment(rest: &str) -> Option<String> {
         if value.trim_matches(['"', '\'']).is_empty() {
             continue;
         }
-        let lower = name.to_lowercase();
-        if SECRET_NAMES.iter().any(|s| lower.contains(*s)) {
+        if looks_like_secret(name) {
             return Some(name.to_string());
         }
     }
@@ -370,6 +384,43 @@ mod tests {
         }
         for n in ["docker-compose.yml", "Makefile", "README.md"] {
             assert!(!is_dockerfile(Path::new(n)), "{n}");
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod secret_name_tests {
+    use super::looks_like_secret;
+
+    #[test]
+    fn credential_names_match_per_segment() {
+        for n in [
+            "NPM_TOKEN",
+            "npm_token",
+            "MY_API_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+            "db.password",
+            "io.acme.deploy-key",
+            "REGISTRY_AUTH",
+        ] {
+            assert!(looks_like_secret(n), "{n} should match");
+        }
+    }
+
+    /// The reason for matching segments rather than substrings: a check that
+    /// fires on an author's name is a check people switch off.
+    #[test]
+    fn ordinary_names_do_not_match() {
+        for n in [
+            "AUTHOR_NAME",
+            "APP_ENV",
+            "PATH",
+            "KEYBOARD_LAYOUT",
+            "MONKEY",
+            "TOKENIZER_PATH",
+        ] {
+            assert!(!looks_like_secret(n), "{n} should not match");
         }
     }
 }

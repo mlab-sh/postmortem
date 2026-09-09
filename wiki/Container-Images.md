@@ -192,6 +192,26 @@ Everything else behaves as it does for a directory: `--json`, `--sarif`,
 One of the [runtimes](#runtimes) above, and `tar`. An `rpm` binary as well for
 rpm-based images. Nothing is installed into the image and no code from it runs.
 
+## What the image declares
+
+`scan --image` and `audit --image` read the image's own configuration, which
+needs no Dockerfile and no repository — only the ability to pull.
+
+| Checked | Severity | Why |
+| --- | --- | --- |
+| A credential in `Env` | Critical | It ships inside the image and anyone who can pull it can read it. Deleting the file later does not take it out of the config |
+| A credential in `Labels` | Critical | Same |
+| A start command piping a remote script to a shell | High | It runs on every start of every container from the image |
+| A root main process | Low | An unset `User` is the common case and nothing defaults it to an unprivileged account |
+
+A value that is empty or an unsubstituted build argument is not a credential and
+is not reported. Credential *names* are matched per segment, so `AWS_SECRET_ACCESS_KEY`
+matches and `AUTHOR_NAME` does not.
+
+These are the same rules the Dockerfile analyzer applies, on the artifact instead
+of the recipe. Running both is how the two get compared: a Dockerfile that sets no
+`USER` and an image that reports root agree, and a disagreement is worth a look.
+
 ## Dockerfiles
 
 The recipe is analyzed too, and needs no image and no runtime: `scan` picks up

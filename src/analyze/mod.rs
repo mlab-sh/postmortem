@@ -3,6 +3,7 @@
 pub mod behavior;
 pub mod dockerfile;
 pub mod gha;
+pub mod image_config;
 pub mod ide_hooks;
 pub mod install_hooks;
 pub mod ioc;

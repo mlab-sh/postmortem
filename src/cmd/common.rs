@@ -2,8 +2,8 @@
 //! graph, and the two summaries more than one command prints.
 
 use crate::{
-    archsec, cache, detect, gochi, image, model, osv, parsers, resolve, scope, settings, system,
-    tree, ui, vuln,
+    analyze, archsec, cache, detect, gochi, image, model, osv, parsers, resolve, scope, settings,
+    system, tree, ui, vuln,
 };
 
 use anyhow::Result;
@@ -306,6 +306,11 @@ pub(crate) struct ImageScan {
     /// `package name → the files it installed`, for layer attribution. Empty
     /// unless the image was acquired layer by layer and its backend indexes files.
     pub files: std::collections::HashMap<String, Vec<String>>,
+    /// Findings from what the image *declares* — a credential in its environment,
+    /// a start command that fetches code, a root main process. Separate from the
+    /// dependency graph because they are properties of the artifact rather than
+    /// of anything installed in it.
+    pub findings: Vec<model::Finding>,
 }
 
 impl ImageScan {
@@ -466,6 +471,8 @@ pub(crate) fn open_image(
         }
     }
 
+    let findings = analyze::image_config::scan(&image.config, &format!("image {reference}"));
+
     Ok(ImageScan {
         image,
         detected,
@@ -474,6 +481,7 @@ pub(crate) fn open_image(
         inventory,
         release,
         files,
+        findings,
     })
 }
 

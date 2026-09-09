@@ -27,6 +27,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 
+use crate::analyze::image_config;
 use crate::ui::Ui;
 
 /// Directory names never descended into when looking for a project.
@@ -121,6 +122,10 @@ pub struct Image {
     /// Facts about the acquisition the report must carry: the platform the
     /// reference resolved to, and anything `tar` could not write.
     pub notes: Vec<String>,
+    /// What the image *declares*: the user it runs as, its environment, labels
+    /// and start command. Read for every acquisition, because it is one cheap
+    /// call and it is the only part of an image that describes intent.
+    pub config: image_config::Config,
     /// The layer stack, base first. Empty unless the image was acquired layer by
     /// layer, which only the `--layers` path does.
     pub layers: Vec<Layer>,
@@ -192,6 +197,7 @@ pub fn acquire(reference: &str, layered: bool, ui: &Ui) -> Result<Image> {
             return Err(e);
         }
     };
+    let config = inspect_config(rt, reference).unwrap_or_default();
     let root = temp_root();
     let mut notes = vec![format!("platform {platform} (resolved by {rt})")];
 
@@ -220,6 +226,7 @@ pub fn acquire(reference: &str, layered: bool, ui: &Ui) -> Result<Image> {
         ));
         return Ok(Image {
             notes,
+            config,
             layers: stacked.layers,
             owner: stacked.owner,
             root,
@@ -264,11 +271,28 @@ pub fn acquire(reference: &str, layered: bool, ui: &Ui) -> Result<Image> {
     phase.done(format!("extracted {reference} ({platform})"));
     Ok(Image {
         notes,
+        config,
         layers: Vec::new(),
         owner: HashMap::new(),
         root,
         archive: None,
     })
+}
+
+/// The image's declared runtime configuration.
+///
+/// Best-effort: a runtime that reports an unfamiliar shape costs the config
+/// checks, not the scan. Every runtime in [`RUNTIMES`] exposes it under the same
+/// `Config` key, so in practice this is one small call that always answers.
+fn inspect_config(rt: &str, reference: &str) -> Option<image_config::Config> {
+    let out = Command::new(rt)
+        .args(["image", "inspect", "--format", "{{json .Config}}", reference])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    serde_json::from_slice(&out.stdout).ok()
 }
 
 /// Every project root inside an extracted image.

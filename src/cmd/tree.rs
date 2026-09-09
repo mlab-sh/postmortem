@@ -217,6 +217,7 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
                             inventory,
                             release,
                             files,
+                            findings: _,
                         } = scan;
                         Prepared {
                             root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),

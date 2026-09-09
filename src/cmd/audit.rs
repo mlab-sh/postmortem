@@ -29,6 +29,7 @@ pub(crate) fn run_audit(args: cli::AuditArgs) -> Result<()> {
         diags,
         inventory,
         release,
+        declared,
         _image,
     } = match prepare(&args, &ui) {
         Ok(p) => p,
@@ -58,6 +59,9 @@ pub(crate) fn run_audit(args: cli::AuditArgs) -> Result<()> {
                 }
             }
         };
+        // What the image declares about itself is judged by the same policy as
+        // the code inside it.
+        let f = [f, declared].concat();
         let applied = cfg.apply(f, chrono::Local::now().date_naive());
         for e in &applied.expired {
             eprintln!("warn: ignore rule no longer applies — {e}");
@@ -243,6 +247,9 @@ struct Prepared {
     inventory: Option<system::Inventory>,
     /// The image's own release, formatted the way `--release` accepts it.
     release: Option<String>,
+    /// Findings from what an image declares about itself. Empty for a directory,
+    /// which declares nothing.
+    declared: Vec<model::Finding>,
     /// Holds the extracted image alive for as long as its files are read.
     _image: Option<image::Image>,
 }
@@ -262,6 +269,7 @@ fn prepare(args: &cli::AuditArgs, ui: &ui::Ui) -> Result<Prepared> {
             inventory,
             release,
             files: _,
+            findings,
         } = scan;
         return Ok(Prepared {
             content_root,
@@ -273,6 +281,7 @@ fn prepare(args: &cli::AuditArgs, ui: &ui::Ui) -> Result<Prepared> {
             diags,
             inventory,
             release: release.map(|r| format!("{}:{}", r.id, r.version_id)),
+            declared: findings,
             _image: Some(image),
         });
     }
@@ -295,6 +304,7 @@ fn prepare(args: &cli::AuditArgs, ui: &ui::Ui) -> Result<Prepared> {
         diags,
         inventory: None,
         release: None,
+        declared: Vec::new(),
         _image: None,
     })
 }

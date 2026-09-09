@@ -44,6 +44,7 @@ pub(crate) fn run_scan(args: cli::ScanArgs) -> Result<()> {
             &scan.detected,
             scan.deps.clone(),
             scan.diags.clone(),
+            scan.findings.clone(),
             &content_root,
             &config_root,
             &format!("image {reference}"),
@@ -101,6 +102,7 @@ fn scan_path(target: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<
         &detected,
         deps,
         diagnostics,
+        Vec::new(),
         root,
         root,
         &root.display().to_string(),
@@ -121,6 +123,10 @@ fn scan_parsed(
     detected: &[detect::Detected],
     deps: Vec<model::Dependency>,
     diagnostics: Vec<model::Diagnostic>,
+    // `extra` is what the caller already has: for an image, the findings from
+    // what it declares about itself. They go through the same suppression and
+    // severity gate as everything else.
+    extra: Vec<model::Finding>,
     content_root: &Path,
     config_root: &Path,
     label: &str,
@@ -154,12 +160,13 @@ fn scan_parsed(
         None => config::Config::default(),
     };
     let config = config.merge_cli(&args.skip_category, args.min_severity);
-    let raw_findings = if args.skip_analyze {
+    let mut raw_findings = if args.skip_analyze {
         Vec::new()
     } else {
         let f = analyze::run_all(detected, &deps, ui);
         analyze::drop_test_iocs(f, args.allow_test_files, content_root)
     };
+    raw_findings.extend(extra);
     let applied = config.apply(raw_findings, chrono::Local::now().date_naive());
     let mut findings = applied.findings;
     if applied.suppressed > 0 {
