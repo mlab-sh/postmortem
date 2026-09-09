@@ -1,0 +1,20 @@
+Package: postmortem
+Architecture: amd64
+Version: 2.4.0
+Priority: optional
+Section: utils
+Maintainer: mlab <hello@mlab.sh>
+Installed-Size: 9402
+Depends: libc6 (>= 2.34)
+Filename: pool/main/p/postmortem/postmortem_2.4.0_amd64.deb
+Size: 3072208
+MD5sum: 873ef611bc97ffefdd73d4818a460c7a
+SHA1: ceb2b945b714fe9ce19505b71719e0a7d4470e97
+SHA256: ce56ceedb7e3994804734707bdcbb7462f02752552dc694ad75d46c1e03c1029
+SHA512: 8dbbe37fad036b49ce822f09d8227866b30bd6647c431e56ae724c16c566ad2e69763a3d47d5e2b5d71b4259d83b3c3cc49056eedeb3e5ac87e8164282be294d
+Homepage: https://github.com/mlab-sh/postmortem
+Description: Supply-chain scanner. Flags malicious install code, typosquats, and shady
+ provenance across your dependencies and your OS packages.
+ postmortem resolves your dependency graph offline, then optionally enriches it
+ with repository reputation, maintainer provenance and known-CVE intelligence.
+ It also audits the OS package managers installed on the machine.

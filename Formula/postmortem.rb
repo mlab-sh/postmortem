@@ -1,26 +1,26 @@
 class Postmortem < Formula
   desc "Supply-chain scanner. Flags malicious install code, typosquats, and shady provenance across your dependencies and your OS packages. Repo-reputation scoring, known-CVE intel, no telemetry."
   homepage "https://github.com/mlab-sh/postmortem"
-  version "2.3.1"
+  version "2.4.0"
   license "Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
       url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-aarch64-apple-darwin.tar.gz"
-      sha256 "683b0fafc97053464b08c692139d373624706a6739fb22bf8ef3de02e5540eee"
+      sha256 "2f004ffd07ac3d8d1f2bc4ce3afc9fa5811434713fc1b42194439dde9f8c6fdf"
     else
       url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-x86_64-apple-darwin.tar.gz"
-      sha256 "4e8220b47c6cd4ba4f2669962f69ab7c487b7c32231aa78789490076e17e82f1"
+      sha256 "5aa8550878e3f159d5d8148119b3b68687d335652131902c57fe6d2c75bae585"
     end
   end
 
   on_linux do
     if Hardware::CPU.intel?
       url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-x86_64-unknown-linux-gnu.tar.gz"
-      sha256 "c6c9673538412dfdd07a3ebbef1ef6f622e565fec0a3038610e5b2a1c7a5fc21"
+      sha256 "63f16a0368eb40ed751b6d0a9e93b02b93ef124bdc3b81957dcf5bae27e61672"
     elsif Hardware::CPU.arm?
       url "https://github.com/mlab-sh/postmortem/releases/download/v#{version}/postmortem-#{version}-aarch64-unknown-linux-gnu.tar.gz"
-      sha256 "55197273170ae9a40a0e455af01283704ecf857aad12dd06406e7abb7dc4e1a9"
+      sha256 "d5e2c4883ec3fb9e82328d52e7f5492e376306ac1c689b6abbdc59d424449795"
     end
   end
 
