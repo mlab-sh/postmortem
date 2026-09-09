@@ -538,7 +538,18 @@ pub struct DiffArgs {
 #[derive(Args, Debug)]
 pub struct SbomArgs {
     /// The project directory to resolve and export.
-    pub path: PathBuf,
+    #[arg(required_unless_present = "image")]
+    pub path: Option<PathBuf>,
+
+    /// Scan a container IMAGE instead of a directory, e.g. `--image node:20-alpine`.
+    ///
+    /// The image is flattened onto disk with `docker create` + `docker export`
+    /// and never run — the point is to read an artifact whose code you do not
+    /// trust. Every application inside it is detected and parsed, its OS package
+    /// database is read underneath them, and the extraction is deleted when the
+    /// command ends. A reference that is not present locally is pulled.
+    #[arg(long, value_name = "REF", conflicts_with = "path")]
+    pub image: Option<String>,
 
     /// Write output to file. Pass `-` for stdout. When omitted, a file named
     /// `postmortem-sbom-[MM.DD.YYYY-HH.MM].json` is written in the cwd.
@@ -618,7 +629,18 @@ pub struct WhyArgs {
 #[derive(Args, Debug)]
 pub struct AuditArgs {
     /// The project directory to audit.
-    pub path: PathBuf,
+    #[arg(required_unless_present = "image")]
+    pub path: Option<PathBuf>,
+
+    /// Scan a container IMAGE instead of a directory, e.g. `--image node:20-alpine`.
+    ///
+    /// The image is flattened onto disk with `docker create` + `docker export`
+    /// and never run — the point is to read an artifact whose code you do not
+    /// trust. Every application inside it is detected and parsed, its OS package
+    /// database is read underneath them, and the extraction is deleted when the
+    /// command ends. A reference that is not present locally is pulled.
+    #[arg(long, value_name = "REF", conflicts_with = "path")]
+    pub image: Option<String>,
 
     /// Go ONLINE: add source-repo reputation risk scoring. Touches the network.
     #[arg(long)]
@@ -848,8 +870,18 @@ pub struct TreeArgs {
     /// manifest/lockfile (e.g. `packages/api/yarn.lock`) to pin one ecosystem
     /// and one lockfile flavor. Machine formats (--json/--sarif) require a
     /// single target unless --allow-multiple is given.
-    #[arg(required = true, num_args = 1..)]
+    #[arg(required_unless_present = "image", num_args = 1..)]
     pub paths: Vec<PathBuf>,
+
+    /// Scan a container IMAGE instead of a directory, e.g. `--image node:20-alpine`.
+    ///
+    /// The image is flattened onto disk with `docker create` + `docker export`
+    /// and never run — the point is to read an artifact whose code you do not
+    /// trust. Every application inside it is detected and parsed, its OS package
+    /// database is read underneath them, and the extraction is deleted when the
+    /// command ends. A reference that is not present locally is pulled.
+    #[arg(long, value_name = "REF", conflicts_with = "paths")]
+    pub image: Option<String>,
 
     /// Allow --json/--sarif with several targets. THE OUTPUT SHAPE CHANGES:
     /// --json emits an ARRAY of trees instead of one object, and --sarif emits
@@ -981,8 +1013,18 @@ pub struct TreeArgs {
 pub struct ScanArgs {
     /// One or more project directories to scan. Multiple paths are scanned in
     /// sequence; machine formats (--json/--html/--sarif) require a single path.
-    #[arg(required = true, num_args = 1..)]
+    #[arg(required_unless_present = "image", num_args = 1..)]
     pub paths: Vec<PathBuf>,
+
+    /// Scan a container IMAGE instead of a directory, e.g. `--image node:20-alpine`.
+    ///
+    /// The image is flattened onto disk with `docker create` + `docker export`
+    /// and never run — the point is to read an artifact whose code you do not
+    /// trust. Every application inside it is detected and parsed, its OS package
+    /// database is read underneath them, and the extraction is deleted when the
+    /// command ends. A reference that is not present locally is pulled.
+    #[arg(long, value_name = "REF", conflicts_with = "paths")]
+    pub image: Option<String>,
 
     /// Emit JSON
     #[arg(long, conflicts_with_all = ["html", "sarif"])]

@@ -295,14 +295,21 @@ pub struct Diagnostic {
 /// we suffered rather than chose.
 pub const DIAG_SCOPE_OMITTED: &str = "scope_omitted";
 
+/// The `kind` recording context about how a scan was obtained — the platform an
+/// image reference resolved to, say. It belongs in the report, but it describes
+/// the run rather than a hole in it.
+pub const DIAG_INFO: &str = "info";
+
 impl Diagnostic {
     /// Does this diagnostic mean the graph is *unintentionally* incomplete?
     ///
     /// `--omit` also shrinks the graph, and that fact is worth carrying into the
     /// JSON/SARIF output so a CI consumer can see it — but it was asked for, so
-    /// it must not read as a defect or drag a verdict down.
+    /// it must not read as a defect or drag a verdict down. The same goes for
+    /// [`DIAG_INFO`], which records how the scan was obtained rather than what
+    /// it failed to see.
     pub fn is_incompleteness(&self) -> bool {
-        self.kind != DIAG_SCOPE_OMITTED
+        !matches!(self.kind.as_str(), DIAG_SCOPE_OMITTED | DIAG_INFO)
     }
 }
 

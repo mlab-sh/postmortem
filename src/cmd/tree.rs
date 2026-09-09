@@ -1,12 +1,57 @@
 //! `postmortem tree` — the resolved dependency graph, with the online
 //! reputation, vulnerability and gate passes layered on top.
 
-use crate::cmd::common::{detect_and_parse, mlab_target, vuln_count, vuln_summary};
+use crate::cmd::common::{self, detect_and_parse, mlab_target, vuln_count, vuln_summary};
 use crate::cmd::gate_policy::resolve_gate_policy;
 use crate::{
-    cache, cli, fix, gate, gochi, human, model, report, resolve, settings, tree, ui, vuln,
+    cache, cli, detect, fix, gate, gochi, human, image, model, report, resolve, settings, system,
+    tree, ui, vuln,
 };
 use anyhow::Result;
+use std::path::PathBuf;
+
+/// One target of a `tree` run: a path on disk, or the single container image
+/// `--image` names.
+enum Job<'a> {
+    Path(&'a PathBuf),
+    Image(&'a str),
+}
+
+/// A target resolved into everything the rendering pass needs, whichever kind of
+/// target it was.
+struct Prepared {
+    /// Where `postmortem.conf` and the gate policy are looked up. For an image
+    /// this is the working directory: the project's policy governs the run, and
+    /// a config file that happens to sit inside someone else's image must never
+    /// be allowed to relax it.
+    root: PathBuf,
+    /// What the report calls this target.
+    label: String,
+    ecosystems: Vec<String>,
+    detected: Vec<detect::Detected>,
+    deps: Vec<model::Dependency>,
+    diags: Vec<model::Diagnostic>,
+    /// The image's OS packages, when the target was an image whose database
+    /// could be read.
+    inventory: Option<system::Inventory>,
+    /// The image's own OS release, pinned so the OS vuln scan can never fall
+    /// through to this machine's.
+    release: Option<osv_release::Pinned>,
+    /// Holds the extracted image alive: the lockfiles the vuln scan uploads live
+    /// inside it, so it must outlive the whole iteration.
+    _image: Option<image::Image>,
+}
+
+/// A release formatted the way `--release` accepts it, so the shared OS vuln
+/// scan can be pinned to the image rather than to this machine.
+mod osv_release {
+    pub struct Pinned(pub String);
+    impl Pinned {
+        pub fn of(r: &crate::osv::Release) -> Pinned {
+            Pinned(format!("{}:{}", r.id, r.version_id))
+        }
+    }
+}
 
 pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
     let started = chrono::Utc::now();
@@ -87,45 +132,120 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
     // GitLab report's `solution` is the upgrade target, and computing it needs
     // the dependency graph the tree alone does not carry.
     let mut machine_deps: Vec<Vec<model::Dependency>> = Vec::new();
-    for path in &args.paths {
-        let target = match path.canonicalize() {
-            Ok(r) => r,
-            // A target that isn't there at all is a configuration error: with
-            // several targets, skipping it silently would green-light the run.
-            Err(e) => {
-                ui.note(format!("cannot resolve path {}: {e}", path.display()));
-                gate_misconfig = true;
-                continue;
+    // One job per target. `--image` names exactly one and conflicts with paths,
+    // so the two never mix and the loop below stays a single code path.
+    let jobs: Vec<Job> = match &args.image {
+        Some(reference) => vec![Job::Image(reference.as_str())],
+        None => args.paths.iter().map(Job::Path).collect(),
+    };
+    for job in jobs {
+        let Prepared {
+            root,
+            label,
+            ecosystems,
+            detected,
+            mut deps,
+            diags,
+            inventory,
+            release,
+            _image,
+        } = match job {
+            Job::Path(path) => {
+                let target = match path.canonicalize() {
+                    Ok(r) => r,
+                    // A target that isn't there at all is a configuration error: with
+                    // several targets, skipping it silently would green-light the run.
+                    Err(e) => {
+                        ui.note(format!("cannot resolve path {}: {e}", path.display()));
+                        gate_misconfig = true;
+                        continue;
+                    }
+                };
+                // A pinned manifest/lockfile still belongs to its parent project: that
+                // directory is the tree root and where `postmortem.conf` is looked up.
+                let root = match target.is_file() {
+                    true => target.parent().unwrap_or(&target).to_path_buf(),
+                    false => target.clone(),
+                };
+                let parsed = match detect_and_parse(&target, &ui, &cli::OmitSet::scopes(&args.omit))
+                {
+                    Ok(Some(p)) => p,
+                    Ok(None) => {
+                        ui.note(format!(
+                            "no supported ecosystem detected at {}",
+                            target.display()
+                        ));
+                        continue;
+                    }
+                    // An explicit file target that can't be resolved is a configuration
+                    // error, not an empty result — never let it pass as a clean run.
+                    Err(e) => {
+                        ui.note(format!("{e:#}"));
+                        gate_misconfig = true;
+                        continue;
+                    }
+                };
+                let (detected, deps, diags) = parsed;
+                Prepared {
+                    label: root.display().to_string(),
+                    root,
+                    ecosystems: detected.iter().map(|e| e.name().to_string()).collect(),
+                    detected,
+                    deps,
+                    diags,
+                    inventory: None,
+                    release: None,
+                    _image: None,
+                }
+            }
+            // An image that cannot be acquired is a configuration error for the
+            // same reason a missing path is: an empty tree would read as clean.
+            Job::Image(reference) => {
+                match common::open_image(reference, &ui, &cli::OmitSet::scopes(&args.omit)) {
+                    Ok(scan) => {
+                        let ecosystems = scan.ecosystems();
+                        let common::ImageScan {
+                            image,
+                            detected,
+                            deps,
+                            diags,
+                            inventory,
+                            release,
+                        } = scan;
+                        Prepared {
+                            root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                            label: format!("image {reference}"),
+                            ecosystems,
+                            detected,
+                            deps,
+                            diags,
+                            inventory,
+                            release: release.as_ref().map(osv_release::Pinned::of),
+                            _image: Some(image),
+                        }
+                    }
+                    Err(e) => {
+                        ui.note(format!("{e:#}"));
+                        gate_misconfig = true;
+                        continue;
+                    }
+                }
             }
         };
-        // A pinned manifest/lockfile still belongs to its parent project: that
-        // directory is the tree root and where `postmortem.conf` is looked up.
-        let root = match target.is_file() {
-            true => target.parent().unwrap_or(&target).to_path_buf(),
-            false => target.clone(),
-        };
-        let parsed = match detect_and_parse(&target, &ui, &cli::OmitSet::scopes(&args.omit)) {
-            Ok(Some(p)) => p,
-            Ok(None) => {
-                ui.note(format!(
-                    "no supported ecosystem detected at {}",
-                    target.display()
-                ));
-                continue;
-            }
-            // An explicit file target that can't be resolved is a configuration
-            // error, not an empty result — never let it pass as a clean run.
-            Err(e) => {
-                ui.note(format!("{e:#}"));
-                gate_misconfig = true;
-                continue;
-            }
-        };
-        let (detected, mut deps, diags) = parsed;
         any_detected = true;
-        let ecosystems: Vec<String> = detected.iter().map(|e| e.name().to_string()).collect();
-        let mut forest = tree::build(&root.display().to_string(), &ecosystems, &deps, args.depth);
+        let mut forest = tree::build(&label, &ecosystems, &deps, args.depth);
         forest.diagnostics = diags;
+        // An image's OS provenance signals (install scripts, third-party
+        // repositories) land on the same nodes the parsers produced, so one tree
+        // carries both layers.
+        if let Some(inv) = &inventory {
+            system::annotate(&mut forest, &inv.signals);
+            if resolver.is_none() {
+                // Online runs score after enrichment. Offline, this is the only
+                // pass that can turn those signals into a `risk:dep` figure.
+                tree::score(&mut forest);
+            }
+        }
         if let Some(resolver) = &resolver {
             let resolutions = resolver.resolve_all(&deps, &ui);
             resolve::apply_licenses(&mut deps, &resolutions);
@@ -138,7 +258,7 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
                     let out = serde_json::to_string_pretty(&human::to_json(
                         &g,
                         &deps,
-                        &root.display().to_string(),
+                        &label,
                     ))?;
                     cli::OutputTarget::emit(
             args.json,
@@ -148,7 +268,7 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
             &out,
         )?;
                 } else {
-                    human::render(&g, &deps, &root.display().to_string());
+                    human::render(&g, &deps, &label);
                 }
                 continue;
             }
@@ -188,6 +308,16 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
             );
         }
 
+        // An image's OS packages take the same OSV route `system` uses, pinned
+        // to the release read out of the image. Without that pin the shared
+        // helper would fall back to this machine's `/etc/os-release` and match
+        // an Alpine image against the host distribution's advisories.
+        if args.vulns
+            && let (Some(inv), Some(rel)) = (&inventory, &release)
+        {
+            common::scan_os_vulns(&mut forest, inv, Some(rel.0.as_str()), &ui);
+        }
+
         // Machine formats are written once, after every target is resolved, so
         // several targets land in a single document. The terminal view streams.
         if !machine {
@@ -201,15 +331,13 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
             if policy.needs_scores() && !forest.scored {
                 eprintln!(
                     "error: gate thresholds (--max-risk/--max-dep/--max-high/--max-sus) require \
-                     --online; no scores were computed for {}",
-                    root.display()
+                     --online; no scores were computed for {label}"
                 );
                 gate_misconfig = true;
             } else if policy.needs_vulns() && !args.vulns {
                 eprintln!(
                     "error: gate thresholds (--max-vulns/--fail-on-vuln) require --vulns; no vuln \
-                     scan was run for {}",
-                    root.display()
+                     scan was run for {label}"
                 );
                 gate_misconfig = true;
             } else {

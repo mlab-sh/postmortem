@@ -1,10 +1,9 @@
 //! `postmortem system` — the machine's OS package managers.
 
-use crate::cmd::common::{vuln_count, vuln_summary};
+use crate::cmd::common::{self};
 use crate::cmd::gate_policy::build_gate_policy;
 use crate::{
-    archsec, cache, cli, config, gate, gochi, inspect, model, osv, resolve, settings, system, tree,
-    ui, vuln,
+    cli, config, gate, gochi, inspect, resolve, settings, system, tree, ui,
 };
 use anyhow::Result;
 
@@ -188,7 +187,7 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
     // doesn't index this manager, in which case we record a diagnostic instead
     // of letting a silent zero read as "clean".
     if args.vulns {
-        scan_system_vulns(&mut forest, &inv, args.release.as_deref(), &ui);
+        common::scan_os_vulns(&mut forest, &inv, args.release.as_deref(), &ui);
     }
 
     if args.json || args.webhook.is_some() {
@@ -260,132 +259,6 @@ fn run_system_gate(args: &cli::SystemArgs, forest: &tree::Tree) {
     let outcome = gate::evaluate(&policy, forest, today, None);
     gate::report(&outcome, &policy);
     std::process::exit(if outcome.tripped() { 1 } else { 0 });
-}
-
-/// Populate `forest.vulnerabilities` from OSV.dev for the installed inventory,
-/// or push a `vuln_source_unavailable` diagnostic when the release can't be
-/// resolved or OSV doesn't cover this backend.
-fn scan_system_vulns(
-    forest: &mut tree::Tree,
-    inv: &system::Inventory,
-    release_override: Option<&str>,
-    ui: &ui::Ui,
-) {
-    let Some(eco) = inv.deps.first().map(|d| d.ecosystem) else {
-        return; // nothing installed to scan
-    };
-    // One load for both branches: the proxy and endpoint overrides apply to the
-    // Arch tracker and the OSV route alike.
-    let settings = settings::Settings::load_or_warn();
-    let net = &settings.network;
-
-    // Arch isn't in OSV — pacman uses its own source (the Arch Security Tracker),
-    // no release needed (Arch is rolling).
-    if eco == model::Ecosystem::Pacman {
-        let loader = gochi::Loader::spinner(
-            format!(
-                "gochi querying the Arch Security Tracker for {} packages",
-                inv.deps.len()
-            ),
-            ui.animating(),
-        );
-        match archsec::scan(&vuln::agent(net), &inv.deps, &net.endpoints.arch_security()) {
-            Ok(mut v) => {
-                forest.vulnerabilities.append(&mut v);
-                loader.finish(
-                    gochi::Mood::from_risk(0, 0, vuln_count(forest)),
-                    vuln_summary(forest),
-                );
-            }
-            Err(e) => {
-                loader.finish(gochi::Mood::Alert, "vuln scan failed");
-                forest.diagnostics.push(model::Diagnostic {
-                    ecosystem: eco.as_str().into(),
-                    kind: "vuln_scan_failed".into(),
-                    message: format!("Arch Security Tracker scan failed: {e:#}"),
-                });
-            }
-        }
-        return;
-    }
-
-    let release = match release_override {
-        Some(s) => osv::Release::parse_override(s),
-        None => match osv::Release::detect() {
-            Some(r) => r,
-            None => {
-                forest.diagnostics.push(model::Diagnostic {
-                    ecosystem: eco.as_str().into(),
-                    kind: "vuln_source_unavailable".into(),
-                    message: "cannot read /etc/os-release; pass --release id:version to scan"
-                        .into(),
-                });
-                return;
-            }
-        },
-    };
-    let Some(osv_eco) = osv::osv_ecosystem(eco, &release) else {
-        // Actionable guidance for the dnf backends OSV doesn't index directly.
-        let hint = match (eco, release.id.as_str()) {
-            (model::Ecosystem::Dnf, "rhel" | "redhat" | "centos") => {
-                " — RHEL isn't in OSV; retry with `--release almalinux:<N>` or `rocky:<N>` \
-                 (binary-compatible) for approximate coverage"
-            }
-            (model::Ecosystem::Dnf, "fedora") => {
-                " — Fedora isn't in OSV; `dnf updateinfo --security` lists advisories for \
-                 available updates"
-            }
-            _ => "",
-        };
-        forest.diagnostics.push(model::Diagnostic {
-            ecosystem: eco.as_str().into(),
-            kind: "vuln_source_unavailable".into(),
-            message: format!(
-                "OSV has no vulnerability feed for {} ({}); packages were not scanned{hint}",
-                eco.as_str(),
-                release.id
-            ),
-        });
-        return;
-    };
-    let token = settings.vuln_token();
-    if token.is_none() {
-        eprintln!(
-            "note: no mlab token — vuln scans use the anonymous limit. \
-             Set VULN_MLAB_TOKEN or vuln_token in ~/.postmortem/config.yml."
-        );
-    }
-    let loader = gochi::Loader::spinner(
-        format!(
-            "gochi querying vuln.mlab.sh for {} {osv_eco} packages",
-            inv.deps.len()
-        ),
-        ui.animating(),
-    );
-    match osv::scan(
-        &vuln::agent(net),
-        &cache::Cache::open(),
-        token.as_deref(),
-        &inv.deps,
-        &osv_eco,
-        &vuln::scan_url(net),
-    ) {
-        Ok(mut v) => {
-            forest.vulnerabilities.append(&mut v);
-            loader.finish(
-                gochi::Mood::from_risk(0, 0, vuln_count(forest)),
-                vuln_summary(forest),
-            );
-        }
-        Err(e) => {
-            loader.finish(gochi::Mood::Alert, "vuln scan failed");
-            forest.diagnostics.push(model::Diagnostic {
-                ecosystem: eco.as_str().into(),
-                kind: "vuln_scan_failed".into(),
-                message: format!("vuln scan failed: {e:#}"),
-            });
-        }
-    }
 }
 
 /// Fold the inventories of several coexisting layers into one, so everything

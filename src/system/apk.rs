@@ -1,29 +1,42 @@
 //! Alpine `apk` backend — the installed DB as a capability graph, the explicit
 //! `world` set as roots, and the repo-level provenance behind them.
 
+use std::path::Path;
+
 use super::recipe::analyze_recipe;
 use super::*;
 
 // --- apk backend (Alpine) ----------------------------------------------------
 
-/// Read the installed apk database into an [`Inventory`]. `/lib/apk/db/installed`
-/// holds every package (blank-line-separated `K:value` records: name, version,
-/// url, depends, provides); `/etc/apk/world` is the explicitly-requested (direct)
-/// set; edges come from the capability graph (`D:` requires ↔ `P:`/`p:` provides).
+/// Read this machine's installed apk database. See [`apk_inventory_at`].
+pub fn apk_inventory(opts: Opts) -> Result<Inventory> {
+    apk_inventory_at(Path::new("/"), opts)
+}
+
+/// Read the installed apk database under `root` into an [`Inventory`].
+/// `lib/apk/db/installed` holds every package (blank-line-separated `K:value`
+/// records: name, version, url, depends, provides); `etc/apk/world` is the
+/// explicitly-requested (direct) set; edges come from the capability graph
+/// (`D:` requires ↔ `P:`/`p:` provides).
 ///
 /// Alpine's DB does not record a per-package origin repo, so provenance is
-/// repo-level (third-party repos in `/etc/apk/repositories`); install scripts are
+/// repo-level (third-party repos in `etc/apk/repositories`); install scripts are
 /// few and curated, so postmortem analyzes every one it finds rather than gating.
-pub fn apk_inventory(opts: Opts) -> Result<Inventory> {
+///
+/// `root` is `/` for this machine and an extracted image root for `--image`.
+/// Every path below is resolved against it, because a backend that reads one
+/// absolute path is a backend that can only ever describe the host it runs on.
+pub fn apk_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
     let _ = opts; // apk reputation comes from the shared `--online` path
-    let db = std::fs::read_to_string("/lib/apk/db/installed")
-        .context("reading /lib/apk/db/installed")?;
-    let world = apk_world();
+    let installed = root.join("lib/apk/db/installed");
+    let db = std::fs::read_to_string(&installed)
+        .with_context(|| format!("reading {}", installed.display()))?;
+    let world = apk_world(root);
     let deps = apk_graph(&db, &world);
 
     // Install scripts (`.pre-install`/`.post-install`/`.trigger`, in
     // scripts.tar.gz): flag their presence and static-analyze the shell.
-    let scripts = apk_scripts();
+    let scripts = apk_scripts(root);
     let mut signals: HashMap<String, Vec<SysSignal>> = HashMap::new();
     for d in &deps {
         // Members are named `<name>-<version>.<checksum>.<type>`, so a package owns
@@ -48,7 +61,7 @@ pub fn apk_inventory(opts: Opts) -> Result<Inventory> {
         }
     }
 
-    let repos = apk_repos();
+    let repos = apk_repos(root);
     let third = repos.iter().filter(|r| !r.official).count();
     let notes = if third > 0 {
         vec![format!(
@@ -70,10 +83,10 @@ pub fn apk_inventory(opts: Opts) -> Result<Inventory> {
     })
 }
 
-/// The explicitly-requested (direct) set from `/etc/apk/world` (version
-/// constraints and `@tag` suffixes stripped).
-fn apk_world() -> std::collections::HashSet<String> {
-    std::fs::read_to_string("/etc/apk/world")
+/// The explicitly-requested (direct) set from `etc/apk/world` under `root`
+/// (version constraints and `@tag` suffixes stripped).
+fn apk_world(root: &Path) -> std::collections::HashSet<String> {
+    std::fs::read_to_string(root.join("etc/apk/world"))
         .ok()
         .map(|t| t.lines().filter_map(|l| apk_dep_token(l.trim())).collect())
         .unwrap_or_default()
@@ -175,8 +188,8 @@ fn apk_dep_token(tok: &str) -> Option<String> {
 
 /// Configured apk repos from `/etc/apk/repositories`. `*.alpinelinux.org` archives
 /// are official; a custom host or a local path is third-party.
-fn apk_repos() -> Vec<Repo> {
-    std::fs::read_to_string("/etc/apk/repositories")
+fn apk_repos(root: &Path) -> Vec<Repo> {
+    std::fs::read_to_string(root.join("etc/apk/repositories"))
         .ok()
         .map(|t| {
             t.lines()
@@ -199,13 +212,13 @@ fn apk_repos() -> Vec<Repo> {
         .unwrap_or_default()
 }
 
-/// Install scripts from `/lib/apk/db/scripts.tar.gz` as `(member, body)` pairs.
-/// Members are named `<name>-<version>.<checksum>.<type>`; the caller matches them
-/// to a package by the `<name>-<version>.` prefix. Empty when no scripts archive
-/// is present.
-fn apk_scripts() -> Vec<(String, String)> {
-    let archive = "/lib/apk/db/scripts.tar.gz";
-    let Ok(list) = Command::new("tar").args(["tzf", archive]).output() else {
+/// Install scripts from `lib/apk/db/scripts.tar.gz` under `root`, as
+/// `(member, body)` pairs. Members are named `<name>-<version>.<checksum>.<type>`;
+/// the caller matches them to a package by the `<name>-<version>.` prefix. Empty
+/// when no scripts archive is present.
+fn apk_scripts(root: &Path) -> Vec<(String, String)> {
+    let archive = root.join("lib/apk/db/scripts.tar.gz");
+    let Ok(list) = Command::new("tar").arg("tzf").arg(&archive).output() else {
         return Vec::new();
     };
     if !list.status.success() {
@@ -217,7 +230,12 @@ fn apk_scripts() -> Vec<(String, String)> {
         if member.is_empty() {
             continue;
         }
-        let Ok(body) = Command::new("tar").args(["xzOf", archive, member]).output() else {
+        let Ok(body) = Command::new("tar")
+            .arg("xzOf")
+            .arg(&archive)
+            .arg(member)
+            .output()
+        else {
             continue;
         };
         if body.status.success() {
@@ -287,5 +305,63 @@ p:so:libfoo.so.1
         assert_eq!(lib.parents, vec![("app".to_string(), "1.0".to_string())]);
         assert_eq!(libz.parents, vec![("app".to_string(), "1.0".to_string())]);
         assert!(!lib.direct);
+    }
+
+    /// The guarantee the `--image` target rests on: the same database read from
+    /// an alternate root yields the same inventory it does at `/`. A backend
+    /// that silently kept reading the host would report the scanning machine's
+    /// packages under the image's name — the worst possible failure mode, because
+    /// it looks like a successful scan.
+    #[test]
+    fn reads_an_installed_db_from_an_alternate_root() {
+        let root = std::env::temp_dir().join(format!("postmortem-apktest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("lib/apk/db")).expect("db dir");
+        std::fs::create_dir_all(root.join("etc/apk")).expect("etc dir");
+        std::fs::write(
+            root.join("lib/apk/db/installed"),
+            "P:app\nV:1.0\nD:libz\n\nP:libz\nV:1.3\n",
+        )
+        .expect("installed db");
+        std::fs::write(root.join("etc/apk/world"), "app\n").expect("world");
+        std::fs::write(
+            root.join("etc/apk/repositories"),
+            "https://dl-cdn.alpinelinux.org/alpine/v3.19/main\nhttps://packages.example.com/alpine\n",
+        )
+        .expect("repositories");
+
+        let inv = apk_inventory_at(&root, Opts::default()).expect("inventory");
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(inv.manager, "apk");
+        assert_eq!(inv.deps.len(), 2);
+        let app = inv.deps.iter().find(|d| d.name == "app").expect("app");
+        assert!(app.direct, "listed in this root's world ⇒ direct");
+        let libz = inv.deps.iter().find(|d| d.name == "libz").expect("libz");
+        assert!(!libz.direct);
+        assert_eq!(libz.parents, vec![("app".to_string(), "1.0".to_string())]);
+        // The repositories file under the same root, not the host's.
+        assert_eq!(inv.repos.len(), 2);
+        assert_eq!(inv.repos.iter().filter(|r| !r.official).count(), 1);
+        assert_eq!(inv.notes.len(), 1, "the third-party repo is surfaced");
+    }
+
+    /// A root with no apk database is an error rather than an empty inventory:
+    /// zero packages and "there was nothing to read" are different answers.
+    #[test]
+    fn an_alternate_root_without_a_database_is_an_error() {
+        let root = std::env::temp_dir().join(format!("postmortem-apkempty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        // `Inventory` is not `Debug`, so unwrap the error by hand.
+        let msg = match apk_inventory_at(&root, Opts::default()) {
+            Ok(_) => panic!("a root with no apk database must not yield an inventory"),
+            Err(e) => format!("{e:#}"),
+        };
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            msg.contains("lib/apk/db/installed"),
+            "the error names the path it could not read: {msg}"
+        );
     }
 }

@@ -23,6 +23,7 @@ mod fix;
 mod gate;
 mod gochi;
 mod hook;
+mod image;
 mod human;
 mod inspect;
 mod license;

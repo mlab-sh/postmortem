@@ -1,11 +1,11 @@
 //! `postmortem scan` — static analysis of dependency code.
 
-use crate::cmd::common::detect_and_parse;
-use crate::{analyze, cli, config, enrich, gochi, model, report, ui};
+use crate::cmd::common::{self, detect_and_parse};
+use crate::{analyze, cli, config, detect, enrich, gochi, model, report, ui};
 
 use anyhow::Result;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// `postmortem scan <paths>...` — scan each path in sequence. Exit code: 2 if no
 /// supported ecosystem was found at any path, 1 if any scan tripped the severity
@@ -21,6 +21,38 @@ pub(crate) fn run_scan(args: cli::ScanArgs) -> Result<()> {
     let ui = ui::Ui::new(!args.no_progress);
     let mut any_detected = false;
     let mut gate_tripped = false;
+
+    // An image is a single target and conflicts with paths, so it is handled
+    // before the loop rather than inside it.
+    if let Some(reference) = &args.image {
+        let scan = match common::open_image(reference, &ui, &cli::OmitSet::scopes(&args.omit)) {
+            Ok(s) => s,
+            // Matches the exit code `scan` already uses for "nothing could be
+            // scanned", so CI cannot read an unreadable image as a clean run.
+            Err(e) => {
+                eprintln!("error: {e:#}");
+                std::process::exit(2);
+            }
+        };
+        // The code being analyzed is inside the image; the policy that governs
+        // the analysis comes from the working directory. A `postmortem.conf`
+        // shipped in someone else's image must not be able to suppress findings
+        // about that image.
+        let content_root = scan.image.root().to_path_buf();
+        let config_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let tripped = scan_parsed(
+            &scan.detected,
+            scan.deps.clone(),
+            scan.diags.clone(),
+            &content_root,
+            &config_root,
+            &format!("image {reference}"),
+            &args,
+            &ui,
+        )?;
+        std::process::exit(if tripped { 1 } else { 0 });
+    }
+
     for path in &args.paths {
         let root = match path.canonicalize() {
             Ok(r) => r,
@@ -65,7 +97,36 @@ fn scan_path(target: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<
     } else {
         target
     };
+    scan_parsed(
+        &detected,
+        deps,
+        diagnostics,
+        root,
+        root,
+        &root.display().to_string(),
+        args,
+        ui,
+    )
+    .map(Some)
+}
 
+/// Analyze and report an already-parsed target.
+///
+/// `content_root` is where the code lives — a project directory, or an extracted
+/// image. `config_root` is where `postmortem.conf` is looked up. They coincide
+/// for a directory scan and differ for an image, whose own files must never
+/// supply the policy applied to it. `label` is what the report calls the target.
+#[allow(clippy::too_many_arguments)]
+fn scan_parsed(
+    detected: &[detect::Detected],
+    deps: Vec<model::Dependency>,
+    diagnostics: Vec<model::Diagnostic>,
+    content_root: &Path,
+    config_root: &Path,
+    label: &str,
+    args: &cli::ScanArgs,
+    ui: &ui::Ui,
+) -> Result<bool> {
     // Resolve the config: explicit --config wins; otherwise auto-load <root>/postmortem.conf
     // unless --no-config is set.
     let cfg_path = if args.no_config {
@@ -73,7 +134,7 @@ fn scan_path(target: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<
     } else if let Some(p) = &args.config {
         Some(p.clone())
     } else {
-        let candidate = root.join(config::DEFAULT_FILENAME);
+        let candidate = config_root.join(config::DEFAULT_FILENAME);
         candidate.is_file().then_some(candidate)
     };
     let config = match cfg_path {
@@ -96,8 +157,8 @@ fn scan_path(target: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<
     let raw_findings = if args.skip_analyze {
         Vec::new()
     } else {
-        let f = analyze::run_all(&detected, &deps, ui);
-        analyze::drop_test_iocs(f, args.allow_test_files, root)
+        let f = analyze::run_all(detected, &deps, ui);
+        analyze::drop_test_iocs(f, args.allow_test_files, content_root)
     };
     let applied = config.apply(raw_findings, chrono::Local::now().date_naive());
     let mut findings = applied.findings;
@@ -122,7 +183,7 @@ fn scan_path(target: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<
     let report = model::Report {
         // 3: every dependency carries a `scope` (prod / dev / optional).
         schema_version: 3,
-        root: root.display().to_string(),
+        root: label.to_string(),
         ecosystems: detected.iter().map(|e| e.name().to_string()).collect(),
         diagnostics,
         dependencies: deps,
@@ -149,7 +210,7 @@ fn scan_path(target: &Path, args: &cli::ScanArgs, ui: &ui::Ui) -> Result<Option<
     }
 
     let gate_tripped = report.findings.iter().any(|f| f.severity >= args.severity);
-    Ok(Some(gate_tripped))
+    Ok(gate_tripped)
 }
 
 /// gochi's closing verdict for a static scan: a mood + a severity breakdown, or

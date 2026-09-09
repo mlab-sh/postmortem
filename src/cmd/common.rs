@@ -1,7 +1,10 @@
 //! Work every command shares: turning a path into a parsed dependency
 //! graph, and the two summaries more than one command prints.
 
-use crate::{detect, model, parsers, resolve, scope, settings, tree, ui};
+use crate::{
+    archsec, cache, detect, gochi, image, model, osv, parsers, resolve, scope, settings, system,
+    tree, ui, vuln,
+};
 
 use anyhow::Result;
 
@@ -93,6 +96,22 @@ pub(crate) fn detect_and_parse(
             .collect::<Vec<_>>()
             .join(", ")
     ));
+    parse_detected(detected, ui, omit).map(Some)
+}
+
+/// Parse an already-detected set of ecosystems into one dependency graph.
+///
+/// Split out from [`detect_and_parse`] because detection is what varies: a
+/// directory detects one project, and a container image detects one per
+/// application found inside it. Everything after detection — the per-ecosystem
+/// parsers, the diagnostics they raise, scope propagation and `--omit` — has to
+/// behave identically whichever way the ecosystems were found, and the only way
+/// to guarantee that is for there to be one copy of it.
+pub(crate) fn parse_detected(
+    detected: Vec<detect::Detected>,
+    ui: &ui::Ui,
+    omit: &[model::Scope],
+) -> Result<ParsedProject> {
     let parse_phase = ui.phase("parsing dependencies");
     let mut deps = Vec::new();
     let mut diags: Vec<model::Diagnostic> = Vec::new();
@@ -240,7 +259,7 @@ pub(crate) fn detect_and_parse(
         }
     }
 
-    Ok(Some((detected, deps, diags)))
+    Ok((detected, deps, diags))
 }
 
 /// A resolver configured only to fill in licenses.
@@ -266,6 +285,197 @@ pub(crate) fn vuln_count(forest: &tree::Tree) -> usize {
     forest.vulnerabilities.iter().map(|p| p.vulns.len()).sum()
 }
 
+// --- container images --------------------------------------------------------
+
+/// One container image, flattened and parsed: the applications found inside it,
+/// the OS packages underneath them, and the facts about the acquisition itself.
+pub(crate) struct ImageScan {
+    /// Owns the extracted filesystem. Dropping it deletes the extraction, so it
+    /// has to outlive every path derived from it — which is why the caller holds
+    /// the whole [`ImageScan`] rather than pulling the pieces out of it.
+    #[allow(dead_code)]
+    pub image: image::Image,
+    pub detected: Vec<detect::Detected>,
+    pub deps: Vec<model::Dependency>,
+    pub diags: Vec<model::Diagnostic>,
+    /// The OS inventory, when a backend could read this image's root. `None`
+    /// always comes with a diagnostic saying why.
+    pub inventory: Option<system::Inventory>,
+    /// The release the OS layer belongs to, for the OSV ecosystem string.
+    pub release: Option<osv::Release>,
+}
+
+impl ImageScan {
+    /// Ecosystem labels for the report header: the application ecosystems found
+    /// inside the image, plus the OS backend when one answered.
+    pub fn ecosystems(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.detected.iter().map(|e| e.name().to_string()).collect();
+        out.dedup();
+        if let Some(inv) = &self.inventory {
+            out.push(inv.manager.to_string());
+        }
+        out
+    }
+}
+
+/// Flatten `reference` and read both of its layers.
+///
+/// The application layer reuses detection and the parsers unchanged — the only
+/// difference from a directory scan is that an image may hold several projects,
+/// so detection runs once per project found and the results are parsed as one
+/// set. The OS layer is read by whichever backend recognises the image's package
+/// database.
+///
+/// Every way this can come back thin is recorded as a diagnostic: no project, no
+/// package database, or a database whose backend cannot yet read an alternate
+/// root. An image is a black box, and "postmortem found nothing" must never be
+/// indistinguishable from "postmortem did not look".
+pub(crate) fn open_image(
+    reference: &str,
+    ui: &ui::Ui,
+    omit: &[model::Scope],
+) -> Result<ImageScan> {
+    let image = image::acquire(reference, ui)?;
+    let root = image.root().to_path_buf();
+
+    let mut diags: Vec<model::Diagnostic> = image
+        .notes
+        .iter()
+        .map(|n| model::Diagnostic {
+            ecosystem: "image".into(),
+            kind: model::DIAG_INFO.into(),
+            message: n.clone(),
+        })
+        .collect();
+
+    // --- application layer ---------------------------------------------------
+    let find_phase = ui.phase("finding projects in the image");
+    let projects = image::projects(&root);
+    let mut detected = Vec::new();
+    // Directories holding a manifest that resolves to nothing, almost always a
+    // `package.json` whose lockfile was pruned out of the final stage. Common
+    // enough in images to deserve a diagnostic rather than the stderr warning
+    // `detect` prints: off a TTY that warning is invisible, and a consumer
+    // reading `--json` would see an application layer that simply is not there.
+    let mut unresolved: Vec<String> = Vec::new();
+    for p in &projects {
+        match detect::detect(p) {
+            Ok(d) if d.is_empty() => unresolved.push(display_in(&root, p)),
+            Ok(d) => detected.extend(d),
+            Err(e) => diags.push(model::Diagnostic {
+                ecosystem: "image".into(),
+                kind: "detect_failed".into(),
+                message: format!("{}: {e:#}", display_in(&root, p)),
+            }),
+        }
+    }
+    if !unresolved.is_empty() {
+        let shown: Vec<&str> = unresolved.iter().take(5).map(|s| s.as_str()).collect();
+        let more = unresolved.len() - shown.len();
+        diags.push(model::Diagnostic {
+            ecosystem: "image".into(),
+            kind: "manifest_unresolved".into(),
+            message: format!(
+                "{} director(y/ies) hold a manifest with no lockfile beside it, so their dependencies were not resolved: {}{}",
+                unresolved.len(),
+                shown.join(", "),
+                if more > 0 { format!(" (+{more} more)") } else { String::new() }
+            ),
+        });
+    }
+    if projects.is_empty() {
+        find_phase.done("no project manifest found in the image".to_string());
+        diags.push(model::Diagnostic {
+            ecosystem: "image".into(),
+            kind: "no_project".into(),
+            message:
+                "no application manifest found in the image — its dependency graph is the OS layer only"
+                    .into(),
+        });
+    } else {
+        find_phase.done(format!(
+            "found {} project(s): {}",
+            projects.len(),
+            projects
+                .iter()
+                .map(|p| display_in(&root, p))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    let (detected, mut deps, parse_diags) = parse_detected(detected, ui, omit)?;
+    diags.extend(parse_diags);
+
+    // --- OS layer ------------------------------------------------------------
+    let os_phase = ui.phase("reading the image's OS packages");
+    let mut inventory = None;
+    let mut release = None;
+    match system::root_manager(&root) {
+        Some(manager) => match system::inventory_at(manager, &root, system::Opts::default()) {
+            Ok(inv) => {
+                os_phase.done(format!("{manager}: {}", inv.summary));
+                release = osv::Release::detect_in(&root);
+                if release.is_none() {
+                    diags.push(model::Diagnostic {
+                        ecosystem: manager.into(),
+                        kind: "no_release".into(),
+                        message:
+                            "the image carries no /etc/os-release — its OS packages cannot be matched to a vulnerability ecosystem"
+                                .into(),
+                    });
+                }
+                deps.extend(inv.deps.iter().cloned());
+                for note in &inv.notes {
+                    diags.push(model::Diagnostic {
+                        ecosystem: manager.into(),
+                        kind: model::DIAG_INFO.into(),
+                        message: note.clone(),
+                    });
+                }
+                inventory = Some(inv);
+            }
+            Err(e) => {
+                os_phase.abandon();
+                diags.push(model::Diagnostic {
+                    ecosystem: manager.into(),
+                    kind: "os_layer_unread".into(),
+                    message: format!("{e:#}"),
+                });
+            }
+        },
+        None => {
+            os_phase.done("no OS package database in the image".to_string());
+            diags.push(model::Diagnostic {
+                ecosystem: "image".into(),
+                kind: "no_os_database".into(),
+                message:
+                    "no apk/dpkg/rpm database in the image (scratch or distroless?) — no OS packages were examined"
+                        .into(),
+            });
+        }
+    }
+
+    Ok(ImageScan {
+        image,
+        detected,
+        deps,
+        diags,
+        inventory,
+        release,
+    })
+}
+
+/// A path inside the image, shown the way it exists *in the image* (`/app`)
+/// rather than as the scratch directory it was extracted to.
+fn display_in(root: &Path, p: &Path) -> String {
+    match p.strip_prefix(root) {
+        Ok(rel) if rel.as_os_str().is_empty() => "/".to_string(),
+        Ok(rel) => format!("/{}", rel.display()),
+        Err(_) => p.display().to_string(),
+    }
+}
+
 /// A one-line gochi summary of a forest's vuln scan: `N known vulnerabilities in
 /// M package(s)`, or an all-clear.
 pub(crate) fn vuln_summary(forest: &tree::Tree) -> String {
@@ -278,4 +488,138 @@ pub(crate) fn vuln_summary(forest: &tree::Tree) -> String {
         "{n} known vulnerabilit{} in {pkgs} package(s)",
         if n == 1 { "y" } else { "ies" }
     )
+}
+
+// --- OS vulnerability intelligence -------------------------------------------
+
+/// Populate `forest.vulnerabilities` from OSV.dev for an OS inventory, or push a
+/// `vuln_source_unavailable` diagnostic when the release can't be resolved or
+/// OSV doesn't cover this backend.
+///
+/// Shared by `system` (this machine) and `--image` (an extracted image root).
+/// `release_override` is what pins which of the two is being described: an image
+/// MUST pass its own release, because falling through to this machine's
+/// `/etc/os-release` would match an Alpine image's packages against the host's
+/// Debian advisories.
+pub(crate) fn scan_os_vulns(
+    forest: &mut tree::Tree,
+    inv: &system::Inventory,
+    release_override: Option<&str>,
+    ui: &ui::Ui,
+) {
+    let Some(eco) = inv.deps.first().map(|d| d.ecosystem) else {
+        return; // nothing installed to scan
+    };
+    // One load for both branches: the proxy and endpoint overrides apply to the
+    // Arch tracker and the OSV route alike.
+    let settings = settings::Settings::load_or_warn();
+    let net = &settings.network;
+
+    // Arch isn't in OSV — pacman uses its own source (the Arch Security Tracker),
+    // no release needed (Arch is rolling).
+    if eco == model::Ecosystem::Pacman {
+        let loader = gochi::Loader::spinner(
+            format!(
+                "gochi querying the Arch Security Tracker for {} packages",
+                inv.deps.len()
+            ),
+            ui.animating(),
+        );
+        match archsec::scan(&vuln::agent(net), &inv.deps, &net.endpoints.arch_security()) {
+            Ok(mut v) => {
+                forest.vulnerabilities.append(&mut v);
+                loader.finish(
+                    gochi::Mood::from_risk(0, 0, vuln_count(forest)),
+                    vuln_summary(forest),
+                );
+            }
+            Err(e) => {
+                loader.finish(gochi::Mood::Alert, "vuln scan failed");
+                forest.diagnostics.push(model::Diagnostic {
+                    ecosystem: eco.as_str().into(),
+                    kind: "vuln_scan_failed".into(),
+                    message: format!("Arch Security Tracker scan failed: {e:#}"),
+                });
+            }
+        }
+        return;
+    }
+
+    let release = match release_override {
+        Some(s) => osv::Release::parse_override(s),
+        None => match osv::Release::detect() {
+            Some(r) => r,
+            None => {
+                forest.diagnostics.push(model::Diagnostic {
+                    ecosystem: eco.as_str().into(),
+                    kind: "vuln_source_unavailable".into(),
+                    message: "cannot read /etc/os-release; pass --release id:version to scan"
+                        .into(),
+                });
+                return;
+            }
+        },
+    };
+    let Some(osv_eco) = osv::osv_ecosystem(eco, &release) else {
+        // Actionable guidance for the dnf backends OSV doesn't index directly.
+        let hint = match (eco, release.id.as_str()) {
+            (model::Ecosystem::Dnf, "rhel" | "redhat" | "centos") => {
+                " — RHEL isn't in OSV; retry with `--release almalinux:<N>` or `rocky:<N>` \
+                 (binary-compatible) for approximate coverage"
+            }
+            (model::Ecosystem::Dnf, "fedora") => {
+                " — Fedora isn't in OSV; `dnf updateinfo --security` lists advisories for \
+                 available updates"
+            }
+            _ => "",
+        };
+        forest.diagnostics.push(model::Diagnostic {
+            ecosystem: eco.as_str().into(),
+            kind: "vuln_source_unavailable".into(),
+            message: format!(
+                "OSV has no vulnerability feed for {} ({}); packages were not scanned{hint}",
+                eco.as_str(),
+                release.id
+            ),
+        });
+        return;
+    };
+    let token = settings.vuln_token();
+    if token.is_none() {
+        eprintln!(
+            "note: no mlab token — vuln scans use the anonymous limit. \
+             Set VULN_MLAB_TOKEN or vuln_token in ~/.postmortem/config.yml."
+        );
+    }
+    let loader = gochi::Loader::spinner(
+        format!(
+            "gochi querying vuln.mlab.sh for {} {osv_eco} packages",
+            inv.deps.len()
+        ),
+        ui.animating(),
+    );
+    match osv::scan(
+        &vuln::agent(net),
+        &cache::Cache::open(),
+        token.as_deref(),
+        &inv.deps,
+        &osv_eco,
+        &vuln::scan_url(net),
+    ) {
+        Ok(mut v) => {
+            forest.vulnerabilities.append(&mut v);
+            loader.finish(
+                gochi::Mood::from_risk(0, 0, vuln_count(forest)),
+                vuln_summary(forest),
+            );
+        }
+        Err(e) => {
+            loader.finish(gochi::Mood::Alert, "vuln scan failed");
+            forest.diagnostics.push(model::Diagnostic {
+                ecosystem: eco.as_str().into(),
+                kind: "vuln_scan_failed".into(),
+                message: format!("vuln scan failed: {e:#}"),
+            });
+        }
+    }
 }

@@ -19,6 +19,9 @@
 - [allowlist](Allowlist)
 - [cache](Cache)
 
+**Targets**
+- [Container images](Container-Images)
+
 **Ecosystems** ([overview](Ecosystems-and-Hosts))
 - [Node](Node)
 - [Python](Python)

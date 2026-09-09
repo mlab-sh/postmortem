@@ -47,6 +47,9 @@ locally.
   the rules that keep the check quiet.
 - **[Dependency scopes](Dependency-Scopes)** - what `--omit dev` removes, and why
   a package your app also uses is never dropped.
+- **[Container images](Container-Images)** - `--image <ref>` on `scan`, `tree`,
+  `audit` and `sbom`: both layers of an image in one report, and what is read
+  from it rather than from the machine scanning it.
 - **[System package managers](System)** - the Homebrew, [pacman](Pacman), [apt](Apt), [dnf](Dnf), [Nix](Nix), and [apk](Apk) backends in depth.
 - **[Windows](Windows)** - the five coexisting layers ([WinGet](WinGet), [MSIX](MSIX),
   [Chocolatey](Chocolatey), [Scoop](Scoop), [Add/Remove Programs](Add-Remove-Programs))

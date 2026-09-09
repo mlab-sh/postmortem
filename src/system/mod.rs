@@ -252,6 +252,40 @@ pub fn inventory(manager: &str, opts: Opts) -> Result<Inventory> {
     }
 }
 
+/// Which OS package database an extracted filesystem root carries, if any.
+///
+/// Detection is by the database's own path, not by `/etc/os-release`: a release
+/// file is a claim about identity, the package database is the thing actually
+/// being read. Returns the [`inventory_at`] backend name.
+pub fn root_manager(root: &std::path::Path) -> Option<&'static str> {
+    if root.join("lib/apk/db/installed").is_file() {
+        return Some("apk");
+    }
+    if root.join("var/lib/dpkg/status").is_file() {
+        return Some("apt");
+    }
+    if root.join("var/lib/rpm").is_dir() {
+        return Some("dnf");
+    }
+    None
+}
+
+/// Read an inventory from an alternate filesystem root — an extracted container
+/// image rather than this machine.
+///
+/// Only the backends already made root-relative can answer. The rest fail
+/// loudly, and the caller turns that into a diagnostic: an image whose packages
+/// were never read must say so, because "no OS findings" and "the OS layer was
+/// not examined" are not the same result.
+pub fn inventory_at(manager: &str, root: &std::path::Path, opts: Opts) -> Result<Inventory> {
+    match manager {
+        "apk" => apk::apk_inventory_at(root, opts),
+        other => anyhow::bail!(
+            "the {other} backend cannot yet read an alternate root — its packages were not examined"
+        ),
+    }
+}
+
 /// Run a PowerShell script and return its stdout.
 ///
 /// Passed as `-EncodedCommand` (base64 UTF-16LE): it sidesteps every layer of

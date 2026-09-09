@@ -34,9 +34,17 @@ pub struct Release {
 }
 
 impl Release {
-    /// Read `/etc/os-release`. `None` off Linux or when the file is absent.
+    /// Read this machine's `/etc/os-release`. See [`Release::detect_in`].
     pub fn detect() -> Option<Release> {
-        let text = std::fs::read_to_string("/etc/os-release").ok()?;
+        Release::detect_in(std::path::Path::new("/"))
+    }
+
+    /// Read `etc/os-release` under `root`. `None` when the file is absent — off
+    /// Linux for the host, and for an image whose base ships no release file
+    /// (scratch and distroless), where the honest answer is that the ecosystem
+    /// could not be determined rather than a guess.
+    pub fn detect_in(root: &std::path::Path) -> Option<Release> {
+        let text = std::fs::read_to_string(root.join("etc/os-release")).ok()?;
         let mut id = String::new();
         let mut version_id = String::new();
         for line in text.lines() {
@@ -199,5 +207,62 @@ mod tests {
             rel("alpine", "3.19")
         );
         assert_eq!(Release::parse_override("debian"), rel("debian", ""));
+    }
+
+    /// `--image` correctness hinges on this: the release must come from the
+    /// image, never from the machine doing the scanning. Matching an Alpine
+    /// image's packages against the host's Debian advisories would produce a
+    /// confident, entirely wrong answer.
+    #[test]
+    fn a_release_is_read_from_an_alternate_root() {
+        let root = std::env::temp_dir().join(format!("postmortem-osvtest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("etc")).expect("etc");
+        std::fs::write(
+            root.join("etc/os-release"),
+            "NAME=\"Alpine Linux\"\nID=alpine\nVERSION_ID=3.19.1\nPRETTY_NAME=\"Alpine Linux v3.19\"\n",
+        )
+        .expect("os-release");
+
+        let r = Release::detect_in(&root).expect("a release under the alternate root");
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(r.id, "alpine");
+        assert_eq!(r.version_id, "3.19.1");
+        // OSV keys Alpine on the release branch, not the point release.
+        assert_eq!(
+            osv_ecosystem(Ecosystem::Apk, &r).as_deref(),
+            Some("Alpine:v3.19")
+        );
+    }
+
+    /// A scratch or distroless image ships no release file. The answer has to be
+    /// "unknown", not a fallback to whatever the scanning machine happens to run.
+    #[test]
+    fn a_root_without_a_release_file_reports_none() {
+        let root = std::env::temp_dir().join(format!("postmortem-osvempty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("root");
+        let r = Release::detect_in(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(r.is_none());
+    }
+
+    /// The round trip `--image` relies on to pin the shared OS vuln scan: a
+    /// release read from an image is formatted the way `--release` accepts and
+    /// parsed back to the same ecosystem string.
+    #[test]
+    fn an_image_release_survives_the_override_round_trip() {
+        let r = Release {
+            id: "alpine".into(),
+            version_id: "3.19.1".into(),
+        };
+        let pinned = format!("{}:{}", r.id, r.version_id);
+        let back = Release::parse_override(&pinned);
+        assert_eq!(back, r);
+        assert_eq!(
+            osv_ecosystem(Ecosystem::Apk, &back).as_deref(),
+            Some("Alpine:v3.19")
+        );
     }
 }

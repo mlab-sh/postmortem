@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--image <ref>` on `scan`, `tree`, `audit` and `sbom`.** A container image is
+  now a target the way a directory is. `docker create` + `docker export` flattens
+  it into a temporary directory that is deleted when the command ends, and
+  **nothing inside the image is ever executed** — the point is to read an
+  artifact whose code you do not yet trust. Both of its layers land in one graph:
+  every application found inside it, and the OS package database underneath them,
+  so `risk:dep`, the gate, the SBOM and `--vulns` see the whole artifact instead
+  of half of it. The application layer is the existing detection and parsers with
+  a different root; the only new reading is the OS one.
+- **The apk backend reads an alternate root.** It is the first of the OS backends
+  to stop assuming the machine it runs on, which is what lets an Alpine-based
+  image be inventoried from a macOS laptop with no apk installed. Verified
+  against `apk info` inside the container: same 15 packages, no additions, no
+  omissions. Debian and rpm images are detected and reported as *not examined*
+  rather than silently contributing nothing.
+- **Vulnerability intelligence spans both layers of an image.** Lockfiles go
+  through the mlab SBOM scan, OS packages through the OSV route `system --vulns`
+  already used, and the OS release is read from the **image's** `etc/os-release`.
+  A release cannot fall through to the scanning machine's: matching an Alpine
+  image against the host's Debian advisories would be confidently wrong, so an
+  image with no release file reports that it could not be matched.
+
+### Changed
+
+- **Diagnostics gained an `info` kind**, for facts about how a scan was obtained
+  rather than holes in it. The platform a multi-arch reference resolved to is one
+  — worth carrying into `--json`, but not something that should drag an `audit`
+  verdict down the way an unparsed lockfile does.
+- **`postmortem.conf` and the `[gate]` policy are read from the working directory
+  when the target is an image**, never from inside it. A configuration file
+  shipped in someone else's image must not be able to suppress findings about
+  that image.
+
 ### Fixed
 
 - **The Linux release binaries would not start on Debian 12 or Ubuntu 22.04.**
