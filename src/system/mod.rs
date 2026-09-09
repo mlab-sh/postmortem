@@ -278,7 +278,9 @@ pub fn root_manager(root: &std::path::Path) -> Option<&'static str> {
     if root.join("lib/apk/db/installed").is_file() {
         return Some("apk");
     }
-    if root.join("var/lib/dpkg/status").is_file() {
+    // A normal system keeps one `status` file; an image built without dpkg keeps
+    // one stanza per package in `status.d/`. Both are a dpkg database.
+    if root.join("var/lib/dpkg/status").is_file() || root.join("var/lib/dpkg/status.d").is_dir() {
         return Some("apt");
     }
     // Probed rather than assumed: the directory alone is not the database, and

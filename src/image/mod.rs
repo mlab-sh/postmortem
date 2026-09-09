@@ -91,6 +91,10 @@ fn is_terminal_project(depth: usize) -> bool {
 /// this list.
 pub const RUNTIMES: &[&str] = &["docker", "podman", "nerdctl"];
 
+/// The argv handed to `create`, never resolved and never run. See
+/// [`create_container`].
+const PLACEHOLDER_ARGV: &str = "/postmortem-never-runs-this";
+
 /// The first runtime on `PATH`.
 fn runtime() -> Result<&'static str> {
     RUNTIMES
@@ -371,8 +375,14 @@ fn inspect_platform(rt: &str, reference: &str) -> Result<String> {
 
 /// Create a container from `reference` without starting it, returning its id.
 fn create_container(rt: &str, reference: &str) -> Result<String> {
+    // The placeholder argv matters: `create` refuses an image that declares
+    // neither `Cmd` nor `Entrypoint`, which is exactly what a distroless or
+    // scratch-derived base looks like — so without it the whole acquisition
+    // failed on the images people choose *for* their small attack surface.
+    // Nothing is ever started, so the value is never resolved or run; it is
+    // spelled out so a leaked container says what made it.
     let out = Command::new(rt)
-        .args(["create", reference])
+        .args(["create", reference, PLACEHOLDER_ARGV])
         .output()
         .with_context(|| format!("running `{rt} create`"))?;
     if !out.status.success() {

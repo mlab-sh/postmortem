@@ -376,8 +376,14 @@ impl DpkgStanza {
     /// kept its configuration (`deinstall ok config-files`) still has a stanza,
     /// and counting it as installed would put a package that ships no code into
     /// the graph — and into the vulnerability scan.
+    ///
+    /// A stanza with no `Status:` at all means the `status.d/` layout, where each
+    /// file was written by the image builder to record a package it put in: there
+    /// is no state machine and nothing was ever removed, so the stanza's existence
+    /// is the statement. A real `status` file always carries the field, so this
+    /// cannot loosen the check for it.
     fn is_installed(&self) -> bool {
-        self.status.split_whitespace().nth(2) == Some("installed")
+        self.status.is_empty() || self.status.split_whitespace().nth(2) == Some("installed")
     }
 
     /// `hold` in the *want* field: the admin excluded it from upgrades, so it is
@@ -387,17 +393,48 @@ impl DpkgStanza {
     }
 }
 
-/// Read and parse `var/lib/dpkg/status` under `root`.
+/// Read and parse the dpkg database under `root`.
 ///
 /// This is the file `dpkg-query` itself reads. Going to it directly is what
 /// removes the requirement for dpkg to exist on the machine running postmortem,
 /// which is the whole point for an image: the scanner and the scanned no longer
 /// have to be the same distribution.
+///
+/// Two layouts exist. A normal system keeps one `status` file holding every
+/// stanza. An image assembled *without* dpkg — distroless, and anything built by
+/// bazel or ko — instead drops one stanza per package into `status.d/` and has no
+/// `status` file at all. Reading only the first layout reported the images people
+/// choose *for* their small attack surface as containing no packages whatsoever,
+/// which is the least useful thing that can be said about them.
 fn dpkg_status(root: &Path) -> Result<Vec<DpkgStanza>> {
-    let path = root.join("var/lib/dpkg/status");
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading {}", path.display()))?;
-    Ok(parse_dpkg_status(&text))
+    let single = root.join("var/lib/dpkg/status");
+    if single.is_file() {
+        let text = std::fs::read_to_string(&single)
+            .with_context(|| format!("reading {}", single.display()))?;
+        return Ok(parse_dpkg_status(&text));
+    }
+
+    let dir = root.join("var/lib/dpkg/status.d");
+    let entries = std::fs::read_dir(&dir)
+        .with_context(|| format!("reading {} or {}", single.display(), dir.display()))?;
+    let mut out = Vec::new();
+    for e in entries.flatten() {
+        let p = e.path();
+        // The same directory holds `<pkg>.md5sums` beside the stanzas.
+        if !p.is_file() || p.extension().is_some() {
+            continue;
+        }
+        if let Ok(text) = std::fs::read_to_string(&p) {
+            out.extend(parse_dpkg_status(&text));
+        }
+    }
+    if out.is_empty() {
+        anyhow::bail!(
+            "no dpkg stanzas under {} — the database is present but unreadable",
+            dir.display()
+        );
+    }
+    Ok(out)
 }
 
 /// Parse the RFC822-style stanzas of a dpkg status file.
@@ -1019,5 +1056,74 @@ Version: 2.0
         let foreign = apt_foreign_arch_at(&stanzas);
         assert_eq!(foreign.get("d").map(String::as_str), Some("armhf"));
         assert!(!foreign.contains_key("a") && !foreign.contains_key("c"));
+    }
+
+    /// The layout distroless and other dpkg-less builders use: one stanza file
+    /// per package, no `status` file, and no `Status:` field in the stanzas.
+    /// Reading only the single-file layout reported these images as empty.
+    #[test]
+    fn the_status_d_layout_is_read_too() {
+        let root = std::env::temp_dir().join(format!("postmortem-statusd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let d = root.join("var/lib/dpkg/status.d");
+        std::fs::create_dir_all(&d).expect("status.d");
+        std::fs::write(
+            d.join("libc6"),
+            "Package: libc6\nVersion: 2.36-9\nArchitecture: arm64\nDescription: GNU C Library\n",
+        )
+        .expect("libc6");
+        std::fs::write(
+            d.join("base-files"),
+            "Package: base-files\nVersion: 12.4\nArchitecture: arm64\nPre-Depends: awk\n",
+        )
+        .expect("base-files");
+        // The same directory holds checksum files, which are not stanzas.
+        std::fs::write(d.join("libc6.md5sums"), "abc  /lib/libc.so\n").expect("md5sums");
+
+        let stanzas = dpkg_status(&root).expect("status.d is a database");
+        let _ = std::fs::remove_dir_all(&root);
+
+        let mut names: Vec<&str> = stanzas.iter().map(|p| p.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["base-files", "libc6"], "checksums are not packages");
+        assert!(
+            stanzas.iter().all(DpkgStanza::is_installed),
+            "a stanza with no Status: exists because the builder put the package in"
+        );
+    }
+
+    /// The loosened `is_installed` must not loosen the real layout: a package
+    /// removed but not purged still has to stay out of the graph.
+    #[test]
+    fn a_status_field_still_decides_when_there_is_one() {
+        let installed = DpkgStanza {
+            name: "a".into(),
+            version: "1".into(),
+            depends: String::new(),
+            pre_depends: String::new(),
+            homepage: String::new(),
+            architecture: "arm64".into(),
+            status: "install ok installed".into(),
+        };
+        let removed = DpkgStanza {
+            status: "deinstall ok config-files".into(),
+            ..installed_like(&installed)
+        };
+        assert!(installed.is_installed());
+        assert!(!removed.is_installed());
+    }
+
+    /// A clone helper, because `DpkgStanza` is deliberately not `Clone` in
+    /// production code.
+    fn installed_like(p: &DpkgStanza) -> DpkgStanza {
+        DpkgStanza {
+            name: p.name.clone(),
+            version: p.version.clone(),
+            depends: p.depends.clone(),
+            pre_depends: p.pre_depends.clone(),
+            homepage: p.homepage.clone(),
+            architecture: p.architecture.clone(),
+            status: p.status.clone(),
+        }
     }
 }

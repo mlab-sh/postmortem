@@ -66,6 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deleted in a later layer stays deleted — verified end to end against the
   runtime's own flattening: identical package sets on Alpine, Debian, Ubuntu and
   a purpose-built three-layer image.
+- **Distroless images are inventoried.** They keep one dpkg stanza per package
+  in `var/lib/dpkg/status.d/` and have no `status` file at all, so postmortem
+  reported the images people pick *for* their small attack surface as containing
+  no packages whatsoever. Both layouts are read now; `gcr.io/distroless/base-debian12`
+  comes back with its 7 packages, matching its stanzas exactly.
 - **`diff` compares two container images.** An `image://<ref>` on either side
   compares built artifacts instead of source trees, which is the review a lockfile
   diff cannot give you: the OS layer moves underneath the application, and that is
@@ -111,6 +116,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`--image` failed outright on an image that declares no command.** Acquisition
+  goes through `create`, and `create` refuses an image with neither `Cmd` nor
+  `Entrypoint` — which is exactly what a distroless or scratch-derived base looks
+  like. A placeholder argv is passed now; nothing is ever started, so it is never
+  resolved or run.
 - **The Linux release binaries would not start on Debian 12 or Ubuntu 22.04.**
   They were linked on `ubuntu-latest` — 24.04, glibc 2.39 — and a glibc binary
   never runs against a glibc older than the one it was built with. The two GNU

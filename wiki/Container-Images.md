@@ -167,8 +167,12 @@ instead of falling back:
 [apk] no-release  the image carries no /etc/os-release — its OS packages cannot be matched to a vulnerability ecosystem
 ```
 
-Distroless and `scratch` images carry no package database at all. That is stated
-too, rather than reported as an image with no OS packages:
+A distroless image *does* carry a package database, just not in the usual shape:
+one dpkg stanza per package under `var/lib/dpkg/status.d/`, with no `status` file.
+Both layouts are read.
+
+A `scratch`-derived image genuinely has no database. That is stated rather than
+reported as an image with no OS packages:
 
 ```
 [image] no-os-database  no apk/dpkg/rpm database in the image (scratch or distroless?) — no OS packages were examined
