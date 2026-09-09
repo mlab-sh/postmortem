@@ -26,12 +26,29 @@ report header names both, e.g. `image acme/api:1.4.2 (node, apk)`.
 
 ## How the image is acquired
 
-`docker create` makes a container without starting it, `docker export` streams
-its filesystem, and the container is removed straight away. **Nothing inside the
-image is ever executed** — that is the entire point of reading an artifact whose
-code you do not yet trust. The extraction lands in a temporary directory and is
-deleted when the command ends, the same discipline
-[`system inspect --deep`](System) applies to the repositories it clones.
+`create` makes a container without starting it, `export` streams its filesystem,
+and the container is removed straight away. **Nothing inside the image is ever
+executed** — that is the entire point of reading an artifact whose code you do
+not yet trust. The extraction lands in a temporary directory and is deleted when
+the command ends, the same discipline [`system inspect --deep`](System) applies
+to the repositories it clones.
+
+### Runtimes
+
+Whichever of these is on `PATH` is used, in this order. There is nothing to
+configure.
+
+| Runtime | Notes |
+| --- | --- |
+| `docker` | |
+| `podman` | The default on Fedora and RHEL, where Docker is often absent |
+| `nerdctl` | containerd |
+
+Apple's `container` is **not** supported. Its `export` materialises a container's
+root filesystem only once the container has been *started*, and starting an image
+is exactly what a tool built to read untrusted artifacts must never do.
+Supporting it means unpacking `container image save` layer by layer instead,
+which is a different acquisition path rather than another name on this list.
 
 A reference that is not present locally is pulled. A reference that cannot be
 resolved is an error and exits non-zero: an image postmortem could not read must
@@ -40,15 +57,15 @@ never be reported as an image with nothing wrong in it.
 ### Platform
 
 A multi-arch reference resolves to one of its manifests, and which one is the
-daemon's choice rather than postmortem's. The platform actually read is recorded
-in the report:
+runtime's choice rather than postmortem's. The platform actually read, and which
+runtime resolved it, are recorded in the report:
 
 ```
-— platform linux/arm64 (resolved by the daemon)
+— platform linux/arm64 (resolved by docker)
 ```
 
 Scanning `linux/amd64` from an arm64 machine means scanning a different set of
-packages. Pin the platform on the daemon side if that matters:
+packages. Pin the platform on the runtime side if that matters:
 
 ```bash
 docker pull --platform linux/amd64 acme/api:1.4.2
@@ -71,19 +88,49 @@ An image can hold several applications, and all of them are reported.
 
 ## OS package databases
 
-| Database | Backend | Read from an image |
-| --- | --- | --- |
-| `lib/apk/db/installed` | apk (Alpine) | yes |
-| `var/lib/dpkg/status` | apt (Debian, Ubuntu) | not yet |
-| `var/lib/rpm` | dnf (Fedora, Rocky, Alma) | not yet |
+| Database | Backend | Read by | Needs a tool on your machine |
+| --- | --- | --- | --- |
+| `lib/apk/db/installed` | apk (Alpine) | parsing the file | no |
+| `var/lib/dpkg/status` | apt (Debian, Ubuntu) | parsing the file | no |
+| `var/lib/rpm` or `usr/lib/sysimage/rpm` | dnf (Fedora, Rocky, Alma) | `rpm --root` | **yes**, an `rpm` binary |
 
-A database whose backend cannot yet read an alternate root is reported rather
-than skipped in silence:
+apk and dpkg keep their databases as text, so postmortem reads them directly and
+a Debian image can be inventoried from a macOS laptop that has never seen dpkg.
+rpm's database is a binary store, so reading one needs an `rpm` binary present.
+When there is none, that is reported rather than passed off as an image with no
+packages:
 
 ```
 ⚠ 1 graph diagnostic(s) — results may be incomplete
-  [apt] os-layer-unread  the apt backend cannot yet read an alternate root — its packages were not examined
+  [dnf] os-layer-unread  running `rpm -qa` — is rpm installed on this machine?
 ```
+
+Where the rpm database lives differs between distributions — Fedora moved it to
+`usr/lib/sysimage/rpm` while RHEL 9 and its rebuilds keep `var/lib/rpm` — so the
+location is probed inside the image rather than taken from the reading machine's
+own default. Taking the default is how a scanner reports zero packages for an
+image full of them.
+
+### What an image cannot tell you
+
+Some signals need the package manager to be describing *its own* system, and an
+image carries no repository metadata. Those are collected for `system` on this
+machine and reported as not collected for an image:
+
+| Not available in an image | Why |
+| --- | --- |
+| Per-package provenance (third-party source) | Needs `apt-cache policy` / `dnf repoquery` and the repo lists an image deletes |
+| Available upgrades | Same |
+| File tampering (apt) | Needs `dpkg --verify` |
+| Direct vs transitive (rpm) | Needs `dnf repoquery --userinstalled` |
+
+Because provenance is unknown, install scripts and rpm scriptlets are still
+statically analyzed — reading an untrusted artifact and looking at none of the
+code it runs would be worse — but their findings are reported **unscored** and
+tagged `[unattributed source]`. Those analyzers were calibrated on untrusted
+install code, and a URL in a distribution's own maintainer script is how the
+distribution works. Scoring a premise that could not be checked would make every
+stock base image look compromised.
 
 ## Vulnerabilities
 
@@ -118,5 +165,28 @@ Everything else behaves as it does for a directory: `--json`, `--sarif`,
 
 ## Requirements
 
-A working `docker` CLI and daemon, and `tar`. Nothing is installed into the
-image and no code from it runs.
+One of the [runtimes](#runtimes) above, and `tar`. An `rpm` binary as well for
+rpm-based images. Nothing is installed into the image and no code from it runs.
+
+## Dockerfiles
+
+The recipe is analyzed too, and needs no image and no runtime: `scan` picks up
+every `Dockerfile`, `Containerfile` and their `.prod` / `prod.` variants found in
+a project.
+
+```bash
+postmortem scan .
+```
+
+| Checked | Why it matters |
+| --- | --- |
+| A base pinned by tag rather than digest | Whoever controls that tag controls the bottom of your image on the next build |
+| `curl … \| sh` | The fetched code is never reviewed and can change between builds |
+| `ADD` from a URL | Pulls a remote artifact in with no checksum |
+| A credential in `ENV` / `ARG` | Stays in the layer, readable by anyone who pulls the image |
+| `--no-check-certificate`, `gpgcheck=0`, and friends | Turns a signed supply chain into an unsigned one |
+| No `USER` instruction | The container's main process runs as root |
+
+A `FROM` that names an earlier stage of the same file is not an unpinned base,
+and a bare `ARG NPM_TOKEN` with no value bakes nothing in — both are the correct
+patterns and neither is flagged.

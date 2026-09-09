@@ -171,6 +171,23 @@ impl SysSignal {
             points,
         }
     }
+
+    /// The same observation, reported but not scored.
+    ///
+    /// The recipe analyzers were calibrated on *untrusted* install code — an AUR
+    /// PKGBUILD, a sideloaded `.deb`. A URL in one of those is worth a look; the
+    /// identical URL in a distribution's own maintainer script is how the
+    /// distribution works. Inside an image no package can be shown to be
+    /// third-party, so the finding is kept visible and its risk points are
+    /// dropped: scoring a premise that could not be checked would make every
+    /// stock base image look compromised, and a score everybody learns to ignore
+    /// protects nobody.
+    pub(super) fn unscored(mut self) -> Self {
+        self.severity = Severity::Info;
+        self.points = 0;
+        self.label = format!("{} [unattributed source]", self.label);
+        self
+    }
 }
 
 /// One configured source repo, generic across backends (a Homebrew tap, a
@@ -264,7 +281,9 @@ pub fn root_manager(root: &std::path::Path) -> Option<&'static str> {
     if root.join("var/lib/dpkg/status").is_file() {
         return Some("apt");
     }
-    if root.join("var/lib/rpm").is_dir() {
+    // Probed rather than assumed: the directory alone is not the database, and
+    // which directory holds it differs between rpm distributions.
+    if dnf::rpm_dbpath(root).is_some() {
         return Some("dnf");
     }
     None
@@ -280,6 +299,8 @@ pub fn root_manager(root: &std::path::Path) -> Option<&'static str> {
 pub fn inventory_at(manager: &str, root: &std::path::Path, opts: Opts) -> Result<Inventory> {
     match manager {
         "apk" => apk::apk_inventory_at(root, opts),
+        "apt" => apt::apt_inventory_at(root, opts),
+        "dnf" => dnf::dnf_inventory_at(root, opts),
         other => anyhow::bail!(
             "the {other} backend cannot yet read an alternate root — its packages were not examined"
         ),

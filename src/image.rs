@@ -1,10 +1,12 @@
 //! `--image <ref>` — scan a container image the way a directory is scanned.
 //!
-//! An image is acquired by flattening it onto disk: `docker create` makes a
-//! container without starting it, `docker export` streams that container's
-//! filesystem as a tar, and the container is removed straight away. **Nothing
-//! from the image is ever executed** — the whole point is to read an artifact
-//! whose code you do not trust.
+//! An image is acquired by flattening it onto disk: `create` makes a container
+//! without starting it, `export` streams that container's filesystem as a tar,
+//! and the container is removed straight away. **Nothing from the image is ever
+//! executed** — the whole point is to read an artifact whose code you do not
+//! trust.
+//!
+//! Any Docker-compatible runtime can do this; see [`RUNTIMES`].
 //!
 //! The extracted root is deleted when the [`Image`] is dropped, the same
 //! discipline `system inspect --deep` applies to the repositories it clones.
@@ -69,6 +71,42 @@ fn is_terminal_project(depth: usize) -> bool {
     depth > 0
 }
 
+/// The container runtimes postmortem can drive, in preference order.
+///
+/// All three speak the same four verbs with the same output shapes, so one code
+/// path covers them and there is nothing to configure: whichever is installed is
+/// used. podman matters because it is the default on Fedora and RHEL, where
+/// Docker often is not present at all.
+///
+/// Apple's `container` is deliberately **not** here. Its `export` materialises a
+/// container's root filesystem only once the container has been *started*, and
+/// starting an image is exactly what a tool that reads untrusted artifacts must
+/// never do. Supporting it means unpacking `container image save` layer by layer
+/// instead, which is a different acquisition path rather than another name in
+/// this list.
+pub const RUNTIMES: &[&str] = &["docker", "podman", "nerdctl"];
+
+/// The first runtime on `PATH`.
+fn runtime() -> Result<&'static str> {
+    RUNTIMES
+        .iter()
+        .copied()
+        .find(|bin| {
+            std::process::Command::new(bin)
+                .arg("--version")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        })
+        .with_context(|| {
+            format!(
+                "no container runtime found on PATH (looked for {}) — one is needed to read an image",
+                RUNTIMES.join(", ")
+            )
+        })
+}
+
 /// A container image flattened onto disk. The extracted root is removed on drop.
 pub struct Image {
     /// Facts about the acquisition the report must carry: the platform the
@@ -98,7 +136,14 @@ impl Drop for Image {
 pub fn acquire(reference: &str, ui: &Ui) -> Result<Image> {
     let phase = ui.phase(format!("acquiring image {reference}"));
 
-    let platform = match inspect_platform(reference) {
+    let rt = match runtime() {
+        Ok(r) => r,
+        Err(e) => {
+            phase.abandon();
+            return Err(e);
+        }
+    };
+    let platform = match inspect_platform(rt, reference) {
         Ok(p) => p,
         Err(e) => {
             phase.abandon();
@@ -107,7 +152,7 @@ pub fn acquire(reference: &str, ui: &Ui) -> Result<Image> {
     };
     phase.set(format!("creating container from {reference} ({platform})"));
 
-    let container = match create_container(reference) {
+    let container = match create_container(rt, reference) {
         Ok(c) => c,
         Err(e) => {
             phase.abandon();
@@ -120,9 +165,9 @@ pub fn acquire(reference: &str, ui: &Ui) -> Result<Image> {
     let result = (|| -> Result<Vec<String>> {
         std::fs::create_dir_all(&root).with_context(|| format!("creating {}", root.display()))?;
         phase.set(format!("exporting {reference} filesystem"));
-        export_into(&container, &root)
+        export_into(rt, &container, &root)
     })();
-    remove_container(&container);
+    remove_container(rt, &container);
 
     let skipped = match result {
         Ok(s) => s,
@@ -133,7 +178,7 @@ pub fn acquire(reference: &str, ui: &Ui) -> Result<Image> {
         }
     };
 
-    let mut notes = vec![format!("platform {platform} (resolved by the daemon)")];
+    let mut notes = vec![format!("platform {platform} (resolved by {rt})")];
     if !skipped.is_empty() {
         notes.push(format!(
             "{} archive entry/entries not extracted (device nodes and special files need root): {}",
@@ -198,8 +243,8 @@ fn has_marker(dir: &Path) -> bool {
 /// the daemon is reachable and the reference exists — `docker image inspect`
 /// does not pull, so a missing image is reported here rather than halfway
 /// through an export.
-fn inspect_platform(reference: &str) -> Result<String> {
-    let out = Command::new("docker")
+fn inspect_platform(rt: &str, reference: &str) -> Result<String> {
+    let out = Command::new(rt)
         .args([
             "image",
             "inspect",
@@ -208,7 +253,7 @@ fn inspect_platform(reference: &str) -> Result<String> {
             reference,
         ])
         .output()
-        .context("running `docker image inspect` — is Docker installed and running?")?;
+        .with_context(|| format!("running `{rt} image inspect` — is the daemon running?"))?;
     if out.status.success() {
         let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if !p.is_empty() {
@@ -217,16 +262,16 @@ fn inspect_platform(reference: &str) -> Result<String> {
     }
     // Not present locally: pull it, then ask again. Pulling is the one network
     // access this path makes, and it is the user's own reference.
-    let pull = Command::new("docker")
+    let pull = Command::new(rt)
         .args(["pull", "--quiet", reference])
         .status()
-        .context("running `docker pull` — is Docker installed and running?")?;
+        .with_context(|| format!("running `{rt} pull`"))?;
     if !pull.success() {
         anyhow::bail!(
-            "cannot resolve image `{reference}`: not present locally and `docker pull` failed"
+            "cannot resolve image `{reference}`: not present locally and `{rt} pull` failed"
         );
     }
-    let out = Command::new("docker")
+    let out = Command::new(rt)
         .args([
             "image",
             "inspect",
@@ -235,10 +280,10 @@ fn inspect_platform(reference: &str) -> Result<String> {
             reference,
         ])
         .output()
-        .context("running `docker image inspect`")?;
+        .with_context(|| format!("running `{rt} image inspect`"))?;
     if !out.status.success() {
         anyhow::bail!(
-            "`docker image inspect {reference}` failed: {}",
+            "`{rt} image inspect {reference}` failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
@@ -246,35 +291,41 @@ fn inspect_platform(reference: &str) -> Result<String> {
 }
 
 /// Create a container from `reference` without starting it, returning its id.
-fn create_container(reference: &str) -> Result<String> {
-    let out = Command::new("docker")
+fn create_container(rt: &str, reference: &str) -> Result<String> {
+    let out = Command::new(rt)
         .args(["create", reference])
         .output()
-        .context("running `docker create`")?;
+        .with_context(|| format!("running `{rt} create`"))?;
     if !out.status.success() {
         anyhow::bail!(
-            "`docker create {reference}` failed: {}",
+            "`{rt} create {reference}` failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    // podman echoes progress before the id; the id is always the last line.
+    let id = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .next_back()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     if id.is_empty() {
-        anyhow::bail!("`docker create {reference}` returned no container id");
+        anyhow::bail!("`{rt} create {reference}` returned no container id");
     }
     Ok(id)
 }
 
 /// Best-effort removal of the scratch container. A failure here leaks a stopped
 /// container, which is worth a warning and not worth failing a scan over.
-fn remove_container(id: &str) {
-    let done = Command::new("docker")
+fn remove_container(rt: &str, id: &str) {
+    let done = Command::new(rt)
         .args(["rm", "--force", id])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
     if !matches!(done, Ok(s) if s.success()) {
         eprintln!(
-            "warn: could not remove scratch container {id} — remove it with `docker rm -f {id}`"
+            "warn: could not remove scratch container {id} — remove it with `{rt} rm -f {id}`"
         );
     }
 }
@@ -287,17 +338,17 @@ fn remove_container(id: &str) {
 /// case this refuses to produce.
 ///
 /// Returns the entries `tar` reported it could not write.
-fn export_into(id: &str, dest: &Path) -> Result<Vec<String>> {
-    let mut export = Command::new("docker")
+fn export_into(rt: &str, id: &str, dest: &Path) -> Result<Vec<String>> {
+    let mut export = Command::new(rt)
         .args(["export", id])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .context("running `docker export`")?;
+        .with_context(|| format!("running `{rt} export`"))?;
     let stdout = export
         .stdout
         .take()
-        .context("`docker export` produced no stream")?;
+        .with_context(|| format!("`{rt} export` produced no stream"))?;
 
     let tar = Command::new("tar")
         .arg("-x")
@@ -319,10 +370,10 @@ fn export_into(id: &str, dest: &Path) -> Result<Vec<String>> {
 
     let export = export
         .wait_with_output()
-        .context("waiting on `docker export`")?;
+        .with_context(|| format!("waiting on `{rt} export`"))?;
     if !export.status.success() {
         anyhow::bail!(
-            "`docker export` failed: {}",
+            "`{rt} export` failed: {}",
             String::from_utf8_lossy(&export.stderr).trim()
         );
     }

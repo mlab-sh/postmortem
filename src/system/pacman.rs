@@ -4,7 +4,7 @@
 //! an AUR PKGBUILD rather than a signed repo, so they are resolved against the
 //! `aur.archlinux.org` RPC and their PKGBUILD is statically analyzed.
 
-use super::privilege::{find_setuid_files, persistence_signals};
+use super::privilege::{find_setuid_files_at, persistence_signals};
 use super::recipe::analyze_recipe;
 use super::*;
 
@@ -81,7 +81,8 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
     // Execution & privilege: the boot/scheduled/auth/setuid surface a package sets
     // up through its files (shared with the apt/dnf backends).
     let file_index = pacman_file_index();
-    let setuid = find_setuid_files();
+    // pacman describes this machine only; the image path goes through apt/dnf/apk.
+    let setuid = find_setuid_files_at(std::path::Path::new("/"));
     for d in &deps {
         if let Some(files) = file_index.get(&d.name) {
             for sig in persistence_signals(files, &setuid) {

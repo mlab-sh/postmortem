@@ -20,19 +20,39 @@ pub(super) fn verify_line_is_tamper(line: &str) -> bool {
     md5_changed && !special
 }
 
-/// Setuid/setgid binaries under `/usr` and `/opt` (one `find`, `-perm /6000`).
-/// Matched against each package's file list to attribute the binary to its owner.
-/// Distro-agnostic: shared by the apt and dnf backends.
-pub(super) fn find_setuid_files() -> std::collections::HashSet<String> {
+/// Setuid/setgid binaries under `usr` and `opt` below `root` (one `find`,
+/// `-perm /6000`). Matched against each package's file list to attribute the
+/// binary to its owner. Distro-agnostic: shared by the apt and dnf backends.
+///
+/// Paths come back **as the scanned filesystem sees them**, with `root` stripped:
+/// a package's dpkg or rpm manifest says `/usr/bin/su`, and a set full of
+/// `/tmp/postmortem-image-…/usr/bin/su` would match none of it, silently
+/// reporting an image as having no setuid binaries at all.
+pub(super) fn find_setuid_files_at(root: &std::path::Path) -> std::collections::HashSet<String> {
+    // `find` fails outright on a missing starting point, and plenty of images
+    // ship no `/opt` — so only existing roots are passed.
+    let dirs: Vec<std::path::PathBuf> = ["usr", "opt"]
+        .iter()
+        .map(|d| root.join(d))
+        .filter(|p| p.is_dir())
+        .collect();
+    if dirs.is_empty() {
+        return std::collections::HashSet::new();
+    }
+    let prefix = match root == std::path::Path::new("/") {
+        true => String::new(),
+        false => root.to_string_lossy().into_owned(),
+    };
     Command::new("find")
-        .args(["/usr", "/opt", "-xdev", "-type", "f", "-perm", "/6000"])
+        .args(&dirs)
+        .args(["-xdev", "-type", "f", "-perm", "/6000"])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .map(|o| {
             String::from_utf8_lossy(&o.stdout)
                 .lines()
-                .map(str::to_string)
+                .map(|l| l.strip_prefix(prefix.as_str()).unwrap_or(l).to_string())
                 .collect()
         })
         .unwrap_or_default()

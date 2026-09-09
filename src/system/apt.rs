@@ -1,39 +1,49 @@
 //! Debian/Ubuntu `apt` / `dpkg` backend.
 //!
-//! The installed set from `dpkg-query`, the manually-installed roots from
-//! `apt-mark showmanual`, and provenance from `apt-cache policy` — plus the
-//! trust surface around it: untrusted sources, custom/expired keys, a legacy
-//! keyring, pins, holds, foreign architectures, diversions and maintainer
-//! scripts.
+//! The installed set, the dependency edges, the manually-installed roots, holds
+//! and diversions all come from **dpkg's own database files** rather than from
+//! `dpkg-query` / `apt-mark` / `dpkg-divert`. Those tools only ever describe the
+//! machine they run on, and parsing the files they read is what lets the same
+//! backend inventory a container image from a laptop with no dpkg installed.
+//!
+//! Around that sits the trust surface: untrusted sources, custom and expired
+//! keys, a legacy keyring, pins, foreign architectures and maintainer scripts.
+//!
+//! Three signals genuinely need a working apt on the machine being described —
+//! per-package provenance (`apt-cache policy`), available upgrades
+//! (`apt list --upgradable`) and content tampering (`dpkg --verify`). They are
+//! collected for this machine and **reported as not collected** for an image,
+//! because an image ships no apt lists and "no third-party packages found" and
+//! "provenance was never checked" are different answers.
 
-use super::privilege::{find_setuid_files, persistence_signals, verify_line_is_tamper};
+use std::path::{Path, PathBuf};
+
+use super::privilege::{find_setuid_files_at, persistence_signals, verify_line_is_tamper};
 use super::recipe::{analyze_recipe, host_domain};
 use super::*;
 
 // --- apt / dpkg backend ------------------------------------------------------
 
-/// Read the installed dpkg forest into an [`Inventory`]. `dpkg-query -W` dumps
-/// every package (name, version, deps, homepage) in one call; `apt-mark
-/// showmanual` marks the direct set; `apt-cache policy` reveals which packages
-/// come from a non-official source (PPA / manual `.deb`).
+/// Read this machine's installed dpkg forest. See [`apt_inventory_at`].
 pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
-    let out = Command::new("dpkg-query")
-        .args([
-            "-W",
-            "-f",
-            "${Package}\t${Version}\t${Depends}\t${Pre-Depends}\t${Homepage}\n",
-        ])
-        .output()
-        .context("running `dpkg-query -W`")?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "`dpkg-query` failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    let manual = apt_manual();
-    let deps = apt_graph(&String::from_utf8_lossy(&out.stdout), &manual);
-    let names: Vec<String> = deps.iter().map(|d| d.name.clone()).collect();
+    apt_inventory_at(Path::new("/"), opts)
+}
+
+/// Read the installed dpkg forest under `root` into an [`Inventory`].
+///
+/// `root` is `/` for this machine and an extracted image root for `--image`.
+/// Everything below resolves against it.
+pub fn apt_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
+    // Only this machine can be asked questions that need a running apt.
+    let live = root == Path::new("/");
+
+    let stanzas: Vec<DpkgStanza> = dpkg_status(root)?
+        .into_iter()
+        .filter(DpkgStanza::is_installed)
+        .collect();
+    let names: Vec<String> = stanzas.iter().map(|p| p.name.clone()).collect();
+    let (manual, manual_known) = apt_manual_at(root, &names);
+    let deps = apt_graph(&dpkg_status_as_columns(&stanzas), &manual);
 
     // Provenance per package (non-official source + archive component), plus the
     // held / foreign-arch sets: the provenance & source surface. ("Obsolete" — a
@@ -41,14 +51,18 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
     // `.deb`: apt-cache policy shows only /var/lib/dpkg/status for both, so it is
     // already reported as `third-party-source (manual)` rather than mislabeling
     // every sideloaded vendor `.deb` as obsolete.)
-    let prov = apt_provenance(&names);
-    let held = apt_held();
-    let foreign = apt_foreign_arch();
+    let prov = if live {
+        apt_provenance(&names)
+    } else {
+        HashMap::new()
+    };
+    let held = apt_held_at(&stanzas);
+    let foreign = apt_foreign_arch_at(&stanzas);
     // Execution & privilege surface: what each package's installed files set up
     // (services, timers, auth config, setuid bins) + file-hijacking diversions.
-    let list_index = apt_list_index();
-    let setuid = find_setuid_files();
-    let diversions = apt_diversions();
+    let list_index = apt_list_index_at(root);
+    let setuid = find_setuid_files_at(root);
+    let diversions = apt_diversions_at(root);
     let mut signals: HashMap<String, Vec<SysSignal>> = HashMap::new();
     for d in &deps {
         let source = prov.get(&d.name).and_then(|p| p.source.clone());
@@ -89,7 +103,7 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
             );
         }
         // Maintainer scripts (preinst/postinst/…): install-time code execution.
-        let scripts = apt_scripts(&d.name);
+        let scripts = apt_scripts_at(root, &d.name);
         if !scripts.is_empty() {
             push_signal(
                 &mut signals,
@@ -97,9 +111,18 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
                 SysSignal::new("install-script (runs code at install)", Category::InstallHook, Severity::Info, 0),
             );
             // Static-analyze them for third-party packages (the untrusted ones).
+            // In an image nothing can be shown to be third-party, so every script
+            // is analyzed rather than none — the alternative is reading an
+            // untrusted artifact and looking at none of the code it runs — but the
+            // findings are reported unscored, because the premise that makes them
+            // meaningful is exactly the one that could not be checked.
             if source.is_some() {
                 for sig in analyze_recipe(&d.name, &scripts, "sh") {
                     push_signal(&mut signals, &d.name, sig);
+                }
+            } else if !live {
+                for sig in analyze_recipe(&d.name, &scripts, "sh") {
+                    push_signal(&mut signals, &d.name, sig.unscored());
                 }
             }
         }
@@ -126,11 +149,13 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
         }
     }
 
-    for (name, (old, new)) in apt_outdated() {
-        signals
-            .entry(name)
-            .or_default()
-            .push(outdated_signal(&old, &new));
+    if live {
+        for (name, (old, new)) in apt_outdated() {
+            signals
+                .entry(name)
+                .or_default()
+                .push(outdated_signal(&old, &new));
+        }
     }
 
     let _ = opts; // apt reputation comes from the shared `--online` path
@@ -140,26 +165,33 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
     // Trust caveats: sources that disable signature checks, and custom keys added
     // to the apt keyring (extending trust beyond the official archives).
     let mut warnings = Vec::new();
-    let untrusted = apt_untrusted_sources();
+    if !manual_known {
+        warnings.push(
+            "no apt extended_states file: every package reads as manually installed, so the \
+             direct/transitive split is unknown"
+                .into(),
+        );
+    }
+    let untrusted = apt_untrusted_sources_at(root);
     if untrusted > 0 {
         warnings.push(format!(
             "{untrusted} apt source(s) set [trusted=yes] (signature verification disabled)"
         ));
     }
-    let keys = apt_custom_keys();
+    let keys = apt_custom_keys_at(root);
     if keys > 0 {
         warnings.push(format!(
             "{keys} custom signing key(s) added to the apt keyring"
         ));
     }
-    let pins = apt_pins();
+    let pins = apt_pins_at(root);
     if pins > 0 {
         warnings.push(format!(
             "{pins} apt pin(s) configured (/etc/apt/preferences): version/source overrides"
         ));
     }
     // Signature & integrity caveats.
-    let repos = apt_repos();
+    let repos = apt_repos_at(root);
     let http = repos
         .iter()
         .filter(|r| r.name.starts_with("http://"))
@@ -169,22 +201,33 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
             "{http} apt source(s) over http (no transport encryption)"
         ));
     }
-    if apt_legacy_keyring() {
+    if apt_legacy_keyring_at(root) {
         warnings.push(
             "legacy monolithic keyring /etc/apt/trusted.gpg in use (trusts every source)".into(),
         );
     }
-    let expired = apt_expired_keys();
+    let expired = apt_expired_keys_at(root);
     if expired > 0 {
         warnings.push(format!(
             "{expired} expired signing key(s) in the apt keyring"
         ));
     }
-    let modified = apt_modified_files();
-    if modified > 0 {
-        warnings.push(format!(
-            "{modified} installed file(s) modified since install (md5 mismatch)"
-        ));
+    if live {
+        let modified = apt_modified_files();
+        if modified > 0 {
+            warnings.push(format!(
+                "{modified} installed file(s) modified since install (md5 mismatch)"
+            ));
+        }
+    } else {
+        // Stated, not skipped. These three need a working apt describing itself,
+        // and an image ships no apt lists — so the honest report is which checks
+        // did not run, rather than a clean result they never produced.
+        warnings.push(
+            "not checked in an image: per-package provenance, available upgrades, and file \
+             tampering (all need a working apt and its package lists)"
+                .into(),
+        );
     }
 
     Ok(Inventory {
@@ -200,8 +243,8 @@ pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
 
 /// Count apt sources that disable signature verification (`[trusted=yes]` in a
 /// classic line, or `Trusted: yes` in deb822) — a real integrity risk.
-fn apt_untrusted_sources() -> usize {
-    apt_source_files()
+fn apt_untrusted_sources_at(root: &Path) -> usize {
+    apt_source_files_at(root)
         .iter()
         .filter_map(|f| std::fs::read_to_string(f).ok())
         .flat_map(|t| t.lines().map(str::to_string).collect::<Vec<_>>())
@@ -215,9 +258,12 @@ fn apt_untrusted_sources() -> usize {
 
 /// Count custom signing keys added to the apt keyring (files in
 /// `trusted.gpg.d` / `keyrings` that aren't the official Debian/Ubuntu ones).
-fn apt_custom_keys() -> usize {
-    ["/etc/apt/trusted.gpg.d", "/etc/apt/keyrings"]
-        .iter()
+fn apt_custom_keys_at(root: &Path) -> usize {
+    [
+        root.join("etc/apt/trusted.gpg.d"),
+        root.join("etc/apt/keyrings"),
+    ]
+    .iter()
         .filter_map(|d| std::fs::read_dir(d).ok())
         .flatten()
         .flatten()
@@ -229,9 +275,9 @@ fn apt_custom_keys() -> usize {
 }
 
 /// The apt source files: `sources.list` + everything under `sources.list.d/`.
-fn apt_source_files() -> Vec<std::path::PathBuf> {
-    let mut files = vec![std::path::PathBuf::from("/etc/apt/sources.list")];
-    if let Ok(dir) = std::fs::read_dir("/etc/apt/sources.list.d") {
+fn apt_source_files_at(root: &Path) -> Vec<PathBuf> {
+    let mut files = vec![root.join("etc/apt/sources.list")];
+    if let Ok(dir) = std::fs::read_dir(root.join("etc/apt/sources.list.d")) {
         files.extend(dir.flatten().map(|e| e.path()));
     }
     files
@@ -239,16 +285,19 @@ fn apt_source_files() -> Vec<std::path::PathBuf> {
 
 /// Is the deprecated monolithic `/etc/apt/trusted.gpg` present and non-empty? Keys
 /// there are trusted for *every* source (unlike per-repo `signed-by=` keyrings).
-fn apt_legacy_keyring() -> bool {
-    std::fs::metadata("/etc/apt/trusted.gpg")
+fn apt_legacy_keyring_at(root: &Path) -> bool {
+    std::fs::metadata(root.join("etc/apt/trusted.gpg"))
         .map(|m| m.len() > 0)
         .unwrap_or(false)
 }
 
 /// Every apt keyring file: the legacy `trusted.gpg` + `trusted.gpg.d/` + `keyrings/`.
-fn apt_keyring_files() -> Vec<std::path::PathBuf> {
-    let mut files = vec![std::path::PathBuf::from("/etc/apt/trusted.gpg")];
-    for d in ["/etc/apt/trusted.gpg.d", "/etc/apt/keyrings"] {
+fn apt_keyring_files_at(root: &Path) -> Vec<PathBuf> {
+    let mut files = vec![root.join("etc/apt/trusted.gpg")];
+    for d in [
+        root.join("etc/apt/trusted.gpg.d"),
+        root.join("etc/apt/keyrings"),
+    ] {
         if let Ok(dir) = std::fs::read_dir(d) {
             files.extend(dir.flatten().map(|e| e.path()));
         }
@@ -260,7 +309,7 @@ fn apt_keyring_files() -> Vec<std::path::PathBuf> {
 /// key file (armored or binary) without importing it; the `pub` record's
 /// expiration field (a unix timestamp, index 6) is compared to now. Best-effort:
 /// skips files gpg can't read.
-fn apt_expired_keys() -> usize {
+fn apt_expired_keys_at(root: &Path) -> usize {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -268,7 +317,7 @@ fn apt_expired_keys() -> usize {
     if now == 0 {
         return 0;
     }
-    apt_keyring_files()
+    apt_keyring_files_at(root)
         .iter()
         .map(|f| {
             let Ok(out) = Command::new("gpg")
@@ -308,23 +357,130 @@ fn apt_modified_files() -> usize {
         .count()
 }
 
-/// The manually-installed (direct) set, `apt-mark showmanual`. Foreign-arch
-/// entries come back qualified (`hello:armhf`) while the graph keys on the bare
-/// name, so strip the `:arch` suffix to keep them matchable.
-fn apt_manual() -> std::collections::HashSet<String> {
-    Command::new("apt-mark")
-        .arg("showmanual")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .map(|l| l.split(':').next().unwrap_or(l).trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
+// --- dpkg's own database ------------------------------------------------------
+
+/// One `var/lib/dpkg/status` stanza, reduced to the fields the inventory needs.
+pub(super) struct DpkgStanza {
+    name: String,
+    version: String,
+    depends: String,
+    pre_depends: String,
+    homepage: String,
+    architecture: String,
+    /// The `Status:` triple — `<want> <error> <state>`, e.g. `install ok installed`.
+    status: String,
+}
+
+impl DpkgStanza {
+    /// Only a package in state `installed` has files on disk. A removed one that
+    /// kept its configuration (`deinstall ok config-files`) still has a stanza,
+    /// and counting it as installed would put a package that ships no code into
+    /// the graph — and into the vulnerability scan.
+    fn is_installed(&self) -> bool {
+        self.status.split_whitespace().nth(2) == Some("installed")
+    }
+
+    /// `hold` in the *want* field: the admin excluded it from upgrades, so it is
+    /// pinned to whatever version it is on.
+    fn is_held(&self) -> bool {
+        self.status.split_whitespace().next() == Some("hold")
+    }
+}
+
+/// Read and parse `var/lib/dpkg/status` under `root`.
+///
+/// This is the file `dpkg-query` itself reads. Going to it directly is what
+/// removes the requirement for dpkg to exist on the machine running postmortem,
+/// which is the whole point for an image: the scanner and the scanned no longer
+/// have to be the same distribution.
+fn dpkg_status(root: &Path) -> Result<Vec<DpkgStanza>> {
+    let path = root.join("var/lib/dpkg/status");
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading {}", path.display()))?;
+    Ok(parse_dpkg_status(&text))
+}
+
+/// Parse the RFC822-style stanzas of a dpkg status file.
+///
+/// Continuation lines (leading whitespace) are skipped rather than joined: no
+/// field this reads is ever multi-line, and a `Description` continuation
+/// containing a colon would otherwise parse as a field of its own.
+fn parse_dpkg_status(text: &str) -> Vec<DpkgStanza> {
+    let mut out = Vec::new();
+    for block in text.split("\n\n") {
+        let mut f: HashMap<&str, &str> = HashMap::new();
+        for line in block.lines() {
+            if line.starts_with(' ') || line.starts_with('\t') {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once(':') {
+                f.entry(k.trim()).or_insert_with(|| v.trim());
+            }
+        }
+        let Some(name) = f.get("Package") else { continue };
+        if name.is_empty() {
+            continue;
+        }
+        let get = |k: &str| f.get(k).copied().unwrap_or_default().to_string();
+        out.push(DpkgStanza {
+            name: name.to_string(),
+            version: get("Version"),
+            depends: get("Depends"),
+            pre_depends: get("Pre-Depends"),
+            homepage: get("Homepage"),
+            architecture: get("Architecture"),
+            status: get("Status"),
+        });
+    }
+    out
+}
+
+/// Render stanzas in the tab-separated shape [`apt_graph`] consumes.
+///
+/// Keeping one graph builder behind one input format means the edge logic cannot
+/// drift between how this machine and an image are read.
+fn dpkg_status_as_columns(stanzas: &[DpkgStanza]) -> String {
+    stanzas
+        .iter()
+        .map(|p| {
+            format!(
+                "{}\t{}\t{}\t{}\t{}\n",
+                p.name, p.version, p.depends, p.pre_depends, p.homepage
+            )
         })
-        .unwrap_or_default()
+        .collect()
+}
+
+/// The manually-installed (direct) set under `root`, and whether it is knowable.
+///
+/// apt records the inverse of what is asked for here: `extended_states` lists
+/// what apt pulled in *automatically*, so manual is every installed package not
+/// marked auto. When the file is absent — some minimal images drop it — the
+/// answer is "unknown" rather than "everything is direct", and the caller says so.
+fn apt_manual_at(root: &Path, installed: &[String]) -> (std::collections::HashSet<String>, bool) {
+    let Ok(text) = std::fs::read_to_string(root.join("var/lib/apt/extended_states")) else {
+        return (installed.iter().cloned().collect(), false);
+    };
+    let mut auto = std::collections::HashSet::new();
+    let mut current = String::new();
+    for line in text.lines() {
+        if let Some(v) = line.strip_prefix("Package:") {
+            // Foreign-arch entries are qualified (`hello:armhf`) while the graph
+            // keys on the bare name.
+            let v = v.trim();
+            current = v.split(':').next().unwrap_or(v).to_string();
+        } else if line.trim() == "Auto-Installed: 1" && !current.is_empty() {
+            auto.insert(std::mem::take(&mut current));
+        }
+    }
+    (
+        installed
+            .iter()
+            .filter(|n| !auto.contains(*n))
+            .cloned()
+            .collect(),
+        true,
+    )
 }
 
 /// Parse `dpkg-query` output into the dependency forest.
@@ -471,47 +627,42 @@ fn is_community_component(c: &str) -> bool {
 
 /// Packages held back from upgrades (`apt-mark showhold`): pinned to their current
 /// version, so they never receive updates (incl. security).
-fn apt_held() -> std::collections::HashSet<String> {
-    Command::new("apt-mark")
-        .arg("showhold")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
+fn apt_held_at(stanzas: &[DpkgStanza]) -> std::collections::HashSet<String> {
+    stanzas
+        .iter()
+        .filter(|p| p.is_held())
+        .map(|p| p.name.clone())
+        .collect()
 }
 
 /// Packages installed *solely* for a non-native architecture (a pure i386 package
 /// on an amd64 host). Maps `name → foreign arch`. Ordinary multiarch libraries
 /// (which also have a native copy) are excluded; only fully-foreign packages count.
-fn apt_foreign_arch() -> HashMap<String, String> {
-    let native = Command::new("dpkg")
-        .arg("--print-architecture")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    if native.is_empty() {
-        return HashMap::new();
+fn apt_foreign_arch_at(stanzas: &[DpkgStanza]) -> HashMap<String, String> {
+    // `dpkg --print-architecture` is not available when reading someone else's
+    // filesystem, and `var/lib/dpkg/arch` only exists once multiarch has been
+    // configured. The native architecture is instead the concrete one most of the
+    // packages are built for; `all` is architecture-independent and never a
+    // candidate.
+    let mut tally: HashMap<&str, usize> = HashMap::new();
+    for p in stanzas {
+        if !p.architecture.is_empty() && p.architecture != "all" {
+            *tally.entry(p.architecture.as_str()).or_default() += 1;
+        }
     }
-    let Ok(out) = Command::new("dpkg-query")
-        .args(["-W", "-f", "${Package}\t${Architecture}\n"])
-        .output()
+    let Some(native) = tally
+        .into_iter()
+        .max_by_key(|(_, n)| *n)
+        .map(|(a, _)| a.to_string())
     else {
         return HashMap::new();
     };
     let mut arches: HashMap<String, Vec<String>> = HashMap::new();
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let mut it = line.split('\t');
-        if let (Some(n), Some(a)) = (it.next(), it.next()) {
-            arches.entry(n.to_string()).or_default().push(a.to_string());
-        }
+    for p in stanzas {
+        arches
+            .entry(p.name.clone())
+            .or_default()
+            .push(p.architecture.clone());
     }
     arches
         .into_iter()
@@ -525,9 +676,9 @@ fn apt_foreign_arch() -> HashMap<String, String> {
 
 /// Count apt pin rules across `/etc/apt/preferences(.d)` — each `Pin:` line forces
 /// a version/source/priority, and can hold a package back or prefer a foreign one.
-fn apt_pins() -> usize {
-    let mut files = vec![std::path::PathBuf::from("/etc/apt/preferences")];
-    if let Ok(dir) = std::fs::read_dir("/etc/apt/preferences.d") {
+fn apt_pins_at(root: &Path) -> usize {
+    let mut files = vec![root.join("etc/apt/preferences")];
+    if let Ok(dir) = std::fs::read_dir(root.join("etc/apt/preferences.d")) {
         files.extend(dir.flatten().map(|e| e.path()));
     }
     files
@@ -548,10 +699,11 @@ fn apt_official_host(host: &str) -> bool {
 
 /// Concatenated maintainer scripts (`preinst`/`postinst`/`prerm`/`postrm`) for a
 /// package, from `/var/lib/dpkg/info/`. Empty when it ships none.
-fn apt_scripts(name: &str) -> String {
+fn apt_scripts_at(root: &Path, name: &str) -> String {
     let mut code = String::new();
     for kind in ["preinst", "postinst", "prerm", "postrm"] {
-        if let Ok(c) = std::fs::read_to_string(format!("/var/lib/dpkg/info/{name}.{kind}")) {
+        if let Ok(c) = std::fs::read_to_string(root.join(format!("var/lib/dpkg/info/{name}.{kind}")))
+        {
             code.push_str(&c);
             code.push('\n');
         }
@@ -564,9 +716,9 @@ fn apt_scripts(name: &str) -> String {
 /// Index the dpkg file manifests once: `package name → its .list file(s)` (the
 /// `:arch` qualifier is folded into the bare name). Reading them per-package in
 /// the loop would be O(n²); this is one directory scan.
-fn apt_list_index() -> HashMap<String, Vec<std::path::PathBuf>> {
-    let mut idx: HashMap<String, Vec<std::path::PathBuf>> = HashMap::new();
-    for e in std::fs::read_dir("/var/lib/dpkg/info")
+fn apt_list_index_at(root: &Path) -> HashMap<String, Vec<PathBuf>> {
+    let mut idx: HashMap<String, Vec<PathBuf>> = HashMap::new();
+    for e in std::fs::read_dir(root.join("var/lib/dpkg/info"))
         .into_iter()
         .flatten()
         .flatten()
@@ -586,7 +738,7 @@ fn apt_list_index() -> HashMap<String, Vec<std::path::PathBuf>> {
 }
 
 /// The installed file paths a package ships, read from its dpkg `.list` manifest(s).
-fn read_pkg_files(paths: &[std::path::PathBuf]) -> Vec<String> {
+fn read_pkg_files(paths: &[PathBuf]) -> Vec<String> {
     paths
         .iter()
         .filter_map(|p| std::fs::read_to_string(p).ok())
@@ -594,29 +746,26 @@ fn read_pkg_files(paths: &[std::path::PathBuf]) -> Vec<String> {
         .collect()
 }
 
-/// Package-created dpkg diversions (`dpkg-divert --list`) → `package → diverted
-/// path`. The merged-usr transition (`*.usr-is-merged`) and admin-local diversions
-/// (no `by <pkg>`) are excluded, leaving genuine file overrides.
-fn apt_diversions() -> HashMap<String, String> {
-    let Ok(out) = Command::new("dpkg-divert").arg("--list").output() else {
+/// Package-created dpkg diversions → `package → diverted path`.
+///
+/// Read from `var/lib/dpkg/diversions`, the file `dpkg-divert` itself reads:
+/// three lines per entry, the original path, what it was diverted to, and the
+/// owning package (`:` for an admin-local one). The merged-usr transition
+/// (`*.usr-is-merged`) and local diversions are excluded, leaving genuine file
+/// overrides — one package standing its own file where another package's belongs.
+fn apt_diversions_at(root: &Path) -> HashMap<String, String> {
+    let Ok(text) = std::fs::read_to_string(root.join("var/lib/dpkg/diversions")) else {
         return HashMap::new();
     };
+    let lines: Vec<&str> = text.lines().collect();
     let mut map = HashMap::new();
-    for l in String::from_utf8_lossy(&out.stdout).lines() {
-        let Some(rest) = l.strip_prefix("diversion of ") else {
-            continue;
-        };
-        let Some((path, after)) = rest.split_once(" to ") else {
-            continue;
-        };
-        let Some((target, pkg)) = after.rsplit_once(" by ") else {
-            continue;
-        };
-        if target.trim().ends_with(".usr-is-merged") {
+    for e in lines.chunks(3) {
+        let [path, target, pkg] = e else { continue };
+        let (path, target, pkg) = (path.trim(), target.trim(), pkg.trim());
+        if pkg == ":" || pkg.is_empty() || target.ends_with(".usr-is-merged") {
             continue;
         }
-        map.entry(pkg.trim().to_string())
-            .or_insert_with(|| path.trim().to_string());
+        map.entry(pkg.to_string()).or_insert_with(|| path.to_string());
     }
     map
 }
@@ -641,10 +790,10 @@ fn apt_outdated() -> HashMap<String, (String, String)> {
 
 /// Configured apt sources (`sources.list` + `sources.list.d/`), classic and
 /// deb822. Official Debian/Ubuntu archives vs third-party (PPAs / custom).
-fn apt_repos() -> Vec<Repo> {
+fn apt_repos_at(root: &Path) -> Vec<Repo> {
     let mut seen = std::collections::HashSet::new();
     let mut repos = Vec::new();
-    for f in apt_source_files() {
+    for f in apt_source_files_at(root) {
         let Ok(text) = std::fs::read_to_string(&f) else {
             continue;
         };
@@ -727,5 +876,137 @@ mod tests {
             Some("https://github.com/o/app")
         );
         assert_eq!(lib.parents, vec![("app".to_string(), "1.0".to_string())]);
+    }
+
+    /// The status file is the whole basis for reading a Debian image, so its
+    /// parser is checked against the shapes dpkg actually writes: multi-line
+    /// fields, a package that is *not* installed, and a held one.
+    #[test]
+    fn dpkg_status_parses_stanzas_and_states() {
+        let text = "\
+Package: bash
+Status: install ok installed
+Architecture: arm64
+Version: 5.2.15-2
+Depends: libc6 (>= 2.34), debianutils (>= 5.6-0.1)
+Homepage: https://www.gnu.org/software/bash/
+Description: GNU Bourne Again SHell
+ Bash is a sh-compatible command language interpreter.
+ Note: this continuation line contains a colon.
+
+Package: removed-pkg
+Status: deinstall ok config-files
+Architecture: arm64
+Version: 1.0
+
+Package: pinned
+Status: hold ok installed
+Architecture: all
+Version: 2.0
+";
+        let all = parse_dpkg_status(text);
+        assert_eq!(all.len(), 3, "every stanza is parsed");
+
+        let installed: Vec<&DpkgStanza> =
+            all.iter().filter(|p| p.is_installed()).collect();
+        assert_eq!(installed.len(), 2, "the config-files package is not installed");
+        assert!(!all.iter().any(|p| p.name.contains("Note")), "a continuation line is not a field");
+
+        let bash = all.iter().find(|p| p.name == "bash").expect("bash");
+        assert_eq!(bash.version, "5.2.15-2");
+        assert_eq!(bash.architecture, "arm64");
+        assert_eq!(bash.homepage, "https://www.gnu.org/software/bash/");
+        assert!(!bash.is_held());
+
+        let pinned = all.iter().find(|p| p.name == "pinned").expect("pinned");
+        assert!(pinned.is_held(), "`hold` in the want field");
+        assert_eq!(apt_held_at(&all), ["pinned".to_string()].into_iter().collect());
+
+        // The graph is built from these same stanzas, through the one column format.
+        let manual = ["bash".to_string()].into_iter().collect();
+        let deps = apt_graph(&dpkg_status_as_columns(&installed.iter().map(|p| DpkgStanza {
+            name: p.name.clone(),
+            version: p.version.clone(),
+            depends: p.depends.clone(),
+            pre_depends: p.pre_depends.clone(),
+            homepage: p.homepage.clone(),
+            architecture: p.architecture.clone(),
+            status: p.status.clone(),
+        }).collect::<Vec<_>>()), &manual);
+        assert_eq!(deps.len(), 2);
+        assert!(deps.iter().find(|d| d.name == "bash").expect("bash").direct);
+    }
+
+    /// apt records what it installed *automatically*; manual is the complement.
+    /// A missing file means the split is unknown, which the caller must be told.
+    #[test]
+    fn manual_set_is_the_complement_of_auto_and_reports_when_unknown() {
+        let root = std::env::temp_dir().join(format!("postmortem-apttest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("var/lib/apt")).expect("dirs");
+        let installed = vec!["app".to_string(), "lib".to_string(), "tool".to_string()];
+
+        // No file yet: unknown, and nothing may be claimed as transitive.
+        let (manual, known) = apt_manual_at(&root, &installed);
+        assert!(!known, "absence is reported, not guessed");
+        assert_eq!(manual.len(), 3);
+
+        std::fs::write(
+            root.join("var/lib/apt/extended_states"),
+            "Package: lib\nArchitecture: arm64\nAuto-Installed: 1\n\n\
+             Package: tool:armhf\nArchitecture: armhf\nAuto-Installed: 1\n\n\
+             Package: other\nArchitecture: arm64\nAuto-Installed: 0\n",
+        )
+        .expect("extended_states");
+        let (manual, known) = apt_manual_at(&root, &installed);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(known);
+        // `tool:armhf` is qualified in the file and bare in the graph.
+        assert_eq!(manual, ["app".to_string()].into_iter().collect());
+    }
+
+    /// The diversions file is three lines per entry. A local diversion (`:`) has
+    /// no owning package, and the merged-usr transition is not a hijack.
+    #[test]
+    fn diversions_are_read_from_dpkgs_own_file() {
+        let root = std::env::temp_dir().join(format!("postmortem-aptdiv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("var/lib/dpkg")).expect("dirs");
+        std::fs::write(
+            root.join("var/lib/dpkg/diversions"),
+            "/bin/sh\n/bin/sh.distrib\ndash\n\
+             /usr/bin/x\n/usr/bin/x.usr-is-merged\nusrmerge\n\
+             /etc/local\n/etc/local.orig\n:\n",
+        )
+        .expect("diversions");
+        let d = apt_diversions_at(&root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(d.get("dash").map(String::as_str), Some("/bin/sh"));
+        assert!(!d.contains_key("usrmerge"), "merged-usr is not a hijack");
+        assert!(!d.contains_key(":"), "an admin-local diversion has no owner");
+    }
+
+    /// Without `dpkg --print-architecture`, the native arch is the one most
+    /// packages carry; `all` is architecture-independent and never native.
+    #[test]
+    fn foreign_arch_falls_back_to_the_majority_architecture() {
+        let mk = |name: &str, arch: &str| DpkgStanza {
+            name: name.into(),
+            version: "1".into(),
+            depends: String::new(),
+            pre_depends: String::new(),
+            homepage: String::new(),
+            architecture: arch.into(),
+            status: "install ok installed".into(),
+        };
+        let stanzas = vec![
+            mk("a", "arm64"),
+            mk("b", "arm64"),
+            mk("c", "all"),
+            mk("d", "armhf"),
+        ];
+        let foreign = apt_foreign_arch_at(&stanzas);
+        assert_eq!(foreign.get("d").map(String::as_str), Some("armhf"));
+        assert!(!foreign.contains_key("a") && !foreign.contains_key("c"));
     }
 }

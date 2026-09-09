@@ -1,6 +1,7 @@
 //! Analysis passes. Each analyzer takes the scan context and emits findings.
 
 pub mod behavior;
+pub mod dockerfile;
 pub mod gha;
 pub mod ide_hooks;
 pub mod install_hooks;
@@ -147,6 +148,9 @@ fn plan<'a>(detected: &'a [Detected], sources: &'a crate::lifecycle::Sources) ->
             ));
             steps.push(Step::new("ci · github-actions workflows", move |f| {
                 gha::scan_dir(root, f)
+            }));
+            steps.push(Step::new("build · dockerfiles", move |f| {
+                dockerfile::scan_dir(root, f)
             }));
         }
     }

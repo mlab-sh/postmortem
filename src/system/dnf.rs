@@ -1,6 +1,21 @@
 //! Fedora/RHEL `dnf` / `rpm` backend.
+//!
+//! Split by which tool can answer where. **rpm** reads a package database it is
+//! pointed at, so `--root` lets the same queries describe an extracted container
+//! image; the inventory, the capability graph, scriptlets, signatures, file
+//! manifests and `rpm -Va` tampering all come from there. **dnf** only ever
+//! describes the system it is configured for, so the origin repo, the
+//! user-installed set, orphans and available upgrades are collected for this
+//! machine and reported as *not collected* for an image.
+//!
+//! Unlike apt, rpm's database is a binary store rather than a text file, so
+//! reading an image needs an `rpm` binary on the machine running postmortem. When
+//! there is none the backend fails loudly and the caller turns that into a
+//! diagnostic — never into an image that appears to have no packages.
 
-use super::privilege::{find_setuid_files, persistence_signals, verify_line_is_tamper};
+use std::path::Path;
+
+use super::privilege::{find_setuid_files_at, persistence_signals, verify_line_is_tamper};
 use super::recipe::analyze_recipe;
 use super::*;
 
@@ -25,8 +40,22 @@ const RPM_OFFICIAL_VENDORS: &[&str] = &[
 /// --userinstalled` marks the direct set. Third-party (non-distro-vendor) packages
 /// are the untrusted surface and get their scriptlets analyzed.
 pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
+    dnf_inventory_at(Path::new("/"), opts)
+}
+
+/// Read the installed rpm forest under `root`. See [`dnf_inventory`].
+pub fn dnf_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
     let _ = opts; // dnf reputation comes from the shared `--online` path
-    let text = rpm_qa("%{NAME}\t%{VERSION}-%{RELEASE}\t%{URL}\t%{VENDOR}\n")?;
+    // Only this machine can be asked the questions that need a configured dnf.
+    let live = root == Path::new("/");
+    if !live && rpm_dbpath(root).is_none() {
+        anyhow::bail!(
+            "no rpm database found under {} (looked in {}) — its packages were not examined",
+            root.display(),
+            RPM_DB_DIRS.join(", ")
+        );
+    }
+    let text = rpm_qa(root, "%{NAME}\t%{VERSION}-%{RELEASE}\t%{URL}\t%{VENDOR}\n")?;
     struct N {
         name: String,
         version: String,
@@ -55,21 +84,33 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
         .iter()
         .map(|n| (n.name.as_str(), n.version.as_str()))
         .collect();
-    let userinstalled = dnf_userinstalled();
-    let mut parents = dnf_edges(&names, &version_of);
-    let scripted = dnf_scripted();
-    let unsigned = dnf_unsigned();
+    let userinstalled = if live {
+        dnf_userinstalled()
+    } else {
+        Default::default()
+    };
+    let mut parents = dnf_edges(root, &names, &version_of);
+    let scripted = dnf_scripted(root);
+    let unsigned = dnf_unsigned(root);
     // A rpm image built with `--nogpgcheck` reports everything unsigned, which is
     // noise; only surface `unsigned` when it's the exception, not the rule.
     let mostly_unsigned = !nodes.is_empty() && unsigned.len() * 10 >= nodes.len() * 9;
-    let from_repo = dnf_from_repo();
-    let file_index = rpm_file_index();
-    let setuid = find_setuid_files();
-    let held = dnf_held();
-    let foreign = dnf_foreign_arch();
+    let from_repo = if live {
+        dnf_from_repo()
+    } else {
+        HashMap::new()
+    };
+    let file_index = rpm_file_index(root);
+    let setuid = find_setuid_files_at(root);
+    let held = dnf_held_at(root);
+    let foreign = dnf_foreign_arch(root);
     // Orphans (installed, offered by no enabled repo). Needs repo metadata; when it
     // can't be computed it reports everything, so guard as with `unsigned`.
-    let orphans = dnf_orphans();
+    let orphans = if live {
+        dnf_orphans()
+    } else {
+        Default::default()
+    };
     let mostly_orphan = !nodes.is_empty() && orphans.len() * 10 >= nodes.len() * 9;
 
     let mut signals: HashMap<String, Vec<SysSignal>> = HashMap::new();
@@ -106,16 +147,24 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
                 &n.name,
                 SysSignal::new("install-script (runs code at install)", Category::InstallHook, Severity::Info, 0),
             );
-            if third_party {
+            // In an image nothing can be shown to be third-party (the origin repo
+            // needs dnf), so every scriptlet is analyzed rather than none — but
+            // unscored, since the premise that makes those findings meaningful is
+            // the one that could not be checked.
+            if third_party || !live {
                 // rpm scriptlets are usually shell but may be Lua (`-p <lua>`);
                 // analyze with the matching language.
-                let ext = if dnf_script_is_lua(&n.name) {
+                let ext = if dnf_script_is_lua(root, &n.name) {
                     "lua"
                 } else {
                     "sh"
                 };
-                for sig in analyze_recipe(&n.name, &dnf_scripts(&n.name), ext) {
-                    push_signal(&mut signals, &n.name, sig);
+                for sig in analyze_recipe(&n.name, &dnf_scripts(root, &n.name), ext) {
+                    push_signal(
+                        &mut signals,
+                        &n.name,
+                        if third_party { sig } else { sig.unscored() },
+                    );
                 }
             }
         }
@@ -164,20 +213,39 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
         });
     }
 
-    for (name, (old, new)) in dnf_outdated() {
-        signals
-            .entry(name)
-            .or_default()
-            .push(outdated_signal(&old, &new));
+    if live {
+        for (name, (old, new)) in dnf_outdated() {
+            signals
+                .entry(name)
+                .or_default()
+                .push(outdated_signal(&old, &new));
+        }
     }
 
     // Trust & integrity caveats (repo signature/transport posture + tampered files).
-    let mut warnings = dnf_trust_warnings();
-    let modified = dnf_modified_files();
+    let mut warnings = dnf_trust_warnings_at(root);
+    let modified = dnf_modified_files(root);
     if modified > 0 {
         warnings.push(format!(
             "{modified} installed file(s) modified since install (rpm -Va)"
         ));
+    }
+    if !live {
+        // Stated, not skipped: these four need a configured dnf describing its own
+        // system, and an image carries no repo metadata.
+        warnings.push(
+            "not checked in an image: origin repo, orphans and available upgrades (all need a \
+             configured dnf and its repo metadata)"
+                .into(),
+        );
+        // `dnf repoquery --userinstalled` is what separates what was asked for
+        // from what was pulled in. Without it every package reads as direct, and
+        // saying so is the difference between a flat graph and a wrong one.
+        warnings.push(
+            "no user-installed set in an image: every package reads as directly installed, so the \
+             direct/transitive split is unknown"
+                .into(),
+        );
     }
 
     let direct = deps.iter().filter(|d| d.direct).count();
@@ -185,7 +253,7 @@ pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
     Ok(Inventory {
         manager: "dnf",
         deps,
-        repos: dnf_repos(),
+        repos: dnf_repos_at(root),
         signals,
         claims: Vec::new(),
         summary,
@@ -257,8 +325,8 @@ fn dnf_provenance_label(repo: Option<&str>, vendor: &str) -> Option<String> {
 
 /// `name → installed files`, from one `rpm -qa` over `FILENAMES`. Multiarch copies
 /// of a package are unioned under the bare name.
-fn rpm_file_index() -> HashMap<String, Vec<String>> {
-    let Ok(text) = rpm_qa("%{NAME}\t[%{FILENAMES},]\n") else {
+fn rpm_file_index(root: &Path) -> HashMap<String, Vec<String>> {
+    let Ok(text) = rpm_qa(root, "%{NAME}\t[%{FILENAMES},]\n") else {
         return HashMap::new();
     };
     let mut idx: HashMap<String, Vec<String>> = HashMap::new();
@@ -278,9 +346,9 @@ fn rpm_file_index() -> HashMap<String, Vec<String>> {
 /// Trust caveats from the dnf repo config: signature checking disabled
 /// (`gpgcheck=0`, the analog of apt's `[trusted=yes]`) or a plain-http source, over
 /// the enabled repos in `/etc/yum.repos.d/*.repo`.
-fn dnf_trust_warnings() -> Vec<String> {
+fn dnf_trust_warnings_at(root: &Path) -> Vec<String> {
     let (mut nogpg, mut http) = (0usize, 0usize);
-    if let Ok(dir) = std::fs::read_dir("/etc/yum.repos.d") {
+    if let Ok(dir) = std::fs::read_dir(root.join("etc/yum.repos.d")) {
         for entry in dir.flatten() {
             let Ok(text) = std::fs::read_to_string(entry.path()) else {
                 continue;
@@ -331,8 +399,8 @@ fn dnf_trust_warnings() -> Vec<String> {
 
 /// Count installed files whose content no longer matches the rpm database
 /// (`rpm -Va` digest mismatch), excluding config/doc/ghost files.
-fn dnf_modified_files() -> usize {
-    let Ok(out) = Command::new("rpm").arg("-Va").output() else {
+fn dnf_modified_files(root: &Path) -> usize {
+    let Ok(out) = rpm_at(root).arg("-Va").output() else {
         return 0;
     };
     // `rpm -Va` exits non-zero precisely when it finds discrepancies.
@@ -342,12 +410,56 @@ fn dnf_modified_files() -> usize {
         .count()
 }
 
-/// `rpm -qa --qf <fmt>` → stdout as a string. Errors if rpm isn't runnable.
-fn rpm_qa(fmt: &str) -> Result<String> {
-    let out = Command::new("rpm")
+/// Where an rpm database can live inside a filesystem, newest layout first.
+pub(super) const RPM_DB_DIRS: &[&str] = &["usr/lib/sysimage/rpm", "var/lib/rpm"];
+
+/// The files that mark one of those directories as an actual database: sqlite
+/// (rpm 4.16+), ndb, or the historical Berkeley DB.
+const RPM_DB_FILES: &[&str] = &["rpmdb.sqlite", "Packages.db", "Packages"];
+
+/// The rpm database inside `root`, as a path relative to it.
+///
+/// rpm's default `_dbpath` is a property of the rpm *doing the reading*, not of
+/// the filesystem being read. Fedora moved its database to
+/// `/usr/lib/sysimage/rpm` while RHEL 9 and its rebuilds still keep it in
+/// `/var/lib/rpm`, so reading an AlmaLinux image from a Fedora machine with the
+/// default finds an empty directory and reports **zero packages** — a silent,
+/// confident, wrong answer, and the worst possible failure for a scanner. The
+/// location is probed instead of assumed.
+pub(super) fn rpm_dbpath(root: &Path) -> Option<&'static str> {
+    RPM_DB_DIRS.iter().copied().find(|d| {
+        let dir = root.join(d);
+        RPM_DB_FILES.iter().any(|f| dir.join(f).is_file())
+    })
+}
+
+/// An `rpm` invocation pointed at `root`.
+///
+/// `--root` is what makes rpm read *another* filesystem's database, and it is the
+/// whole reason an image can be inventoried at all. Both flags are omitted for
+/// `/` so this machine is queried exactly as it was before they existed.
+fn rpm_at(root: &Path) -> Command {
+    let mut c = Command::new("rpm");
+    if root != Path::new("/") {
+        c.arg("--root").arg(root);
+        // Interpreted relative to `--root`, so the leading slash is the image's.
+        if let Some(db) = rpm_dbpath(root) {
+            c.arg("--dbpath").arg(format!("/{db}"));
+        }
+    }
+    c
+}
+
+/// `rpm -qa --qf <fmt>` under `root` → stdout as a string.
+///
+/// Errors when rpm is missing or refuses the database. That error is the point:
+/// it reaches the user as "these packages were not examined", never as an image
+/// that happens to contain nothing.
+fn rpm_qa(root: &Path, fmt: &str) -> Result<String> {
+    let out = rpm_at(root)
         .args(["-qa", "--qf", fmt])
         .output()
-        .context("running `rpm -qa`")?;
+        .context("running `rpm -qa` — is rpm installed on this machine?")?;
     if !out.status.success() {
         anyhow::bail!(
             "`rpm -qa` failed: {}",
@@ -380,12 +492,13 @@ fn dnf_userinstalled() -> std::collections::HashSet<String> {
 /// (built from `PROVIDENAME`, which includes package names, sonames, and files).
 /// `rpmlib(...)` build-time pseudo-capabilities and self-edges are dropped.
 fn dnf_edges(
+    root: &Path,
     names: &std::collections::HashSet<&str>,
     version_of: &HashMap<&str, &str>,
 ) -> HashMap<String, Vec<DepRef>> {
     // capability → a providing package (first wins; only installed packages).
     let mut provider: HashMap<String, String> = HashMap::new();
-    if let Ok(text) = rpm_qa("%{NAME}\t[%{PROVIDENAME},]\n") {
+    if let Ok(text) = rpm_qa(root, "%{NAME}\t[%{PROVIDENAME},]\n") {
         for line in text.lines() {
             let Some((name, caps)) = line.split_once('\t') else {
                 continue;
@@ -398,7 +511,7 @@ fn dnf_edges(
         }
     }
     let mut parents: HashMap<String, Vec<DepRef>> = HashMap::new();
-    if let Ok(text) = rpm_qa("%{NAME}\t[%{REQUIRENAME},]\n") {
+    if let Ok(text) = rpm_qa(root, "%{NAME}\t[%{REQUIRENAME},]\n") {
         for line in text.lines() {
             let Some((name, caps)) = line.split_once('\t') else {
                 continue;
@@ -431,9 +544,9 @@ fn dnf_edges(
 
 /// Packages that ship any rpm scriptlet (`%pre`/`%post`/`%preun`/`%postun`). The
 /// `%|TAG?{1}:{0}|` conditional avoids pulling the (multi-line) script bodies.
-fn dnf_scripted() -> std::collections::HashSet<String> {
+fn dnf_scripted(root: &Path) -> std::collections::HashSet<String> {
     let fmt = "%{NAME}\t%|PREIN?{1}:{0}|%|POSTIN?{1}:{0}|%|PREUN?{1}:{0}|%|POSTUN?{1}:{0}|\n";
-    let Ok(text) = rpm_qa(fmt) else {
+    let Ok(text) = rpm_qa(root, fmt) else {
         return Default::default();
     };
     text.lines()
@@ -445,8 +558,8 @@ fn dnf_scripted() -> std::collections::HashSet<String> {
 }
 
 /// The concatenated scriptlet bodies of one package (for static analysis).
-fn dnf_scripts(name: &str) -> String {
-    Command::new("rpm")
+fn dnf_scripts(root: &Path, name: &str) -> String {
+    rpm_at(root)
         .args([
             "-q",
             "--qf",
@@ -463,9 +576,9 @@ fn dnf_scripts(name: &str) -> String {
 /// Packages with no header signature. `%|RSAHEADER?...|` falls through the modern
 /// (header) and legacy (payload) signature tags; only a fully-unsigned package
 /// ends up in the set.
-fn dnf_unsigned() -> std::collections::HashSet<String> {
+fn dnf_unsigned(root: &Path) -> std::collections::HashSet<String> {
     let fmt = "%{NAME}\t%|DSAHEADER?{s}:{%|RSAHEADER?{s}:{%|SIGGPG?{s}:{%|SIGPGP?{s}:{U}|}|}|}|\n";
-    let Ok(text) = rpm_qa(fmt) else {
+    let Ok(text) = rpm_qa(root, fmt) else {
         return Default::default();
     };
     text.lines()
@@ -503,8 +616,8 @@ fn dnf_outdated() -> HashMap<String, (String, String)> {
 
 /// Configured dnf repos from `/etc/yum.repos.d/*.repo` (only the enabled ones).
 /// Fedora/RHEL-family archive ids are official; anything else is third-party.
-fn dnf_repos() -> Vec<Repo> {
-    let Ok(dir) = std::fs::read_dir("/etc/yum.repos.d") else {
+fn dnf_repos_at(root: &Path) -> Vec<Repo> {
+    let Ok(dir) = std::fs::read_dir(root.join("etc/yum.repos.d")) else {
         return Vec::new();
     };
     let mut repos = Vec::new();
@@ -536,8 +649,8 @@ fn dnf_repos() -> Vec<Repo> {
 
 /// Does a package's scriptlets use the embedded Lua interpreter (`rpm -q --scripts`
 /// labels them `(using <lua>)`) rather than shell?
-fn dnf_script_is_lua(name: &str) -> bool {
-    Command::new("rpm")
+fn dnf_script_is_lua(root: &Path, name: &str) -> bool {
+    rpm_at(root)
         .args(["-q", "--scripts", name])
         .output()
         .ok()
@@ -547,8 +660,8 @@ fn dnf_script_is_lua(name: &str) -> bool {
 
 /// Version-locked packages from the dnf versionlock plugin
 /// (`/etc/dnf/plugins/versionlock.list`): pinned, so excluded from upgrades.
-fn dnf_held() -> std::collections::HashSet<String> {
-    let Ok(text) = std::fs::read_to_string("/etc/dnf/plugins/versionlock.list") else {
+fn dnf_held_at(root: &Path) -> std::collections::HashSet<String> {
+    let Ok(text) = std::fs::read_to_string(root.join("etc/dnf/plugins/versionlock.list")) else {
         return Default::default();
     };
     text.lines()
@@ -578,18 +691,22 @@ fn dnf_held() -> std::collections::HashSet<String> {
 /// Packages installed *only* for a non-native architecture (a pure multilib
 /// package). Maps `name → foreign arch`; ordinary packages with a native or
 /// `noarch` copy are excluded.
-fn dnf_foreign_arch() -> HashMap<String, String> {
-    let native = Command::new("rpm")
-        .args(["--eval", "%{_arch}"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .unwrap_or_default();
-    if native.is_empty() {
-        return HashMap::new();
-    }
-    let Ok(text) = rpm_qa("%{NAME}\t%{ARCH}\n") else {
+fn dnf_foreign_arch(root: &Path) -> HashMap<String, String> {
+    // `%{_arch}` is rpm's *own* build architecture, which describes the machine
+    // running postmortem rather than the image being read. For an image the
+    // native architecture is instead the concrete one most packages carry.
+    let native = if root == Path::new("/") {
+        Command::new("rpm")
+            .args(["--eval", "%{_arch}"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let Ok(text) = rpm_qa(root, "%{NAME}\t%{ARCH}\n") else {
         return HashMap::new();
     };
     let mut arches: HashMap<String, Vec<String>> = HashMap::new();
@@ -601,6 +718,20 @@ fn dnf_foreign_arch() -> HashMap<String, String> {
                 .push(arch.to_string());
         }
     }
+    let native = if native.is_empty() {
+        let mut tally: HashMap<&str, usize> = HashMap::new();
+        for a in arches.values().flatten() {
+            if a != "noarch" && !a.is_empty() {
+                *tally.entry(a.as_str()).or_default() += 1;
+            }
+        }
+        match tally.into_iter().max_by_key(|(_, n)| *n) {
+            Some((a, _)) => a.to_string(),
+            None => return HashMap::new(),
+        }
+    } else {
+        native
+    };
     arches
         .into_iter()
         .filter_map(|(name, a)| {
@@ -712,5 +843,40 @@ mod tests {
         ] {
             assert!(!is_official_dnf_repo(id), "{id} should be third-party");
         }
+    }
+
+    /// The bug this probe exists to prevent: rpm's default `_dbpath` describes
+    /// the machine doing the reading, so a Fedora host reading an EL9 image with
+    /// the default finds an empty directory and reports zero packages.
+    #[test]
+    fn the_rpm_database_is_probed_in_both_layouts() {
+        let base = std::env::temp_dir().join(format!("postmortem-rpmdb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+
+        // EL9 and its rebuilds.
+        let el9 = base.join("el9");
+        std::fs::create_dir_all(el9.join("var/lib/rpm")).expect("dirs");
+        std::fs::write(el9.join("var/lib/rpm/rpmdb.sqlite"), b"x").expect("db");
+        assert_eq!(rpm_dbpath(&el9), Some("var/lib/rpm"));
+
+        // Fedora / RHEL 10.
+        let fedora = base.join("fedora");
+        std::fs::create_dir_all(fedora.join("usr/lib/sysimage/rpm")).expect("dirs");
+        std::fs::write(fedora.join("usr/lib/sysimage/rpm/rpmdb.sqlite"), b"x").expect("db");
+        assert_eq!(rpm_dbpath(&fedora), Some("usr/lib/sysimage/rpm"));
+
+        // The historical Berkeley DB layout.
+        let old = base.join("old");
+        std::fs::create_dir_all(old.join("var/lib/rpm")).expect("dirs");
+        std::fs::write(old.join("var/lib/rpm/Packages"), b"x").expect("db");
+        assert_eq!(rpm_dbpath(&old), Some("var/lib/rpm"));
+
+        // An empty directory is not a database — exactly the state a Debian image
+        // or a half-extracted root presents.
+        let empty = base.join("empty");
+        std::fs::create_dir_all(empty.join("var/lib/rpm")).expect("dirs");
+        assert_eq!(rpm_dbpath(&empty), None);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

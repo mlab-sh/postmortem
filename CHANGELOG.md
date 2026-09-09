@@ -24,6 +24,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against `apk info` inside the container: same 15 packages, no additions, no
   omissions. Debian and rpm images are detected and reported as *not examined*
   rather than silently contributing nothing.
+- **Debian, Ubuntu and the rpm distributions read from an image too.** dpkg's
+  database is text, so it is now *parsed* rather than queried through
+  `dpkg-query` / `apt-mark` / `dpkg-divert`: those tools only ever describe the
+  machine they run on, and reading the files they read is what lets a Debian
+  image be inventoried from a macOS laptop that has never seen dpkg. rpm's
+  database is a binary store, so it is read with `rpm --root`, which does need an
+  `rpm` binary present — and says so plainly when there is none. Checked against
+  each distribution's own tool on a stock base image: **identical package sets,
+  no additions and no omissions**, on Debian 12 (88), Ubuntu 24.04 (92),
+  AlmaLinux 9 (101), Rocky 9 (147) and Fedora 41 (124).
+- **Where the rpm database lives is probed, not assumed.** `_dbpath` is a
+  property of the rpm *doing the reading*: Fedora moved its database to
+  `/usr/lib/sysimage/rpm` while RHEL 9 and its rebuilds keep `/var/lib/rpm`.
+  Reading an AlmaLinux image from a Fedora machine with the default therefore
+  found an empty directory and reported **zero packages** — a silent, confident,
+  wrong answer, and the worst failure a scanner has.
+- **podman and nerdctl join docker** as image acquisition runtimes; whichever is
+  on `PATH` is used. podman matters because it is the default on Fedora and RHEL,
+  where Docker is often absent entirely. Apple's `container` is deliberately not
+  supported: its `export` materialises a root filesystem only once the container
+  has been *started*, and starting an image is precisely what a tool built to
+  read untrusted artifacts must never do.
+- **Dockerfiles are analyzed by `scan`.** A Dockerfile is the same object the
+  `system` backends already read for Homebrew formulae, PKGBUILDs and maintainer
+  scripts — a build recipe whose every instruction runs as root — except that it
+  is the one recipe nearly every project keeps in its own repository, where a
+  lockfile scanner never looks. Flagged: a base pinned by tag rather than digest,
+  a remote script piped to a shell, `ADD` from a URL, a credential in `ENV`/`ARG`,
+  verification switched off, and no `USER` instruction. A `FROM` naming an earlier
+  stage of the same file is not an unpinned base, and a valueless `ARG NPM_TOKEN`
+  bakes nothing in; neither is flagged.
 - **Vulnerability intelligence spans both layers of an image.** Lockfiles go
   through the mlab SBOM scan, OS packages through the OSV route `system --vulns`
   already used, and the OS release is read from the **image's** `etc/os-release`.
@@ -33,6 +64,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **A signal whose premise could not be checked is reported but not scored.**
+  Inside an image no package can be shown to come from a third party, so install
+  scripts and rpm scriptlets are still statically analyzed — reading an untrusted
+  artifact and looking at none of the code it runs would be worse — but their
+  findings arrive at `Info` with no risk points and an `[unattributed source]`
+  tag. Those analyzers were calibrated on untrusted install code, and a URL in a
+  distribution's own maintainer script is how the distribution works: scoring
+  them took a stock `debian:12` to 60/100. It now scores 20.
+- **`dpkg-query` counted packages that are not installed.** A package removed but
+  not purged keeps a `deinstall ok config-files` stanza, and it was entering the
+  graph — and the vulnerability scan — despite shipping no code. Only packages in
+  state `installed` are now reported.
 - **Diagnostics gained an `info` kind**, for facts about how a scan was obtained
   rather than holes in it. The platform a multi-arch reference resolved to is one
   — worth carrying into `--json`, but not something that should drag an `audit`
