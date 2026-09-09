@@ -471,7 +471,20 @@ pub(crate) fn open_image(
         }
     }
 
-    let findings = analyze::image_config::scan(&image.config, &format!("image {reference}"));
+    let label = format!("image {reference}");
+    let mut findings = analyze::image_config::scan(&image.config, &label);
+    findings.extend(analyze::image_secrets::scan(&image.removed_secrets, &label));
+    if !layered {
+        // The check exists only while layers are being stacked, so a flat
+        // acquisition cannot have run it. Saying so beats an image that looks
+        // clean of a class of finding nobody looked for.
+        diags.push(model::Diagnostic {
+            ecosystem: "image".into(),
+            kind: model::DIAG_INFO.into(),
+            message: "credentials deleted in a later layer were not checked — pass --layers"
+                .into(),
+        });
+    }
 
     Ok(ImageScan {
         image,

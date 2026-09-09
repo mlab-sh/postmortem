@@ -192,6 +192,38 @@ Everything else behaves as it does for a directory: `--json`, `--sarif`,
 One of the [runtimes](#runtimes) above, and `tar`. An `rpm` binary as well for
 rpm-based images. Nothing is installed into the image and no code from it runs.
 
+## Credentials the image deleted but still ships
+
+A layer does not delete anything. It records that a path should be hidden, and
+the file goes on living in the layer below, in a blob that ships with the image.
+So the usual fix for a leaked build secret removes nothing:
+
+```dockerfile
+COPY .npmrc /root/.npmrc
+RUN npm ci && rm /root/.npmrc
+```
+
+The flattened filesystem is clean, every scanner that looks only at the flattened
+filesystem agrees, and anyone who can pull the image reads the token back out of
+the earlier layer with `tar`.
+
+```bash
+postmortem scan --image acme/api:1.4.2 --layers
+```
+
+The finding names both build steps: the one that added the file, and the one that
+hid it. Replacing a file counts too, because a sanitised config copied over a real
+one hides just as little.
+
+Two filters keep it quiet. The **path** has to look like somewhere credentials
+live, and the **content** has to look like a credential: a `.pem` holding a public
+certificate is not a leak, a `.pem` holding a private key is, and an `.env` whose
+only variable is `APP_ENV=prod` is not.
+
+This is the check that justifies stacking layers by hand rather than letting the
+runtime flatten them, because a flattened image cannot express the question. Run
+without `--layers`, the report says the check did not run.
+
 ## What the image declares
 
 `scan --image` and `audit --image` read the image's own configuration, which

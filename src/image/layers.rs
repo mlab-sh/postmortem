@@ -32,6 +32,8 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::analyze::image_secrets::{self, Removed};
+
 /// Above this many recorded paths, attribution is dropped rather than allowed to
 /// grow without bound. A very large image is exactly the case where the map costs
 /// the most and the answer helps the least: the caller is told, and the rest of
@@ -80,6 +82,9 @@ pub struct Stacked {
     pub owner: HashMap<String, usize>,
     /// Acquisition facts worth reporting.
     pub notes: Vec<String>,
+    /// Credential files a later layer hid or replaced, which therefore still
+    /// ship in an earlier one.
+    pub removed_secrets: Vec<Removed>,
 }
 
 /// The docker-archive index `save` writes at the root of its tar.
@@ -143,6 +148,7 @@ pub fn stack_into(
 
     let mut owner: HashMap<String, usize> = HashMap::new();
     let mut tracking = true;
+    let mut removed_secrets: Vec<Removed> = Vec::new();
     for (index, rel) in manifest.layers.iter().enumerate() {
         progress(format!(
             "stacking layer {}/{}",
@@ -152,10 +158,28 @@ pub fn stack_into(
         let blob = archive.join(rel);
         let entries =
             list_entries(&blob).with_context(|| format!("listing layer {index} of {reference}"))?;
-        apply_whiteouts(root, &entries);
+
+        // Whiteouts are resolved against what the layers below actually wrote, so
+        // this is the moment — and the only moment — at which "this file was
+        // deleted, and here is the layer it is still in" is knowable.
+        let hidden = apply_whiteouts(root, &entries, &owner);
+        collect_removed(
+            &hidden,
+            &owner,
+            index,
+            &layers,
+            &manifest.layers,
+            archive,
+            &mut removed_secrets,
+        );
+
         extract_layer(&blob, root)
             .with_context(|| format!("extracting layer {index} of {reference}"))?;
         if tracking {
+            // `path → the layer that held it before this one took it over`,
+            // captured at the moment of the overwrite because `owner` no longer
+            // knows a second later.
+            let mut overwritten: HashMap<String, usize> = HashMap::new();
             for e in &entries {
                 if e.ends_with('/') || basename(e).starts_with(".wh.") {
                     continue;
@@ -168,8 +192,24 @@ pub fn stack_into(
                     ));
                     break;
                 }
-                owner.insert(format!("/{}", e.trim_start_matches("./")), index);
+                let path = format!("/{}", e.trim_start_matches("./"));
+                // Replacing a file leaves the old content in the layer below,
+                // exactly as deleting it does — a sanitised config copied over a
+                // real one hides nothing.
+                if let Some(prev) = owner.insert(path.clone(), index) {
+                    overwritten.insert(path, prev);
+                }
             }
+            let paths: Vec<String> = overwritten.keys().cloned().collect();
+            collect_removed(
+                &paths,
+                &overwritten,
+                index,
+                &layers,
+                &manifest.layers,
+                archive,
+                &mut removed_secrets,
+            );
         }
     }
 
@@ -177,7 +217,74 @@ pub fn stack_into(
         layers,
         owner,
         notes,
+        removed_secrets,
     })
+}
+
+/// Turn hidden or replaced paths into credential findings.
+///
+/// Two filters, in this order, because the second one costs a `tar` per
+/// candidate: the path has to look like somewhere credentials live, and the
+/// content has to look like a credential.
+#[allow(clippy::too_many_arguments)]
+fn collect_removed(
+    paths: &[String],
+    owner: &HashMap<String, usize>,
+    deleted_by: usize,
+    layers: &[Layer],
+    blobs: &[String],
+    archive: &Path,
+    out: &mut Vec<Removed>,
+) {
+    for path in paths {
+        if !image_secrets::is_credential_path(path) {
+            continue;
+        }
+        let Some(&written_by) = owner.get(path) else {
+            continue;
+        };
+        let Some(rel) = blobs.get(written_by) else {
+            continue;
+        };
+        let Some(content) = read_member(&archive.join(rel), path) else {
+            continue;
+        };
+        if !image_secrets::holds_credential(path, &content) {
+            continue;
+        }
+        out.push(Removed {
+            path: path.clone(),
+            written_by: layers
+                .get(written_by)
+                .map(Layer::summary)
+                .unwrap_or_else(|| format!("layer {written_by}")),
+            deleted_by: layers
+                .get(deleted_by)
+                .map(Layer::summary)
+                .unwrap_or_else(|| format!("layer {deleted_by}")),
+        });
+    }
+}
+
+/// One member's bytes out of a layer blob, without unpacking the rest.
+///
+/// Member names come with or without a `./` prefix depending on the builder, so
+/// both spellings are tried.
+fn read_member(blob: &Path, path: &str) -> Option<Vec<u8>> {
+    let rel = path.trim_start_matches('/');
+    for member in [rel.to_string(), format!("./{rel}")] {
+        let out = Command::new("tar")
+            .arg("-xOf")
+            .arg(blob)
+            .arg(&member)
+            .stderr(Stdio::null())
+            .output()
+            .ok()?;
+        if out.status.success() {
+            return Some(out.stdout);
+        }
+    }
+    None
 }
 
 /// `<rt> save <ref>` streamed straight into `tar -x` under `dest`.
@@ -294,24 +401,38 @@ fn list_entries(blob: &Path) -> Result<Vec<String>> {
 /// Must run *before* the layer is extracted: an opaque marker clears a directory
 /// that this same layer then refills, and clearing it afterwards would delete the
 /// image's own content.
-fn apply_whiteouts(root: &Path, entries: &[String]) {
+fn apply_whiteouts(root: &Path, entries: &[String], owner: &HashMap<String, usize>) -> Vec<String> {
+    let mut hidden = Vec::new();
     for e in entries {
         let name = basename(e);
         let Some(parent_rel) = e.strip_suffix(name) else {
             continue;
         };
-        let parent = root.join(parent_rel.trim_start_matches("./"));
+        let rel = parent_rel.trim_start_matches("./");
+        let parent = root.join(rel);
         if name == ".wh..wh..opq" {
             // Everything the lower layers put in this directory is hidden.
+            let prefix = format!("/{rel}");
+            hidden.extend(owner.keys().filter(|k| k.starts_with(&prefix)).cloned());
             if let Ok(dir) = std::fs::read_dir(&parent) {
                 for entry in dir.flatten() {
                     remove_any(&entry.path());
                 }
             }
         } else if let Some(target) = name.strip_prefix(".wh.") {
+            // A whiteout on a directory hides everything beneath it too.
+            let path = format!("/{rel}{target}");
+            let below = format!("{path}/");
+            hidden.extend(
+                owner
+                    .keys()
+                    .filter(|k| **k == path || k.starts_with(&below))
+                    .cloned(),
+            );
             remove_any(&parent.join(target));
         }
     }
+    hidden
 }
 
 /// Extract one layer over the accumulated root, dropping the whiteout markers
@@ -446,12 +567,28 @@ mod tests {
         std::fs::write(root.join("opt/cache/a"), b"x").expect("a");
         std::fs::write(root.join("opt/cache/sub/b"), b"x").expect("b");
 
-        apply_whiteouts(
+        let owner: HashMap<String, usize> = [
+            ("/etc/secret".to_string(), 0),
+            ("/etc/keep".to_string(), 0),
+            ("/opt/cache/a".to_string(), 0),
+            ("/opt/cache/sub/b".to_string(), 0),
+        ]
+        .into_iter()
+        .collect();
+        let hidden = apply_whiteouts(
             &root,
             &[
                 "etc/.wh.secret".to_string(),
                 "opt/cache/.wh..wh..opq".to_string(),
             ],
+            &owner,
+        );
+        let mut hidden = hidden;
+        hidden.sort();
+        assert_eq!(
+            hidden,
+            ["/etc/secret", "/opt/cache/a", "/opt/cache/sub/b"],
+            "the hidden set names every path the layers below had put there"
         );
 
         assert!(!root.join("etc/secret").exists(), "the deletion applied");

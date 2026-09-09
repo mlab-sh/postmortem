@@ -27,7 +27,7 @@ use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 
-use crate::analyze::image_config;
+use crate::analyze::{image_config, image_secrets};
 use crate::ui::Ui;
 
 /// Directory names never descended into when looking for a project.
@@ -129,6 +129,10 @@ pub struct Image {
     /// The layer stack, base first. Empty unless the image was acquired layer by
     /// layer, which only the `--layers` path does.
     pub layers: Vec<Layer>,
+    /// Credential files a later layer hid or replaced, which therefore still ship
+    /// in an earlier one. Only knowable while stacking, so only ever populated by
+    /// the layer-by-layer path.
+    pub removed_secrets: Vec<image_secrets::Removed>,
     /// Path as the image sees it (`/usr/bin/curl`) → the layer that last wrote it.
     owner: HashMap<String, usize>,
     root: PathBuf,
@@ -228,6 +232,7 @@ pub fn acquire(reference: &str, layered: bool, ui: &Ui) -> Result<Image> {
             notes,
             config,
             layers: stacked.layers,
+            removed_secrets: stacked.removed_secrets,
             owner: stacked.owner,
             root,
             archive: None,
@@ -273,6 +278,7 @@ pub fn acquire(reference: &str, layered: bool, ui: &Ui) -> Result<Image> {
         notes,
         config,
         layers: Vec::new(),
+        removed_secrets: Vec::new(),
         owner: HashMap::new(),
         root,
         archive: None,

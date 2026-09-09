@@ -642,6 +642,15 @@ pub struct AuditArgs {
     #[arg(long, value_name = "REF", conflicts_with = "path")]
     pub image: Option<String>,
 
+    /// With --image: stack the image layer by layer.
+    ///
+    /// Unlocks the check for credentials a later layer deleted — deleting a file
+    /// in a layer only hides it, and the flattened filesystem cannot express the
+    /// question. Acquires through `save`, so no container is created at all, at
+    /// the cost of roughly twice the image's size in scratch space.
+    #[arg(long, requires = "image")]
+    pub layers: bool,
+
     /// Go ONLINE: add source-repo reputation risk scoring. Touches the network.
     #[arg(long)]
     pub online: bool,
@@ -1036,6 +1045,15 @@ pub struct ScanArgs {
     /// command ends. A reference that is not present locally is pulled.
     #[arg(long, value_name = "REF", conflicts_with = "paths")]
     pub image: Option<String>,
+
+    /// With --image: stack the image layer by layer.
+    ///
+    /// Unlocks the check for credentials a later layer deleted — deleting a file
+    /// in a layer only hides it, and the flattened filesystem cannot express the
+    /// question. Acquires through `save`, so no container is created at all, at
+    /// the cost of roughly twice the image's size in scratch space.
+    #[arg(long, requires = "image")]
+    pub layers: bool,
 
     /// Emit JSON
     #[arg(long, conflicts_with_all = ["html", "sarif"])]

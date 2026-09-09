@@ -66,6 +66,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deleted in a later layer stays deleted — verified end to end against the
   runtime's own flattening: identical package sets on Alpine, Debian, Ubuntu and
   a purpose-built three-layer image.
+- **Credentials an image deleted but still ships are found.** A layer does not
+  delete anything: it records that a path should be hidden, and the file goes on
+  living in the layer below, in a blob that ships with the image. So the usual fix
+  for a leaked build secret — `RUN npm ci && rm /root/.npmrc` — removes nothing.
+  The flattened filesystem is clean, every scanner that looks only at the
+  flattened filesystem says so, and anyone who can pull the image reads the token
+  back out with `tar`. `--layers` on `scan` and `audit` reports it as critical,
+  naming both the build step that added the file and the one that hid it.
+  Replacing a file counts too, since a sanitised config copied over a real one
+  hides just as little.
+
+  Two filters keep it quiet: the path has to look like somewhere credentials live,
+  and the **content** has to look like a credential. On a purpose-built image
+  carrying four deleted files, the `.npmrc` with a real token and the SSH private
+  key are reported; the `.pem` holding a public certificate and the `.env` holding
+  only `APP_ENV=prod` are not. On stock `debian`, `ubuntu` and `node:20-alpine`,
+  nothing is reported at all. Without `--layers` the check cannot run, and the
+  report says so rather than looking clean of a class of finding nobody looked for.
+- **`--layers` works on `scan` and `audit`**, not only on `tree`.
 - **The image's own configuration is analyzed.** A Dockerfile is only available
   to whoever holds the repository; the config is available to anyone who can pull
   the image, and it is what actually ships. `scan --image` and `audit --image` now

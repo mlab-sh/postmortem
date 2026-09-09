@@ -258,7 +258,7 @@ struct Prepared {
 fn prepare(args: &cli::AuditArgs, ui: &ui::Ui) -> Result<Prepared> {
     let omit = cli::OmitSet::scopes(&args.omit);
     if let Some(reference) = &args.image {
-        let scan = common::open_image(reference, false, ui, &omit)?;
+        let scan = common::open_image(reference, args.layers, ui, &omit)?;
         let content_root = scan.image.root().to_path_buf();
         let ecosystems = scan.ecosystems();
         let common::ImageScan {
