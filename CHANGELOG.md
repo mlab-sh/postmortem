@@ -7,8 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Linux release binaries would not start on Debian 12 or Ubuntu 22.04.**
+  They were linked on `ubuntu-latest` — 24.04, glibc 2.39 — and a glibc binary
+  never runs against a glibc older than the one it was built with. The two GNU
+  targets are pinned to 22.04, which lowers the floor to glibc 2.35.
+
+## [2.3.1] - 2026-08-27
+
 ### Added
 
+- **Webhook authentication.** `--webhook` could only reach a collector that
+  accepted anonymous requests. It now carries a credential: `bearer`, `basic`,
+  or an arbitrary header name — `X-API-Key`, and whatever else a collector
+  expects. The credential is **never a command-line argument**: `ps` shows it to
+  every user on the machine, shells record it, and CI prints the command it ran.
+  It comes from the environment or from `config.yml`, like the registry tokens.
+  A scheme configured with no credential behind it is an error rather than a
+  silent anonymous POST, and the credential is applied after the configured
+  `headers`, so a stray entry there cannot quietly replace it with something
+  weaker.
+- **Windows binaries, a Scoop bucket, and a signed apt repository.** Releases
+  publish Windows zips alongside the macOS and Linux tarballs, `scoop bucket add
+  postmortem` installs them, and Debian and Ubuntu install from `apt.mlab.sh`.
+  The repository is signed and the key fingerprint is published in the README,
+  so it can be checked before the repository is trusted.
+
+### Changed
+
+- **A credential over plain HTTP is refused outright**, not warned about.
+  Sending the report itself in clear text is a trade-off a deployment may
+  accept; handing a bearer token to everything on the path is not one, and no
+  scan is worth it. A collector on the loopback address stays exempt.
+- The UTF-16LE base64 encoder the Windows backend uses to drive PowerShell moved
+  into `encoding`, where basic authentication shares it rather than growing a
+  second copy.
+
+## [2.3.0] - 2026-08-26
+
+### Added
+
+- **`system` runs on Windows.** A Windows machine has no single package
+  manager, so the backend reads every layer and merges them into one inventory:
+  WinGet, MSIX/AppX, Chocolatey, Scoop, and everything Add/Remove Programs
+  records — including the software no manager claims. On top of the inventory it
+  reads what the machine actually *runs*: auto-start entries, scheduled tasks,
+  services and drivers, image hijacks and BITS jobs, and the privilege posture
+  (UAC, LSA, `PATH` and ACL weaknesses, Defender policy, firmware) — with
+  network posture, meaning the hosts file, proxies, DNS and root CAs, under
+  `--deep`. Every binary is checked against its Authenticode signature,
+  calibrated around the fact that Microsoft ships `Developer`-signed packages of
+  its own. All of it shells out to tools already present on the machine; no
+  Windows-specific crate is pulled in.
 - **Provenance signals beyond npm.** The release-history comparison behind
   `dormant-release`, `new-publisher`, `provenance-removed`, `fresh-release` and
   `newborn-package` was npm-only. crates.io and PyPI publish a history too, and
@@ -205,6 +256,8 @@ explicitly instead of reporting a clean result.
 
 - Initial 2.x release.
 
+[2.3.1]: https://github.com/mlab-sh/postmortem/releases/tag/v2.3.1
+[2.3.0]: https://github.com/mlab-sh/postmortem/releases/tag/v2.3.0
 [2.2.0]: https://github.com/mlab-sh/postmortem/releases/tag/v2.2.0
 [2.1.2]: https://github.com/mlab-sh/postmortem/releases/tag/v2.1.2
 [2.1.1]: https://github.com/mlab-sh/postmortem/releases/tag/v2.1.1
