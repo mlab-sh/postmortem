@@ -80,12 +80,10 @@ fn is_dockerfile(path: &Path) -> bool {
 }
 
 pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
-    // Dockerfiles have no extension of their own, so the walk cannot filter on
-    // one and every file is matched by name instead.
-    for path in util::walk_files(root, &[]) {
-        if !is_dockerfile(&path) {
-            continue;
-        }
+    // Dockerfiles have no extension of their own, so the walk matches on the
+    // whole name instead — inside the walk, so a tree of a few thousand files
+    // is not handed back path by path just to be discarded here.
+    for path in util::walk(root, is_dockerfile) {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };

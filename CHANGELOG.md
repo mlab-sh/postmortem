@@ -5,6 +5,87 @@ All notable changes to postmortem are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0]
+
+A performance release. No new detection surface, no flags, no output changes —
+the same answers, measured against v2.4.0 on eleven real projects across five
+ecosystems: identical dependency sets, identical exit codes, **not one finding
+lost**. Three gained, and they are the point of the first fix below.
+
+Measured on a 3 954-file Node project (M-series laptop, warm page cache, best
+of three):
+
+| command | v2.4.0 | 2.5.0 | |
+|---|---|---|---|
+| `scan` | 2.75s | 0.54s | 5.1× |
+| `audit` | 2.70s | 0.53s | 5.1× |
+| `scripts` | 2.68s | 0.54s | 4.9× |
+| `system` (Homebrew) | 2.87s | 1.45s | 2.0× |
+| `scan` of one 1 MiB minified bundle | 0.59s | 0.11s | 5.5× |
+| `scan` of 12 002 small files | 2.72s | 1.12s | 2.4× |
+
+### Fixed
+
+- **IOC detection was quadratic on minified code, and blind to it.** For every
+  match, `in_comment` walked back to the start of the line to see whether the
+  match sat in a comment. A minified bundle is *one* line, hundreds of KB wide,
+  and it yields thousands of matches — every `a.b` property access matches the
+  domain pattern — so the walk ran once per match over the whole line. A single
+  1 MiB bundle cost 0.59s of a 2.7s scan; same bytes with a newline every 200
+  characters cost 0.10s.
+
+  The backward scan is now capped at 4 KiB. Every line up to that width behaves
+  exactly as before; past it the answer is `false`, which is also the *correct*
+  answer — a `//` 200 KB earlier on a minified line is a protocol separator or a
+  regex literal, never a comment opener. That was not a cosmetic distinction:
+  because a single stray `//` made everything after it on the line read as a
+  comment, **postmortem was discarding every URL, domain and address inside
+  minified bundles** — which is exactly where an implant hides. The three new
+  findings across the test corpus are all URLs inside one such bundle.
+
+### Changed
+
+- **One pass over the source tree instead of eight.** IOC, obfuscation and
+  sensitive-API detection each walked the tree and read every file themselves,
+  for the same files and the same bytes. On the 3 954-file project that came to
+  8 traversals, 36 508 directory entries visited, and 15 025 `read_to_string`
+  calls against 3 954 files on disk. The three are pure functions of
+  `(path, text)`, so they now share one walk and one read, and run across a pool
+  of scoped threads — the analysis was single-threaded end to end before this.
+
+  What made three walks look natural was three identical copies of the `Lang`
+  enum, one per analyzer, with identical variants and identical extension
+  tables. They are now one enum in `analyze::util`, re-exported where the old
+  paths were used.
+
+- **The directory walk stopped paying for stats it already had.** Each entry
+  cost an `is_file()` and a `metadata()` — two `stat` syscalls — on top of the
+  `readdir` that had already reported the file type. The walk now uses the entry
+  it was handed, and tests the name (free) before the one syscall it still pays,
+  the `metadata` behind the 1 MiB size cap. The Dockerfile scan asked for *every*
+  file and discarded the non-Dockerfiles itself, paying that syscall ~4 000 times
+  per scan to keep a handful of paths; its name test moved into the walk.
+
+  Symlinked files are still read. The old `is_file()` followed links; the entry
+  the walk hands back does not, so the link is resolved explicitly. Without
+  that, pnpm — whose `node_modules` is almost entirely symlinks into a
+  content-addressed store — would have gone unscanned with no error anywhere.
+  `follow_links(false)` is unchanged, so the walk still does not descend
+  through linked directories and a link loop cannot hang it.
+
+- **`system` runs its Homebrew queries concurrently.** `brew info`, `brew
+  tap-info` and `brew outdated` are independent, and each is about a second of
+  Ruby interpreter start-up; they ran end to end. So did the per-package `brew
+  cat` that reads a third-party formula's install recipe. All of them now go out
+  across a pool. The command was 100% blocked in `poll()` — waiting on
+  subprocesses, computing nothing.
+
+### Note
+
+Findings from the shared content pass are sorted by location before they are
+emitted. Worker threads finish in arbitrary order, and an unsorted report would
+shift run to run — a moving diff in `--json` output and in the gate's baseline.
+
 ## [2.4.0]
 
 ### Added

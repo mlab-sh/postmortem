@@ -16,61 +16,6 @@ use std::sync::OnceLock;
 use crate::analyze::util;
 use crate::model::{Category, Finding, Severity};
 
-#[derive(Copy, Clone)]
-pub enum Lang {
-    JavaScript,
-    Python,
-    Rust,
-    Ruby,
-    Php,
-    Go,
-    Java,
-    /// C and C++ (shared headers, overlapping surface).
-    Cpp,
-    Perl,
-    /// Shell (sh/bash/zsh) - covers OS-package install hooks.
-    Shell,
-    /// PowerShell (`ps1`/`psm1`) - Chocolatey packages ARE PowerShell scripts,
-    /// and Windows install hooks live here.
-    PowerShell,
-    Lua,
-}
-
-impl Lang {
-    /// Every language, for a full-tree source scan (`system inspect --deep`).
-    pub const ALL: &'static [Lang] = &[
-        Lang::JavaScript,
-        Lang::Python,
-        Lang::Rust,
-        Lang::Ruby,
-        Lang::Php,
-        Lang::Go,
-        Lang::Java,
-        Lang::Cpp,
-        Lang::Perl,
-        Lang::Shell,
-        Lang::PowerShell,
-        Lang::Lua,
-    ];
-
-    fn exts(self) -> &'static [&'static str] {
-        match self {
-            Lang::JavaScript => &["js", "mjs", "cjs", "ts"],
-            Lang::Python => &["py"],
-            Lang::Rust => &["rs"],
-            Lang::Ruby => &["rb"],
-            Lang::Php => &["php"],
-            Lang::Go => &["go"],
-            Lang::Java => &["java", "kt"],
-            Lang::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
-            Lang::Perl => &["pl", "pm", "t"],
-            Lang::Shell => &["sh", "bash", "zsh", "ksh"],
-            Lang::PowerShell => &["ps1", "psm1", "psd1"],
-            Lang::Lua => &["lua"],
-        }
-    }
-}
-
 fn url_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(r#"https?://[A-Za-z0-9.\-_~:/?#@!$&'()*+,;=%]+"#).unwrap())
@@ -400,16 +345,7 @@ const FILE_EXTENSIONS: &[&str] = &[
     "sqlite",
 ];
 
-pub fn scan_dir(root: &Path, out: &mut Vec<Finding>, lang: Lang) {
-    for path in util::walk_files(root, lang.exts()) {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        scan_text(&path, &text, out);
-    }
-}
-
-fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
+pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
     let dep = util::owner(path, "<project>");
 
     // First pass: collect URL match ranges so we can suppress redundant
@@ -713,13 +649,39 @@ fn url_host_is_private_ip(url: &str) -> bool {
     Ipv4Addr::from_str(host).is_ok_and(|a| !is_noteworthy_ipv4(&a))
 }
 
+/// Longest line we still read as source. A minified bundle is one 200 KB
+/// "line"; scanning back to its start cost O(line) *per match*, and a bundle
+/// yields thousands of matches (every `a.b` property access matches the domain
+/// pattern), so the pass went quadratic — one 1 MiB bundle took 0.59s of a 2.7s
+/// scan. Past this width the line cannot be a comment anyway: a `//` that far
+/// back is a protocol separator or a regex literal, and a real line comment
+/// would have swallowed the rest of the file.
+const MAX_COMMENT_LINE: usize = 4096;
+
 /// Whether the match at `start` sits on a comment or docstring-bullet line.
 /// Language-agnostic across the scanned set: `#` (Python), `//` `///` `//!`
 /// (Rust/JS line + doc comments), and `*` / `/*` (block-comment bodies). Also
 /// catches a trailing `//` line comment that isn't the `//` in `scheme://`.
+///
+/// The backward scan is capped at [`MAX_COMMENT_LINE`], so every line up to
+/// that width behaves exactly as before and wider ones answer `false`.
 fn in_comment(text: &str, start: usize) -> bool {
-    let ls = text[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let prefix = &text[ls..start];
+    let mut floor = start.saturating_sub(MAX_COMMENT_LINE);
+    while floor < start && !text.is_char_boundary(floor) {
+        floor += 1;
+    }
+    let window = &text[floor..start];
+    match window.rfind('\n') {
+        Some(nl) => line_is_comment(&window[nl + 1..]),
+        // No newline inside the window: either we reached the start of the file
+        // (a genuine short first line) or the line is wider than the cap.
+        None => floor == 0 && line_is_comment(window),
+    }
+}
+
+/// Does this line prefix — everything from the line start up to the match —
+/// put the match inside a comment?
+fn line_is_comment(prefix: &str) -> bool {
     let t = prefix.trim_start();
     if t.starts_with('#') || t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") {
         return true;
@@ -751,6 +713,49 @@ mod tests {
         let mut out = Vec::new();
         scan_text(&PathBuf::from("test.js"), input, &mut out);
         out
+    }
+
+    /// Lines up to the cap keep the exact pre-cap behaviour: a marker at the
+    /// line start, or a `//` earlier on the line that isn't `scheme://`.
+    #[test]
+    fn comment_detection_unchanged_within_the_cap() {
+        assert!(in_comment("// see http://x.tk", 8));
+        assert!(in_comment("# see http://x.tk", 7));
+        assert!(in_comment(" * see http://x.tk", 8));
+        assert!(in_comment("code(); // http://x.tk", 11));
+        assert!(!in_comment("fetch(\"http://x.tk\")", 7));
+        // A line just under the cap still resolves to its real start.
+        let long = format!("// {}http://x.tk", "a".repeat(MAX_COMMENT_LINE - 20));
+        let at = long.find("http").unwrap();
+        assert!(in_comment(&long, at));
+    }
+
+    /// A minified bundle is one line hundreds of KB wide. Scanning back to its
+    /// start cost O(line) per match and the pass went quadratic; past the cap we
+    /// answer `false`, which is also the right answer — the bundle's `//` are
+    /// protocol separators and regex literals, not comment openers.
+    #[test]
+    fn minified_single_line_is_not_a_comment_and_stays_cheap() {
+        let filler = "a".repeat(MAX_COMMENT_LINE * 4);
+        let text = format!("//x;{filler}http://evil.tk");
+        let at = text.find("http://evil.tk").unwrap();
+        assert!(!in_comment(&text, at), "a `//` 16 KB back is not a comment");
+
+        // And the IOC is now actually reported, where it used to be swallowed.
+        let found = scan(&text);
+        assert!(
+            found.iter().any(|f| f.detail == "embedded URL"),
+            "expected the URL in the minified line to surface: {found:#?}"
+        );
+    }
+
+    /// The cap slices `text` by byte offset; a multi-byte character straddling
+    /// it must not panic.
+    #[test]
+    fn cap_lands_on_a_char_boundary() {
+        let text = format!("{}http://evil.tk", "é".repeat(MAX_COMMENT_LINE));
+        let at = text.find("http://evil.tk").unwrap();
+        assert!(!in_comment(&text, at));
     }
 
     fn details(fs: &[Finding]) -> Vec<&str> {

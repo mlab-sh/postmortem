@@ -113,17 +113,29 @@ struct Cask {
 
 /// Read the installed Homebrew forest, casks, and taps into an [`Inventory`].
 pub fn brew_inventory() -> Result<Inventory> {
-    let out = Command::new("brew")
-        .args(["info", "--json=v2", "--installed"])
-        .output()
-        .context("running `brew info --json=v2 --installed`")?;
+    // Three independent `brew` queries, each a second or so of a Ruby process
+    // starting up. Nothing downstream needs one before another, so they run
+    // together rather than end to end.
+    let (out, taps_info, outdated) = std::thread::scope(|scope| {
+        let taps = scope.spawn(read_tap_info);
+        let outdated = scope.spawn(read_outdated);
+        let out = Command::new("brew")
+            .args(["info", "--json=v2", "--installed"])
+            .output();
+        (
+            out,
+            taps.join().unwrap_or_default(),
+            outdated.join().unwrap_or_default(),
+        )
+    });
+    let out = out.context("running `brew info --json=v2 --installed`")?;
     if !out.status.success() {
         anyhow::bail!(
             "`brew info` failed: {}",
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    let (taps, tap_remote) = read_tap_info();
+    let (taps, tap_remote) = taps_info;
     let Parsed {
         deps,
         casks,
@@ -133,14 +145,14 @@ pub fn brew_inventory() -> Result<Inventory> {
 
     // Static-analyze the install recipe of each third-party package (its brew
     // Ruby) — the untrusted install code. Core/official recipes are skipped.
-    for (name, is_cask) in &third_party {
-        for sig in analyze_install_code(name, *is_cask) {
-            signals.entry(name.clone()).or_default().push(sig);
-        }
+    // One `brew cat` per package, and each is another Ruby startup, so they go
+    // out across a pool instead of one at a time.
+    for (name, sigs) in analyze_install_code_all(&third_party) {
+        signals.entry(name).or_default().extend(sigs);
     }
 
     // Version drift is a separate `brew outdated` query, merged into the signals.
-    for (name, (installed, current)) in read_outdated() {
+    for (name, (installed, current)) in outdated {
         signals
             .entry(name)
             .or_default()
@@ -434,6 +446,44 @@ fn read_outdated() -> HashMap<String, (String, String)> {
             Some((x.name, (inst, cur)))
         })
         .collect()
+}
+
+/// [`analyze_install_code`] for every third-party package, across a pool of
+/// threads. Each call is a `brew cat` subprocess — all wait, none compute — so
+/// the pool is sized for the queue, not for the cores. Results come back keyed
+/// by package; packages with no signal are dropped.
+fn analyze_install_code_all(third_party: &[(String, bool)]) -> Vec<(String, Vec<SysSignal>)> {
+    let total = third_party.len();
+    if total == 0 {
+        return Vec::new();
+    }
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
+    let sink: std::sync::Mutex<Vec<(String, Vec<SysSignal>)>> =
+        std::sync::Mutex::new(Vec::with_capacity(total));
+    let workers = total.min(8);
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                loop {
+                    let i = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if i >= total {
+                        break;
+                    }
+                    let (name, is_cask) = &third_party[i];
+                    let sigs = analyze_install_code(name, *is_cask);
+                    if !sigs.is_empty() {
+                        sink.lock().unwrap().push((name.clone(), sigs));
+                    }
+                }
+            });
+        }
+    });
+
+    // Workers finish out of order; sort so the report reads the same every run.
+    let mut found = sink.into_inner().unwrap();
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found
 }
 
 /// Fetch a package's Homebrew recipe (its Ruby) via `brew cat` and static-analyze

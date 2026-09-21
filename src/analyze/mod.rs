@@ -13,11 +13,15 @@ pub mod sensitive_api;
 pub mod util;
 
 use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::detect::Detected;
 use crate::model::{Category, Dependency, Finding};
 use crate::ui::Ui;
+
+pub use util::Lang;
 
 /// Drop IOC findings located in test/fixture directories, unless
 /// `allow_test_files`. The test-dir check is made **relative to `base`** (the
@@ -82,20 +86,76 @@ impl<'a> Step<'a> {
     }
 }
 
+/// Read each source file **once** and run every content analyzer over it.
+///
+/// IOC, obfuscation and sensitive-API detection all want the same files, and
+/// each used to walk the tree and read every file itself: three traversals and
+/// three `read_to_string` calls for identical bytes. Measured on a 3 954-file
+/// project that was 8 walks, 36 508 directory entries visited and 15 025 file
+/// reads for 3 954 files on disk. They are pure functions of `(path, text)`, so
+/// one pass feeds all three.
+///
+/// Files are independent, so the pass runs across a small pool of scoped
+/// threads — the same cursor-and-workers shape as [`crate::resolve`]. Each
+/// worker accumulates into its own `Vec` and they are merged at the end, so
+/// there is no lock on the hot path. Worker count is capped: the work is a mix
+/// of `read` syscalls and regex scanning, and past the core count the readers
+/// just queue on the same disk.
+fn scan_content(dir: &Path, out: &mut Vec<Finding>, lang: Lang) {
+    let files: Vec<PathBuf> = util::walk_files(dir, lang.exts()).collect();
+    let total = files.len();
+    if total == 0 {
+        return;
+    }
+
+    let cursor = AtomicUsize::new(0);
+    let sink: Mutex<Vec<Finding>> = Mutex::new(Vec::new());
+    let workers = workers().min(total);
+
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            scope.spawn(|| {
+                let mut local = Vec::new();
+                loop {
+                    let i = cursor.fetch_add(1, Ordering::Relaxed);
+                    if i >= total {
+                        break;
+                    }
+                    let path = &files[i];
+                    let Ok(text) = std::fs::read_to_string(path) else {
+                        continue;
+                    };
+                    ioc::scan_text(path, &text, &mut local);
+                    obfuscation::scan_text(path, &text, &mut local, lang);
+                    sensitive_api::scan_text(path, &text, &mut local, lang);
+                }
+                sink.lock().unwrap().append(&mut local);
+            });
+        }
+    });
+
+    let mut found = sink.into_inner().unwrap();
+    // Workers finish in arbitrary order, so findings would otherwise come out
+    // shuffled run to run — a moving diff in `--json` output and in the gate's
+    // baseline. Sorting by location restores a stable order.
+    found.sort_by(|a, b| a.location.cmp(&b.location));
+    out.append(&mut found);
+}
+
+/// Threads for the content pass. `available_parallelism` fails on a container
+/// with no CPU affinity info; 4 is a safe floor there.
+fn workers() -> usize {
+    std::thread::available_parallelism().map_or(4, |n| n.get())
+}
+
 /// Run every content analyzer, for **every language**, over an arbitrary source
 /// tree — regardless of ecosystem detection. Used by `system inspect --deep` to
 /// scan cloned dependency source directly (a C/Perl/etc. upstream has no
 /// lockfile for [`plan`] to key off, but its code should still be inspected).
 pub fn scan_source_tree(root: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
-    for &lang in ioc::Lang::ALL {
-        ioc::scan_dir(root, &mut out, lang);
-    }
-    for &lang in obfuscation::Lang::ALL {
-        obfuscation::scan_dir(root, &mut out, lang);
-    }
-    for &lang in sensitive_api::Lang::ALL {
-        sensitive_api::scan_dir(root, &mut out, lang);
+    for &lang in Lang::ALL {
+        scan_content(root, &mut out, lang);
     }
     ide_hooks::scan_dir(root, &mut out);
     behavior::scan_dir(root, &mut out);
@@ -166,14 +226,8 @@ fn plan<'a>(detected: &'a [Detected], sources: &'a crate::lifecycle::Sources) ->
                 steps.push(Step::new("node · install-hooks", move |f| {
                     install_hooks::scan_node(nm, sources, f)
                 }));
-                steps.push(Step::new("node · ioc", move |f| {
-                    ioc::scan_dir(nm, f, ioc::Lang::JavaScript)
-                }));
-                steps.push(Step::new("node · obfuscation", move |f| {
-                    obfuscation::scan_dir(nm, f, obfuscation::Lang::JavaScript)
-                }));
-                steps.push(Step::new("node · sensitive-api", move |f| {
-                    sensitive_api::scan_dir(nm, f, sensitive_api::Lang::JavaScript)
+                steps.push(Step::new("node · ioc/obfuscation/sensitive-api", move |f| {
+                    scan_content(nm, f, Lang::JavaScript)
                 }));
             }
             Detected::Node { .. } => { /* no node_modules → static-on-lockfile only */ }
@@ -194,73 +248,42 @@ fn plan<'a>(detected: &'a [Detected], sources: &'a crate::lifecycle::Sources) ->
                 // (`join` here so the closure owns a `PathBuf` independent of `root`.)
                 let src = root.join("src");
                 if src.is_dir() {
-                    let ioc_src = src.clone();
-                    let obf_src = src.clone();
-                    steps.push(Step::new("rust · sensitive-api", move |f| {
-                        sensitive_api::scan_dir(&src, f, sensitive_api::Lang::Rust)
-                    }));
-                    steps.push(Step::new("rust · ioc", move |f| {
-                        ioc::scan_dir(&ioc_src, f, ioc::Lang::Rust)
-                    }));
-                    steps.push(Step::new("rust · obfuscation", move |f| {
-                        obfuscation::scan_dir(&obf_src, f, obfuscation::Lang::Rust)
-                    }));
+                    steps.push(Step::new(
+                        "rust · ioc/obfuscation/sensitive-api",
+                        move |f| scan_content(&src, f, Lang::Rust),
+                    ));
                 }
             }
             Detected::Ruby { root, .. } => {
                 // Gems aren't vendored in-repo (they live in the bundle path), so —
                 // like Rust — we scan the project's own Ruby source for sensitive
                 // primitives, IOCs, and obfuscation.
-                steps.push(Step::new("ruby · sensitive-api", move |f| {
-                    sensitive_api::scan_dir(root, f, sensitive_api::Lang::Ruby)
-                }));
-                steps.push(Step::new("ruby · ioc", move |f| {
-                    ioc::scan_dir(root, f, ioc::Lang::Ruby)
-                }));
-                steps.push(Step::new("ruby · obfuscation", move |f| {
-                    obfuscation::scan_dir(root, f, obfuscation::Lang::Ruby)
+                steps.push(Step::new("ruby · ioc/obfuscation/sensitive-api", move |f| {
+                    scan_content(root, f, Lang::Ruby)
                 }));
             }
             Detected::Php { root, .. } => {
                 // Composer vendors dependencies under vendor/ when installed, so a
                 // single root walk covers both the project's own PHP and any
                 // committed vendor tree.
-                steps.push(Step::new("php · sensitive-api", move |f| {
-                    sensitive_api::scan_dir(root, f, sensitive_api::Lang::Php)
-                }));
-                steps.push(Step::new("php · ioc", move |f| {
-                    ioc::scan_dir(root, f, ioc::Lang::Php)
-                }));
-                steps.push(Step::new("php · obfuscation", move |f| {
-                    obfuscation::scan_dir(root, f, obfuscation::Lang::Php)
+                steps.push(Step::new("php · ioc/obfuscation/sensitive-api", move |f| {
+                    scan_content(root, f, Lang::Php)
                 }));
             }
             Detected::Go { root, .. } => {
                 // Go has no install-time hooks; modules live in the module cache
                 // or a committed vendor/ tree. We scan the project's own source
                 // (and vendor/ if present) for sensitive APIs, IOCs, obfuscation.
-                steps.push(Step::new("go · sensitive-api", move |f| {
-                    sensitive_api::scan_dir(root, f, sensitive_api::Lang::Go)
-                }));
-                steps.push(Step::new("go · ioc", move |f| {
-                    ioc::scan_dir(root, f, ioc::Lang::Go)
-                }));
-                steps.push(Step::new("go · obfuscation", move |f| {
-                    obfuscation::scan_dir(root, f, obfuscation::Lang::Go)
+                steps.push(Step::new("go · ioc/obfuscation/sensitive-api", move |f| {
+                    scan_content(root, f, Lang::Go)
                 }));
             }
             Detected::Java { root, .. } => {
                 // JVM dependencies live in the Maven/Gradle caches, not in-repo.
                 // We scan the project's own JVM source for sensitive APIs, IOCs,
                 // and obfuscation. (Build-script execution is out of scope.)
-                steps.push(Step::new("java · sensitive-api", move |f| {
-                    sensitive_api::scan_dir(root, f, sensitive_api::Lang::Java)
-                }));
-                steps.push(Step::new("java · ioc", move |f| {
-                    ioc::scan_dir(root, f, ioc::Lang::Java)
-                }));
-                steps.push(Step::new("java · obfuscation", move |f| {
-                    obfuscation::scan_dir(root, f, obfuscation::Lang::Java)
+                steps.push(Step::new("java · ioc/obfuscation/sensitive-api", move |f| {
+                    scan_content(root, f, Lang::Java)
                 }));
             }
         }
@@ -275,14 +298,8 @@ fn push_python<'a>(steps: &mut Vec<Step<'a>>, dir: &'a Path) {
     steps.push(Step::new("python · install-hooks", move |f| {
         install_hooks::scan_python(dir, f)
     }));
-    steps.push(Step::new("python · ioc", move |f| {
-        ioc::scan_dir(dir, f, ioc::Lang::Python)
-    }));
-    steps.push(Step::new("python · obfuscation", move |f| {
-        obfuscation::scan_dir(dir, f, obfuscation::Lang::Python)
-    }));
-    steps.push(Step::new("python · sensitive-api", move |f| {
-        sensitive_api::scan_dir(dir, f, sensitive_api::Lang::Python)
+    steps.push(Step::new("python · ioc/obfuscation/sensitive-api", move |f| {
+        scan_content(dir, f, Lang::Python)
     }));
 }
 

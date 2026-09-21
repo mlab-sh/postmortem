@@ -10,61 +10,14 @@ use std::path::Path;
 use crate::analyze::util;
 use crate::model::{Category, Finding, Severity};
 
-#[derive(Copy, Clone)]
-pub enum Lang {
-    JavaScript,
-    Python,
-    Rust,
-    Ruby,
-    Php,
-    Go,
-    Java,
-    /// C and C++ (shared headers, overlapping surface).
-    Cpp,
-    Perl,
-    /// Shell (sh/bash/zsh) - covers OS-package install hooks.
-    Shell,
-    /// PowerShell (`ps1`/`psm1`) - Chocolatey packages ARE PowerShell scripts,
-    /// and Windows install hooks live here.
-    PowerShell,
-    Lua,
-}
+/// The shared language set — see [`util::Lang`].
+pub use super::util::Lang;
 
-impl Lang {
-    /// Every language, for a full-tree source scan (`system inspect --deep`).
-    pub const ALL: &'static [Lang] = &[
-        Lang::JavaScript,
-        Lang::Python,
-        Lang::Rust,
-        Lang::Ruby,
-        Lang::Php,
-        Lang::Go,
-        Lang::Java,
-        Lang::Cpp,
-        Lang::Perl,
-        Lang::Shell,
-        Lang::PowerShell,
-        Lang::Lua,
-    ];
-
-    fn exts(self) -> &'static [&'static str] {
-        match self {
-            Lang::JavaScript => &["js", "mjs", "cjs", "ts"],
-            Lang::Python => &["py"],
-            Lang::Rust => &["rs"],
-            Lang::Ruby => &["rb"],
-            Lang::Php => &["php"],
-            Lang::Go => &["go"],
-            Lang::Java => &["java", "kt"],
-            Lang::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
-            Lang::Perl => &["pl", "pm", "t"],
-            Lang::Shell => &["sh", "bash", "zsh", "ksh"],
-            Lang::PowerShell => &["ps1", "psm1", "psd1"],
-            Lang::Lua => &["lua"],
-        }
-    }
-    fn apis(self) -> &'static [&'static str] {
-        match self {
+/// The sensitive primitives per language. A free function rather than a method,
+/// because [`Lang`] is declared in `util` and only this analyzer needs the table.
+fn apis(lang: Lang) -> &'static [&'static str] {
+    {
+        match lang {
             Lang::JavaScript => &[
                 "child_process",
                 "require('fs')",
@@ -255,38 +208,33 @@ impl Lang {
     }
 }
 
-pub fn scan_dir(root: &Path, out: &mut Vec<Finding>, lang: Lang) {
-    for path in util::walk_files(root, lang.exts()) {
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        let mut hit: HashSet<&'static str> = HashSet::new();
-        for api in lang.apis() {
-            if text.contains(api) {
-                hit.insert(api);
-            }
+pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
+    let mut hit: HashSet<&'static str> = HashSet::new();
+    for api in apis(lang) {
+        if text.contains(api) {
+            hit.insert(api);
         }
-        if hit.is_empty() {
-            continue;
-        }
-        let dep = util::owner(&path, "<project>");
-        let mut apis: Vec<&str> = hit.into_iter().collect();
-        apis.sort();
-        let severity = if apis.len() >= 3 {
-            Severity::Medium
-        } else {
-            Severity::Low
-        };
-        out.push(Finding {
-            dependency: dep,
-            severity,
-            category: Category::SensitiveApi,
-            detail: format!("uses {}", apis.join(", ")),
-            location: Some(path.display().to_string()),
-            evidence: None,
-            enrich_url: None,
-        });
     }
+    if hit.is_empty() {
+        return;
+    }
+    let dep = util::owner(path, "<project>");
+    let mut apis: Vec<&str> = hit.into_iter().collect();
+    apis.sort();
+    let severity = if apis.len() >= 3 {
+        Severity::Medium
+    } else {
+        Severity::Low
+    };
+    out.push(Finding {
+        dependency: dep,
+        severity,
+        category: Category::SensitiveApi,
+        detail: format!("uses {}", apis.join(", ")),
+        location: Some(path.display().to_string()),
+        evidence: None,
+        enrich_url: None,
+    });
 }
 
 #[cfg(test)]
@@ -294,12 +242,8 @@ mod tests {
     use super::*;
 
     fn scan_one(file: &str, content: &str, lang: Lang) -> Vec<Finding> {
-        let dir = std::env::temp_dir().join(format!("pm-sapi-{}-{file}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(file), content).unwrap();
         let mut out = Vec::new();
-        scan_dir(&dir, &mut out, lang);
-        std::fs::remove_dir_all(&dir).ok();
+        scan_text(std::path::Path::new(file), content, &mut out, lang);
         out
     }
 

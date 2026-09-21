@@ -761,7 +761,7 @@ checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "postmortem"
-version = "2.4.0"
+version = "2.5.0"
 dependencies = [
  "anyhow",
  "chrono",

@@ -1,6 +1,67 @@
 use ignore::WalkBuilder;
 use std::path::{Path, PathBuf};
 
+/// The source languages the content analyzers cover.
+///
+/// One enum, shared by IOC / obfuscation / sensitive-API detection. It used to
+/// be declared three times, identically, which is what made three separate
+/// walks of the same tree look natural — they are now one pass (see
+/// [`super::scan_content`]).
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Lang {
+    JavaScript,
+    Python,
+    Rust,
+    Ruby,
+    Php,
+    Go,
+    Java,
+    /// C and C++ (shared headers, overlapping surface).
+    Cpp,
+    Perl,
+    /// Shell (sh/bash/zsh) - covers OS-package install hooks.
+    Shell,
+    /// PowerShell (`ps1`/`psm1`) - Chocolatey packages ARE PowerShell scripts,
+    /// and Windows install hooks live here.
+    PowerShell,
+    Lua,
+}
+
+impl Lang {
+    /// Every language, for a full-tree source scan (`system inspect --deep`).
+    pub const ALL: &'static [Lang] = &[
+        Lang::JavaScript,
+        Lang::Python,
+        Lang::Rust,
+        Lang::Ruby,
+        Lang::Php,
+        Lang::Go,
+        Lang::Java,
+        Lang::Cpp,
+        Lang::Perl,
+        Lang::Shell,
+        Lang::PowerShell,
+        Lang::Lua,
+    ];
+
+    pub fn exts(self) -> &'static [&'static str] {
+        match self {
+            Lang::JavaScript => &["js", "mjs", "cjs", "ts"],
+            Lang::Python => &["py"],
+            Lang::Rust => &["rs"],
+            Lang::Ruby => &["rb"],
+            Lang::Php => &["php"],
+            Lang::Go => &["go"],
+            Lang::Java => &["java", "kt"],
+            Lang::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
+            Lang::Perl => &["pl", "pm", "t"],
+            Lang::Shell => &["sh", "bash", "zsh", "ksh"],
+            Lang::PowerShell => &["ps1", "psm1", "psd1"],
+            Lang::Lua => &["lua"],
+        }
+    }
+}
+
 /// Cap each file we read at 1 MiB — minified bundles and source-maps blow past this
 /// and would dominate runtime without adding signal.
 pub const MAX_FILE_BYTES: u64 = 1024 * 1024;
@@ -45,6 +106,26 @@ pub fn python_pkg_from_path(path: &Path) -> Option<String> {
 /// yield files matching any extension in `exts`. File-size capped.
 pub fn walk_files(root: &Path, exts: &[&str]) -> impl Iterator<Item = PathBuf> {
     let exts: Vec<String> = exts.iter().map(|s| s.to_ascii_lowercase()).collect();
+    walk(root, move |p| {
+        if exts.is_empty() {
+            return true;
+        }
+        let ext = p
+            .extension()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        exts.iter().any(|e| e == &ext)
+    })
+}
+
+/// Walk a directory, yielding the files `keep` selects. Callers that match on
+/// an extension want [`walk_files`]; this is for the ones that match on the
+/// whole name, because their targets have no extension of their own
+/// (`Dockerfile`). Passing `|_| true` would walk the tree and pay a `metadata`
+/// syscall per file to hand every path back — which is what the Dockerfile scan
+/// used to do through `walk_files(root, &[])`.
+pub fn walk(root: &Path, keep: impl Fn(&Path) -> bool) -> impl Iterator<Item = PathBuf> {
     WalkBuilder::new(root)
         .hidden(false)
         .follow_links(false)
@@ -52,24 +133,32 @@ pub fn walk_files(root: &Path, exts: &[&str]) -> impl Iterator<Item = PathBuf> {
         .build()
         .filter_map(Result::ok)
         .filter_map(move |e| {
+            // `file_type` rides along with the readdir entry, and `keep` is a
+            // name test — both free. They gate the one syscall we still pay,
+            // the `metadata` behind the size cap.
+            let ft = e.file_type()?;
+            if ft.is_dir() {
+                return None;
+            }
             let p = e.path();
-            if !p.is_file() {
+            if !keep(p) {
                 return None;
             }
-            let md = std::fs::metadata(p).ok()?;
-            if md.len() > MAX_FILE_BYTES {
-                return None;
-            }
-            let ext = p
-                .extension()
-                .and_then(|s| s.to_str())
-                .map(|s| s.to_ascii_lowercase())
-                .unwrap_or_default();
-            if exts.is_empty() || exts.iter().any(|e| e == &ext) {
-                Some(p.to_path_buf())
+            // A symlink is resolved explicitly: `follow_links(false)` stops the
+            // walk descending through linked *directories*, but a linked file
+            // is ordinary source that must still be read — pnpm's
+            // `node_modules` is built almost entirely out of them, and skipping
+            // them would blind the scan to a whole package manager.
+            // `DirEntry::metadata` does not follow, so ask the filesystem.
+            let md = if ft.is_symlink() {
+                std::fs::metadata(p).ok()?
             } else {
-                None
+                e.metadata().ok()?
+            };
+            if !md.is_file() || md.len() > MAX_FILE_BYTES {
+                return None;
             }
+            Some(p.to_path_buf())
         })
         .collect::<Vec<_>>()
         .into_iter()
@@ -187,5 +276,34 @@ mod tests {
         }
         let e = shannon_entropy(&s);
         assert!(e > 5.9, "got {e}");
+    }
+}
+
+#[cfg(test)]
+mod walk_tests {
+    use super::*;
+
+    /// pnpm builds `node_modules` out of symlinks into a content-addressed
+    /// store. The walk does not *descend* through links (`follow_links(false)`,
+    /// so a link loop cannot hang it), but a linked file is ordinary source and
+    /// must still be read — skipping it would blind the scan to pnpm entirely.
+    #[test]
+    fn symlinked_files_are_walked() {
+        let base = std::env::temp_dir().join(format!("pm-walk-{}", std::process::id()));
+        let store = base.join("store");
+        let pkg = base.join("node_modules/p");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(store.join("real.js"), "console.log(1)").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(store.join("real.js"), pkg.join("index.js")).unwrap();
+
+        let found: Vec<PathBuf> = walk_files(&base, &["js"]).collect();
+        std::fs::remove_dir_all(&base).ok();
+
+        assert!(
+            found.iter().any(|p| p.ends_with("node_modules/p/index.js")),
+            "symlinked source must be walked, got {found:?}"
+        );
     }
 }

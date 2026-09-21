@@ -23,60 +23,8 @@ use std::sync::OnceLock;
 use crate::analyze::util;
 use crate::model::{Category, Finding, Severity};
 
-#[derive(Copy, Clone)]
-pub enum Lang {
-    JavaScript,
-    Python,
-    Rust,
-    Ruby,
-    Php,
-    Go,
-    Java,
-    /// C and C++ (shared headers, overlapping surface).
-    Cpp,
-    Perl,
-    /// Shell (sh/bash/zsh) - covers OS-package install hooks.
-    Shell,
-    /// PowerShell (`ps1`/`psm1`) - Chocolatey packages ARE PowerShell scripts,
-    /// and Windows install hooks live here.
-    PowerShell,
-    Lua,
-}
-
-impl Lang {
-    /// Every language this analyzer covers, for a full-tree scan.
-    pub const ALL: &'static [Lang] = &[
-        Lang::JavaScript,
-        Lang::Python,
-        Lang::Rust,
-        Lang::Ruby,
-        Lang::Php,
-        Lang::Go,
-        Lang::Java,
-        Lang::Cpp,
-        Lang::Perl,
-        Lang::Shell,
-        Lang::PowerShell,
-        Lang::Lua,
-    ];
-
-    fn exts(self) -> &'static [&'static str] {
-        match self {
-            Lang::JavaScript => &["js", "mjs", "cjs", "ts"],
-            Lang::Python => &["py"],
-            Lang::Rust => &["rs"],
-            Lang::Ruby => &["rb"],
-            Lang::Php => &["php"],
-            Lang::Go => &["go"],
-            Lang::Java => &["java", "kt"],
-            Lang::Cpp => &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx"],
-            Lang::Perl => &["pl", "pm", "t"],
-            Lang::Shell => &["sh", "bash", "zsh", "ksh"],
-            Lang::PowerShell => &["ps1", "psm1", "psd1"],
-            Lang::Lua => &["lua"],
-        }
-    }
-}
+/// The shared language set — see [`util::Lang`].
+pub use super::util::Lang;
 
 fn hex_run_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
@@ -97,21 +45,12 @@ fn base64_re() -> &'static Regex {
     R.get_or_init(|| Regex::new(r#"["'][A-Za-z0-9+/]{200,}={0,2}["']"#).unwrap())
 }
 
-pub fn scan_dir(root: &Path, out: &mut Vec<Finding>, lang: Lang) {
-    for path in util::walk_files(root, lang.exts()) {
-        // Skip source maps and declaration files outright
-        let s = path.to_string_lossy();
-        if s.ends_with(".min.js.map") || s.ends_with(".d.ts") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&path) else {
-            continue;
-        };
-        scan_file(&path, &text, out, lang);
+pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
+    // Source maps and declaration files carry no behaviour to obfuscate.
+    let s = path.to_string_lossy();
+    if s.ends_with(".min.js.map") || s.ends_with(".d.ts") {
+        return;
     }
-}
-
-fn scan_file(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
     if text.len() < 64 {
         return; // tiny stub files: no point
     }
@@ -399,12 +338,8 @@ mod ps_tests {
     use super::*;
 
     fn scan_one(file: &str, content: &str) -> Vec<Finding> {
-        let dir = std::env::temp_dir().join(format!("pm-obf-ps-{}-{file}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join(file), content).unwrap();
         let mut out = Vec::new();
-        scan_dir(&dir, &mut out, Lang::PowerShell);
-        std::fs::remove_dir_all(&dir).ok();
+        scan_text(std::path::Path::new(file), content, &mut out, Lang::PowerShell);
         out
     }
 

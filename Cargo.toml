@@ -1,6 +1,6 @@
 [package]
 name = "postmortem"
-version = "2.4.0"
+version = "2.5.0"
 edition = "2024"
 description = "Supply-chain scanner. Flags malicious install code, typosquats, and shady provenance across your dependencies and your OS packages."
 license = "Apache-2.0"
@@ -53,3 +53,11 @@ strip = true
 
 [dev-dependencies]
 serde_yaml = "0.9"
+
+# The release profile strips symbols, which leaves a profiler with nothing but
+# addresses. This one is the release build with the symbol table kept, so
+# `cargo build --profile profiling` + `sample` names the hot functions.
+[profile.profiling]
+inherits = "release"
+strip = false
+debug = 1
