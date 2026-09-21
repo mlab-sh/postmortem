@@ -279,7 +279,11 @@ mod tests {
     }
 }
 
-#[cfg(test)]
+/// Unix-only: creating a symlink on Windows needs `SeCreateSymbolicLinkPrivilege`,
+/// which a CI runner does not reliably have, so the fixture cannot be built
+/// there. The walk's symlink handling itself is platform-independent — the
+/// `is_symlink` branch resolves through `std::fs::metadata` on every target.
+#[cfg(all(test, unix))]
 mod walk_tests {
     use super::*;
 
@@ -295,7 +299,6 @@ mod walk_tests {
         std::fs::create_dir_all(&store).unwrap();
         std::fs::create_dir_all(&pkg).unwrap();
         std::fs::write(store.join("real.js"), "console.log(1)").unwrap();
-        #[cfg(unix)]
         std::os::unix::fs::symlink(store.join("real.js"), pkg.join("index.js")).unwrap();
 
         let found: Vec<PathBuf> = walk_files(&base, &["js"]).collect();

@@ -80,6 +80,18 @@ of three):
   across a pool. The command was 100% blocked in `poll()` — waiting on
   subprocesses, computing nothing.
 
+### Fixed (test data)
+
+- **The Node test fixtures are back.** The `patch` commit before this one
+  deleted all 28 vendored files under `tests/fixtures/*/node_modules/` — the
+  `event-stream` / `flatmap-stream` tree the malicious-Node tests scan, and the
+  licence and scope fixtures with it. Twenty integration tests had been asserting
+  against an empty directory ever since, and no CI run happened between that
+  commit and this one to catch it. Restored from the parent commit; the suite is
+  770/770 again. This is exactly the accident `.gitignore` warns about above
+  those paths: the fixtures *are* the test data, and a sweep of `node_modules`
+  takes them out.
+
 ### Note
 
 Findings from the shared content pass are sorted by location before they are
