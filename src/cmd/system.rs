@@ -193,7 +193,9 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
     if args.json || args.webhook.is_some() {
         let out = serde_json::to_string_pretty(&forest)?;
         if args.json {
-            println!("{out}");
+            // Stdout unless --output says otherwise: scripts already pipe it.
+            let path = args.output.as_deref().unwrap_or(std::path::Path::new("-"));
+            cli::OutputTarget::resolve_named(Some(path), "system", "json").write(&out)?;
         }
         crate::webhook::deliver_opt(args.webhook.as_deref(), &out)?;
     } else {

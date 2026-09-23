@@ -81,6 +81,8 @@ only, not the whole machine.
 
 ```bash
 postmortem system inspect wget          # just wget's subtree + scoring
+postmortem system inspect wget --json   # same subtree, as `system --json` JSON
+postmortem system inspect wget --json -o wget.json
 ```
 
 ### `--deep` - clone & audit the real source
@@ -99,7 +101,9 @@ postmortem system inspect wget --deep -y  # skip the confirmation
 4. `git clone`s each dependency's repo (shallow; `git` must be installed).
 5. Runs the [`scan`](Scan) analyzers + a best-effort vuln scan over the cloned
    source, capped at 60 repos.
-6. Writes a Markdown report to `./postmortem-inspect-<pkg>.md`.
+6. Writes a Markdown report to `./postmortem-inspect-<pkg>.md` — or, with
+   `--json`, `./postmortem-inspect-<pkg>.json` (every finding, uncapped).
+   `-o <FILE>` picks the path; `-o -` prints it to stdout.
 7. **Deletes** the cloned source.
 
 > Coverage: the analyzers cover a fixed set of languages (JS/TS, Python, Rust,

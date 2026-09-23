@@ -374,6 +374,10 @@ pub struct SystemArgs {
     #[arg(long)]
     pub json: bool,
 
+    /// With --json: write it to this file instead of stdout. `-` is stdout.
+    #[arg(short, long, requires = "json")]
+    pub output: Option<PathBuf>,
+
     /// POST the JSON report to this URL instead of printing it.
     ///
     /// Produces exactly what `--json` produces; pass both to print it as well.
@@ -477,6 +481,16 @@ pub struct InspectArgs {
     /// Report IOC findings inside test/fixture directories too (off by default).
     #[arg(long)]
     pub allow_test_files: bool,
+
+    /// Emit JSON instead of the terminal view (or, with --deep, instead of
+    /// the Markdown report).
+    #[arg(long)]
+    pub json: bool,
+
+    /// Write to this file. `-` is stdout. Defaults to stdout, except --deep
+    /// which writes `postmortem-inspect-<pkg>.md` (`.json` with --json).
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
 
     /// Disable the animated progress UI.
     #[arg(long)]
@@ -1201,7 +1215,13 @@ impl OutputTarget {
     pub fn write(&self, data: &str) -> Result<()> {
         match self {
             OutputTarget::Stdout => {
-                print!("{data}");
+                // A trailing newline, so the shell prompt doesn't land on the
+                // JSON's closing brace.
+                if data.ends_with('\n') {
+                    print!("{data}");
+                } else {
+                    println!("{data}");
+                }
                 Ok(())
             }
             OutputTarget::File(p) => {

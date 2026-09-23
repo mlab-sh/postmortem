@@ -70,7 +70,8 @@ manager.
 | `--vulns` | Scan installed packages for known vulnerabilities (network). |
 | `--release <id:ver>` | Override the detected OS release for the vuln lookup (e.g. `debian:12`). |
 | `--depth <N>` | Limit tree depth. |
-| `--json` | Emit the resolved forest as JSON. |
+| `--json` | Emit the resolved forest as JSON (stdout). |
+| `-o, --output <FILE>` | With `--json`, write it to this file instead (`-` = stdout). |
 | `--webhook <URL>` | POST that JSON to a collector — see [Configuration](Configuration). |
 | `--manager <name>` | Audit this manager instead of the detected default. |
 | `--deep` | Also read the machine's [network posture](Network-Posture) (Windows). |

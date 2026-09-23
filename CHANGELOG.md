@@ -5,6 +5,31 @@ All notable changes to postmortem are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1]
+
+Output parity for `system`: every command that emits JSON can now also write
+it to a file.
+
+### Added
+
+- **`system -o/--output <FILE>`** — with `--json`, writes the forest to a file
+  instead of stdout (`-` is stdout). Without `-o` it still prints to stdout, so
+  existing pipes keep working; `-o` without `--json` is refused.
+- **`system inspect --json`** — the focused subtree as JSON, same shape as
+  `system --json`. With `--deep`, a JSON report replaces the Markdown one:
+  per-dependency reputation plus, per cloned repo, its vuln count and
+  **every** finding (the Markdown caps each repo at 50).
+- **`system inspect -o/--output <FILE>`** — where the output goes. `-` is stdout.
+  Defaults: stdout for the subtree, `postmortem-inspect-<pkg>.md` (`.json` with
+  `--json`) for `--deep`.
+
+### Changed
+
+- JSON printed to stdout (`-o -`, `system --json`) now always ends with a
+  newline.
+- `system inspect --deep`'s "report written to" line moved to stderr, so
+  `-o -` yields just the report on stdout.
+
 ## [2.5.0]
 
 A performance release. No new detection surface, no flags, no output changes —

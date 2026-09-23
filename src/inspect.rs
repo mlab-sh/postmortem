@@ -55,13 +55,18 @@ pub fn run(args: &crate::cli::InspectArgs) -> Result<()> {
     }
 
     if !args.deep {
-        return render_focused(&args.package, &sub, &inv);
+        return render_focused(args, &sub, &inv);
     }
     deep(args, &sub, &ui)
 }
 
 /// Basic mode: the offline subtree with the same signals/scoring as `system`.
-fn render_focused(pkg: &str, sub: &[Dependency], inv: &system::Inventory) -> Result<()> {
+fn render_focused(
+    args: &crate::cli::InspectArgs,
+    sub: &[Dependency],
+    inv: &system::Inventory,
+) -> Result<()> {
+    let pkg = args.package.as_str();
     let eco = sub
         .first()
         .map(|d| d.ecosystem.as_str())
@@ -70,6 +75,15 @@ fn render_focused(pkg: &str, sub: &[Dependency], inv: &system::Inventory) -> Res
     let mut forest = tree::build_focused(pkg, &[eco], sub, None, pkg);
     system::annotate(&mut forest, &inv.signals);
     tree::score(&mut forest);
+    if args.json {
+        // Same shape as `system --json`, scoped to one package's subtree.
+        let out = serde_json::to_string_pretty(&forest)?;
+        let path = args.output.as_deref().unwrap_or(Path::new("-"));
+        return crate::cli::OutputTarget::resolve_named(Some(path), "inspect", "json").write(&out);
+    }
+    if args.output.is_some() {
+        bail!("--output needs --json (or --deep) outside of --deep");
+    }
     tree::render(&forest);
     Ok(())
 }
@@ -157,13 +171,29 @@ fn deep(args: &crate::cli::InspectArgs, sub: &[Dependency], ui: &ui::Ui) -> Resu
         ),
     );
 
-    // 4. Write the Markdown report, then delete the cloned source.
-    let report = render_report(&args.package, sub, &resolutions, &analyzed, truncated);
-    let path = report_path(&args.package);
-    std::fs::write(&path, report)?;
+    // 4. Write the report, then delete the cloned source.
     let _ = std::fs::remove_dir_all(&work); // sources were transient
+    let (report, ext) = if args.json {
+        let json = report_json(&args.package, sub, &resolutions, &analyzed, truncated);
+        (serde_json::to_string_pretty(&json)?, "json")
+    } else {
+        (
+            render_report(&args.package, sub, &resolutions, &analyzed, truncated),
+            "md",
+        )
+    };
+    match args.output.as_deref() {
+        Some(p) if p.as_os_str() == "-" => crate::cli::OutputTarget::Stdout.write(&report)?,
+        Some(p) => write_report(p, &report)?,
+        None => write_report(&report_path(&args.package, ext), &report)?,
+    }
+    Ok(())
+}
 
-    println!(
+fn write_report(path: &Path, report: &str) -> Result<()> {
+    std::fs::write(path, report)?;
+    // stderr: the report is the output, this line is just where it went.
+    eprintln!(
         "\n{} deep report written to {}",
         "✓".green(),
         path.display().to_string().bold()
@@ -363,6 +393,52 @@ fn render_report(
     md
 }
 
+/// The `--deep --json` report: the same content as the Markdown one, with
+/// every finding (the Markdown caps each repo at 50).
+fn report_json(
+    pkg: &str,
+    sub: &[Dependency],
+    resolutions: &HashMap<DepRef, Resolution>,
+    audits: &[RepoAudit],
+    truncated: usize,
+) -> serde_json::Value {
+    let mut rows: Vec<&Dependency> = sub.iter().collect();
+    rows.sort_by(|a, b| a.name.cmp(&b.name));
+    let reputation: Vec<_> = rows
+        .into_iter()
+        .filter_map(|d| {
+            let r = resolutions.get(&(d.name.clone(), d.version.clone()))?;
+            Some(serde_json::json!({
+                "name": d.name,
+                "version": d.version,
+                "repo": r.repo.as_ref().map(|x| x.slug()),
+                "stars": r.stats.as_ref().map(|s| s.stars),
+                "risk": r.risk,
+                "signals": r.signals,
+            }))
+        })
+        .collect();
+    let repos: Vec<_> = audits
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "package": a.dep,
+                "repo": a.slug,
+                "cloned": a.cloned,
+                "vulns": a.vulns,
+                "findings": a.findings,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "package": pkg,
+        "dependencies": sub.len(),
+        "repos_not_cloned_cap": truncated,
+        "reputation": reputation,
+        "repos": repos,
+    })
+}
+
 fn sev_label(s: Severity) -> &'static str {
     match s {
         Severity::Critical => "CRIT",
@@ -456,8 +532,8 @@ fn workspace(pkg: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
-fn report_path(pkg: &str) -> PathBuf {
-    PathBuf::from(format!("postmortem-inspect-{}.md", sanitize(pkg)))
+fn report_path(pkg: &str, ext: &str) -> PathBuf {
+    PathBuf::from(format!("postmortem-inspect-{}.{ext}", sanitize(pkg)))
 }
 
 fn git_available() -> bool {
@@ -516,6 +592,42 @@ mod tests {
                 .map(|p| (p.to_string(), "1.0".to_string()))
                 .collect(),
         }
+    }
+
+    #[test]
+    fn deep_json_keeps_every_finding_and_failed_clones() {
+        let finding = crate::model::Finding {
+            dependency: "a".into(),
+            severity: Severity::Low,
+            category: crate::model::Category::Ioc,
+            detail: "d".into(),
+            location: None,
+            evidence: None,
+            enrich_url: None,
+        };
+        let audits = vec![
+            RepoAudit {
+                dep: "a".into(),
+                slug: "o/a".into(),
+                cloned: true,
+                findings: vec![finding; 60],
+                vulns: 2,
+            },
+            RepoAudit {
+                dep: "b".into(),
+                slug: "o/b".into(),
+                cloned: false,
+                findings: vec![],
+                vulns: 0,
+            },
+        ];
+        let j = report_json("a", &[dep("a", &[])], &HashMap::new(), &audits, 3);
+        assert_eq!(j["package"], "a");
+        assert_eq!(j["repos_not_cloned_cap"], 3);
+        // The Markdown caps at 50 per repo; the JSON must not.
+        assert_eq!(j["repos"][0]["findings"].as_array().unwrap().len(), 60);
+        assert_eq!(j["repos"][0]["vulns"], 2);
+        assert_eq!(j["repos"][1]["cloned"], false);
     }
 
     #[test]
