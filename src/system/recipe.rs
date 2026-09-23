@@ -66,7 +66,15 @@ fn stage_recipe(name: &str, code: &str, ext: &str) -> Option<std::path::PathBuf>
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect();
-    let dir = std::env::temp_dir().join(format!("postmortem-recipe-{}-{safe}", std::process::id()));
+    // Unique per call, not per name: two packages staged concurrently under
+    // one name (brew's parallel reads, parallel tests) would otherwise share the
+    // directory, and the first to finish deletes it under the other's scan.
+    static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "postmortem-recipe-{}-{seq}-{safe}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).ok()?;
     std::fs::write(dir.join(format!("recipe.{ext}")), code).ok()?;
     Some(dir)

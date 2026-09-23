@@ -239,12 +239,14 @@ fn audit_clone(
 ) -> RepoAudit {
     // Rewrite finding locations relative to the clone (the absolute temp path is
     // meaningless once the workspace is deleted).
-    let prefix = format!("{}/", dir.display());
+    // One separator on both sides, or nothing is stripped on Windows.
+    let prefix = format!("{}/", dir.display()).replace('\\', "/");
     let findings: Vec<crate::model::Finding> = analyze::scan_source_tree(dir)
         .into_iter()
         .map(|mut f| {
             if let Some(loc) = &f.location {
-                f.location = Some(loc.strip_prefix(&prefix).unwrap_or(loc).to_string());
+                let loc = loc.replace('\\', "/");
+                f.location = Some(loc.strip_prefix(&prefix).unwrap_or(&loc).to_string());
             }
             f
         })

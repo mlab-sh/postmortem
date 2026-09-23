@@ -409,15 +409,17 @@ fn compare(published: &Path, source: &Path, delta: &Path, r: &mut PkgReport) {
             .iter()
             .map(finding_key)
             .collect();
-        let prefix = format!("{}/", delta.display());
+        // One separator on both sides: on Windows the analyzers report
+        // `C:\…\delta\lib\x.js`, which a `…\delta/` prefix never matches.
+        let prefix = format!("{}/", delta.display()).replace('\\', "/");
         r.findings = analyze::scan_source_tree(delta)
             .into_iter()
             .filter(|f| !explained.contains(&finding_key(f)))
             .map(|mut f| {
                 f.dependency = r.name.clone();
                 if let Some(loc) = &f.location {
-                    let rel = loc.strip_prefix(&prefix).unwrap_or(loc);
-                    f.location = Some(rel.replace('\\', "/"));
+                    let loc = loc.replace('\\', "/");
+                    f.location = Some(loc.strip_prefix(&prefix).unwrap_or(&loc).to_string());
                 }
                 f
             })
@@ -728,13 +730,12 @@ mod tests {
     }
 
     fn run(published: &[(&str, &str)], source: &[(&str, &str)]) -> PkgReport {
+        // A counter, not a timestamp: parallel tests can share a clock tick.
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
         let base = std::env::temp_dir().join(format!(
             "pm-ghost-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
+            SEQ.fetch_add(1, Ordering::Relaxed)
         ));
         tree(&base.join("pub"), published);
         tree(&base.join("src"), source);
