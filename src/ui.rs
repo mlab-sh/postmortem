@@ -31,6 +31,9 @@ const TICK_INTERVAL: Duration = Duration::from_millis(80);
 
 pub struct Ui {
     enabled: bool,
+    /// Drop phase notes too — for callers running many projects at once that
+    /// collect what matters themselves (`hunt`).
+    silent: bool,
 }
 
 impl Ui {
@@ -41,7 +44,18 @@ impl Ui {
             && std::io::stderr().is_terminal()
             && std::env::var_os("NO_COLOR").is_none()
             && std::env::var_os("CI").is_none();
-        Ui { enabled }
+        Ui {
+            enabled,
+            silent: false,
+        }
+    }
+
+    /// No animation and no notes.
+    pub fn silent() -> Self {
+        Ui {
+            enabled: false,
+            silent: true,
+        }
     }
 
     fn spawn(&self, pb: ProgressBar) -> ProgressBar {
@@ -68,6 +82,7 @@ impl Ui {
         Phase {
             pb: self.spawn(pb),
             enabled: self.enabled,
+            silent: self.silent,
             start: Instant::now(),
         }
     }
@@ -117,6 +132,7 @@ impl Ui {
 pub struct Phase {
     pb: ProgressBar,
     enabled: bool,
+    silent: bool,
     start: Instant,
 }
 
@@ -128,7 +144,9 @@ impl Phase {
 
     /// Print a warning line above this live spinner without corrupting it.
     pub fn note(&self, msg: impl AsRef<str>) {
-        note_over(&self.pb, self.enabled, msg.as_ref());
+        if !self.silent {
+            note_over(&self.pb, self.enabled, msg.as_ref());
+        }
     }
 
     /// Clear the spinner without emitting a `✓` summary — for phases that end in

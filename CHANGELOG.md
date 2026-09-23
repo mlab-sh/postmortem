@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`postmortem hunt`** — incident response for the day an attack drops. Give
+  it the compromised packages (`name@version`, `@scope/name@version`, `name`
+  for any version, or `--feed` a list in `name@version` / `name,version` form)
+  and one or more directories (`--in`, default `.`); it answers, per target:
+  which projects pin it **now**, whether it is **installed** (npm:
+  `node_modules`), and — from each pinning file's git history — **every window
+  it was pinned**, from the commit that brought it in (author, subject, date)
+  to the one that removed it. A package removed last week is still an
+  exposure: its install scripts ran on every machine that installed it in
+  between. Exits 1 on any exposure, past or present.
+
+  Built to be fast across a whole disk, in three parallel passes:
+  - **discovery** with `ignore`'s parallel walker, pruning dependency, build
+    and cache directories (`node_modules`, `target`, `vendor`, `dist`, dot-dirs,
+    `~/Library`, …) *before* descending: 124 projects across a whole home
+    directory (4 878 directories visited) in 132 ms;
+  - **current state** with the same parsers as every other command, one
+    project per core;
+  - **history** with one `git log --first-parent` plus one `git cat-file
+    --batch` stream per pinning file, scanned by a single regex over every
+    target name — a 500-line feed costs one pass per revision, like one target.
+  Measured: 2 targets over the whole home directory, 116 repositories replayed,
+  1.45 s end to end.
+
+  All seven ecosystems (npm/pnpm/yarn, Python, Rust, Ruby, PHP, Go, Java).
+  `--no-history` skips the replay; `--json` / `--webhook` / `-o` as everywhere.
+
 - **`postmortem ghost`** — does what npm serves match the source it claims?
   The attacks that hurt most put their payload only in the published tarball
   (event-stream's `flatmap-stream`, ua-parser-js, the xz release tarball): the
@@ -52,6 +79,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   member names; `git` never prompts for credentials and never fetches LFS
   objects. The scratch workspace under `~/.postmortem/ghost/` is deleted as it
   goes.
+
+### Changed
+
+- The "package.json found but no supported lockfile" warning names the
+  directory it is about.
 
 ## [2.5.1]
 

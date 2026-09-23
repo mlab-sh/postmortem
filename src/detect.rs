@@ -97,7 +97,10 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
     if root.join("package.json").is_file() {
         match first_existing(root, NODE_LOCKS) {
             Some(lock) => out.push(node_at(root, lock)),
-            None => eprintln!("warn: package.json found but no supported lockfile"),
+            None => eprintln!(
+                "warn: {}: package.json found but no supported lockfile",
+                root.display()
+            ),
         }
     }
 

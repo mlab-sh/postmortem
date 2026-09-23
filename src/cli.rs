@@ -97,6 +97,11 @@ pub enum Command {
     /// explain. Online: fetches the tarball and clones the repo at the release.
     Ghost(GhostArgs),
 
+    /// Incident response: find every project under a directory that pins a
+    /// compromised package now, or did at any point in its git history — with
+    /// the window of exposure and the commit that brought it in.
+    Hunt(HuntArgs),
+
     /// Lay a package's release history out in order: when it changed hands,
     /// when an install script appeared, when its repository moved.
     Timeline(TimelineArgs),
@@ -235,6 +240,47 @@ pub struct GhostArgs {
     /// Omit a dependency set. Repeatable — see the dependency-scopes docs.
     #[arg(long, value_enum)]
     pub omit: Vec<OmitSet>,
+
+    /// Emit the report as JSON instead of the terminal view.
+    #[arg(long)]
+    pub json: bool,
+
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
+
+    /// Write output to file. Pass `-` to force stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Disable the animated progress UI.
+    #[arg(long)]
+    pub no_progress: bool,
+}
+
+/// Arguments for `postmortem hunt <target>...`.
+#[derive(Args, Debug)]
+pub struct HuntArgs {
+    /// What to hunt: `name`, `name@1.2.3` or `@scope/name@1.2.3`. `name` alone
+    /// (or `name@*`) matches any version.
+    pub targets: Vec<String>,
+
+    /// Read more targets from a file, one per line (`name@version`,
+    /// `name,version` or `name version`; `#` starts a comment).
+    #[arg(long, value_name = "FILE")]
+    pub feed: Option<PathBuf>,
+
+    /// Where to look. Repeatable. Every project below is found, in parallel.
+    #[arg(long = "in", value_name = "DIR", default_value = ".")]
+    pub within: Vec<PathBuf>,
+
+    /// Only check what is pinned now; skip replaying git history.
+    #[arg(long)]
+    pub no_history: bool,
 
     /// Emit the report as JSON instead of the terminal view.
     #[arg(long)]

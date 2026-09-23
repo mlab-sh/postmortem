@@ -163,6 +163,7 @@ cd postmortem && cargo build --release
 | [`scripts`](https://github.com/mlab-sh/postmortem/wiki/Install-Time) | Which dependencies execute code at install time, whether each is approved, and what its script does. |
 | [`hook`](https://github.com/mlab-sh/postmortem/wiki/Install-Time) | Git pre-commit hook for staged dependency changes. |
 | [`timeline`](https://github.com/mlab-sh/postmortem/wiki/Timeline) | Lay a package's release history out in order: handovers, install scripts, repository moves. |
+| [`hunt`](https://github.com/mlab-sh/postmortem/wiki/Hunt) | An attack just dropped: which of your projects pinned it — now or at any point in git history — and from when to when. |
 | [`ghost`](https://github.com/mlab-sh/postmortem/wiki/Ghost) | Diff each npm dependency's published tarball against the commit it was published from — code nobody could have reviewed. |
 | [`ci`](https://github.com/mlab-sh/postmortem/wiki/CI-Templates) | Print a ready-to-commit pipeline for GitLab CI, Azure DevOps, Jenkins or GitHub Actions. |
 | [`allowlist`](https://github.com/mlab-sh/postmortem/wiki/Allowlist) | Every suppression the project declares, with how long each has left to run. |

@@ -12,6 +12,7 @@ pub mod fix;
 pub mod gate_policy;
 pub mod ghost;
 pub mod hook;
+pub mod hunt;
 pub mod licenses;
 pub mod overview;
 pub mod sbom;

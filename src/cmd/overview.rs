@@ -69,6 +69,10 @@ pub(crate) fn print_overview() {
     );
     cmd("scripts", "which dependencies execute code at install time");
     cmd(
+        "hunt",
+        "an attack dropped: which projects pinned it, and from when to when",
+    );
+    cmd(
         "ghost",
         "code in the npm tarball that its source repo never had",
     );
@@ -120,6 +124,7 @@ pub(crate) fn print_overview() {
     ex("postmortem fix .", "# how to clear the CVEs");
     ex("postmortem scripts .", "# what runs on install");
     ex("postmortem ghost . --all", "# published ≠ reviewed?");
+    ex("postmortem hunt keyv@5.5.1 --in ~/code", "# were we exposed, and when");
     ex(
         "postmortem diff <github-pr-url> --online",
         "# what does this PR pull in",

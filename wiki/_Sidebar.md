@@ -17,6 +17,7 @@
 - [watch](Install-Time)
 - [timeline](Timeline)
 - [ghost](Ghost)
+- [hunt](Hunt)
 - [allowlist](Allowlist)
 - [cache](Cache)
 
