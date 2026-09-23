@@ -68,6 +68,10 @@ pub(crate) fn print_overview() {
         ),
     );
     cmd("scripts", "which dependencies execute code at install time");
+    cmd(
+        "ghost",
+        "code in the npm tarball that its source repo never had",
+    );
 
     println!("\n{}", "DECIDE AND ACT".bold());
     cmd("fix", "the minimum upgrade that clears the known CVEs");
@@ -115,6 +119,7 @@ pub(crate) fn print_overview() {
     );
     ex("postmortem fix .", "# how to clear the CVEs");
     ex("postmortem scripts .", "# what runs on install");
+    ex("postmortem ghost . --all", "# published ≠ reviewed?");
     ex(
         "postmortem diff <github-pr-url> --online",
         "# what does this PR pull in",

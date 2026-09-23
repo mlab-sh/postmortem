@@ -16,6 +16,7 @@
 - [hook](Install-Time)
 - [watch](Install-Time)
 - [timeline](Timeline)
+- [ghost](Ghost)
 - [allowlist](Allowlist)
 - [cache](Cache)
 

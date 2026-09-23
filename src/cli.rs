@@ -92,6 +92,11 @@ pub enum Command {
     /// each is approved, and what its script actually does.
     Scripts(ScriptsArgs),
 
+    /// Compare each npm dependency's published tarball with the source it was
+    /// published from, and flag code or install hooks the source does not
+    /// explain. Online: fetches the tarball and clones the repo at the release.
+    Ghost(GhostArgs),
+
     /// Lay a package's release history out in order: when it changed hands,
     /// when an install script appeared, when its repository moved.
     Timeline(TimelineArgs),
@@ -206,6 +211,46 @@ pub struct ScriptsArgs {
     /// Off by default: an inventory is a report until you ask it to gate.
     #[arg(long)]
     pub fail_on_pending: bool,
+
+    /// Disable the animated progress UI.
+    #[arg(long)]
+    pub no_progress: bool,
+}
+
+/// Arguments for `postmortem ghost <path>`.
+#[derive(Args, Debug)]
+pub struct GhostArgs {
+    /// Project directory whose npm dependencies to check.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+
+    /// Check transitive dependencies too, not only the direct ones.
+    #[arg(long)]
+    pub all: bool,
+
+    /// Check only this package (direct or transitive). Repeatable.
+    #[arg(long, value_name = "NAME")]
+    pub package: Vec<String>,
+
+    /// Omit a dependency set. Repeatable — see the dependency-scopes docs.
+    #[arg(long, value_enum)]
+    pub omit: Vec<OmitSet>,
+
+    /// Emit the report as JSON instead of the terminal view.
+    #[arg(long)]
+    pub json: bool,
+
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    /// A delivery that fails is an error, not a warning — a webhook nobody
+    /// notices has stopped arriving is worse than one that never worked.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
+
+    /// Write output to file. Pass `-` to force stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
 
     /// Disable the animated progress UI.
     #[arg(long)]

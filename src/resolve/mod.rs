@@ -52,6 +52,11 @@ use history::{fresh_age_hours, maintainer_names, newborn_age_days};
 use registry::{raw_licenses_from, registry_url, registry_url_fallback, repo_candidates};
 use repo::{parse_repo, urlencode};
 
+/// The source repo an npm version manifest points at, on a known host.
+pub fn npm_manifest_repo(manifest: &serde_json::Value) -> Option<RepoRef> {
+    repo::extract_repo_url(manifest).and_then(|u| parse_repo(&u))
+}
+
 /// Per-host API tokens. All optional — public repos resolve anonymously, a token
 /// only raises the rate limit (and GitHub's anonymous 60/h is the tight one).
 #[derive(Debug, Clone, Default)]

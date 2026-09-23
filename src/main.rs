@@ -27,6 +27,7 @@ mod image;
 mod human;
 mod inspect;
 mod license;
+mod ghost;
 mod lifecycle;
 mod model;
 mod osv;
@@ -64,6 +65,7 @@ fn main() -> Result<()> {
         cli::Command::Licenses(args) => cmd::licenses::run_licenses(args),
         cli::Command::Fix(args) => cmd::fix::run_fix(args),
         cli::Command::Scripts(args) => cmd::scripts::run_scripts(args),
+        cli::Command::Ghost(args) => cmd::ghost::run_ghost(args),
         cli::Command::Hook(args) => cmd::hook::run_hook(args),
         cli::Command::Watch(args) => cmd::watch::run_watch(args),
         cli::Command::Timeline(args) => cmd::timeline::run_timeline(args),

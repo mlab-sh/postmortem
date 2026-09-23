@@ -31,6 +31,7 @@ locally.
 | [`hook`](Install-Time) | The git pre-commit hook that scans staged dependency changes. |
 | [`watch`](Install-Time) | Re-scan whenever a lockfile changes. |
 | [`timeline`](Timeline) | Lay a package's release history out in order: handovers, install scripts, repository moves. |
+| [`ghost`](Ghost) | Diff each npm dependency's published tarball against the commit it was published from, and flag code or install hooks the source never had. |
 | [`ci`](CI-Templates) | Print a ready-to-commit pipeline for GitLab CI, Azure DevOps, Jenkins or GitHub Actions. |
 | [`allowlist`](Allowlist) | Every suppression the project declares, with how long each has left to run. |
 | [`cache`](Cache) | Inspect (`info`, `path`) and clear (`prune`) the on-disk cache used by the online paths. |

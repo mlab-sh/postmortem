@@ -5,6 +5,54 @@ All notable changes to postmortem are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0]
+
+### Added
+
+- **`postmortem ghost`** — does what npm serves match the source it claims?
+  The attacks that hurt most put their payload only in the published tarball
+  (event-stream's `flatmap-stream`, ua-parser-js, the xz release tarball): the
+  repository everyone reviewed was clean, the artifact everyone installed was
+  not, and every analyzer that reads the repo reads the clean half.
+
+  For each npm dependency (direct by default, `--all` for transitive,
+  `--package` for one), `ghost` fetches the registry tarball and checks out the
+  repository at the commit npm recorded (`gitHead`) — or, without one, the
+  release tag (`v1.2.3`, `1.2.3`, `name@1.2.3`, …). A monorepo is followed to
+  the package's own directory. Every published file is compared with its
+  source, and the analyzers run on **only the difference**; a finding whose
+  evidence the source already contains (a URL a bundle copied from `src/`) is
+  dropped. Each package gets one verdict:
+
+  | verdict | meaning |
+  |---|---|
+  | `ghost` | the tarball carries code, or an install hook, the source does not explain — exits 1 |
+  | `unverifiable` | no repo, private repo, or no commit/tag for the version — never counted as clean |
+  | `rebuilt` | files differ (a build step ran), nothing in the difference is unexplained |
+  | `identical` | every published file is byte-identical to the source |
+
+  Build output is judged differently from hand-written code, because bundles
+  legitimately inline code the repo never contains: in a package with a build
+  step (a `build`/`prepack`/… script, a `Makefile`, a bundler or `tsconfig`
+  config — at the package or the repo root) only high-severity findings count,
+  and obfuscation only in the event-stream shape, code that *executes* a
+  decoded blob. Vendored code (`compiled/`, `vendor/`) needs critical. Tuned on
+  real projects: prettier's parsers (decode tables, no exec), next's
+  `globalThis` polyfill (exec, no blob) and esbuild's generated `lib/main.js`
+  (built from the root `Makefile`) are all `rebuilt`, while the event-stream
+  payload still reads `ghost` inside a built package.
+
+  A `gitHead` that the repository does not have is reported as a note: the
+  version was published from a commit that was never pushed, or was
+  force-pushed away.
+
+  `--json` / `--webhook` / `-o` like every other command. Needs `git` and
+  `tar` (both shipped with macOS, Linux and Windows 10+). The tarball is
+  capped at 50 MiB and unpacked by `tar`, which refuses `..` and absolute
+  member names; `git` never prompts for credentials and never fetches LFS
+  objects. The scratch workspace under `~/.postmortem/ghost/` is deleted as it
+  goes.
+
 ## [2.5.1]
 
 Output parity for `system`: every command that emits JSON can now also write

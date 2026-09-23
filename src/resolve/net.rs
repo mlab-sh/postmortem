@@ -35,6 +35,29 @@ impl Resolver {
         }
     }
 
+    /// GET raw bytes (a registry tarball), refusing anything over `max` — the
+    /// body is attacker-controlled. `Ok(None)` on 404.
+    pub fn get_bytes(&self, url: &str, max: u64) -> Result<Option<Vec<u8>>> {
+        use std::io::Read;
+        let req = self.agents.for_url(url).get(url).set("User-Agent", USER_AGENT);
+        let resp = match req.call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(404, _)) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let mut buf = Vec::new();
+        resp.into_reader().take(max + 1).read_to_end(&mut buf)?;
+        if buf.len() as u64 > max {
+            anyhow::bail!("{url} is over {} MiB", max >> 20);
+        }
+        Ok(Some(buf))
+    }
+
+    /// The npm version manifest for `name@version` — immutable once published.
+    pub fn npm_manifest(&self, name: &str, version: &str) -> Result<Option<serde_json::Value>> {
+        self.get_json(&format!("{}/{name}/{version}", self.endpoints.npm()), &[])
+    }
+
     /// Repo reputation stats. Cached per `host/owner/repo` (host-qualified so an
     /// `owner/repo` on GitHub never collides with the same slug on GitLab).
     /// Dispatches to the host's API; an unrecognized host has no stats.

@@ -10,6 +10,7 @@ pub mod common;
 pub mod diff;
 pub mod fix;
 pub mod gate_policy;
+pub mod ghost;
 pub mod hook;
 pub mod licenses;
 pub mod overview;
