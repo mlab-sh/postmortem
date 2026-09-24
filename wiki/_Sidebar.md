@@ -64,3 +64,4 @@
 - [Binary trust](Binary-Trust)
 - [CI gate](CI-Gate)
 - [Configuration](Configuration)
+- [Performance](Performance)

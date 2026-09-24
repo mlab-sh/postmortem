@@ -4,7 +4,9 @@
 //! resolution is cached **forever**. GitHub repo stats do drift over time, but
 //! we still cache them (keyed by repo) and rely on the `postmortem cache`
 //! command to inspect/clear entries rather than a TTL — matching the "keep it
-//! for a given version for life" model.
+//! for a given version for life" model. The exceptions are *negative or
+//! drifting* answers (a repo that 404s, an advisory lookup that came back
+//! clean), read through [`Cache::get_fresh`] with an expiry.
 //!
 //! ## Why entries are versioned
 //!
@@ -27,6 +29,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
@@ -50,14 +53,13 @@ pub struct Cache {
 }
 
 /// A cached record on disk: the payload plus the version that decides whether it
-/// is still trustworthy.
-///
-/// The stored `fetched_at` is deliberately absent here — serde ignores unknown
-/// fields, and the read path has no use for it. It is read back through
-/// [`Header`] instead, by the passes that report on entries rather than use them.
+/// is still trustworthy, and when it was written — which only the expiring
+/// read ([`Cache::get_fresh`]) looks at.
 #[derive(Deserialize)]
 struct Envelope<T> {
     v: u32,
+    #[serde(default)]
+    fetched_at: u64,
     data: T,
 }
 
@@ -209,6 +211,28 @@ impl Cache {
         }
     }
 
+    /// [`Cache::get`] for an answer that can go out of date: an entry written
+    /// more than `max_age` ago is a miss. It stays on disk — the refetch's `put`
+    /// replaces it — so a failed refetch loses nothing.
+    pub fn get_fresh<T: DeserializeOwned>(
+        &self,
+        namespace: &str,
+        key: &str,
+        max_age: Duration,
+    ) -> Option<T> {
+        let p = self.path(namespace, key)?;
+        let raw = std::fs::read_to_string(&p).ok()?;
+        match serde_json::from_str::<Envelope<T>>(&raw) {
+            Ok(e) if e.v == FORMAT_VERSION => {
+                (now_secs().saturating_sub(e.fetched_at) <= max_age.as_secs()).then_some(e.data)
+            }
+            _ => {
+                let _ = std::fs::remove_file(&p);
+                None
+            }
+        }
+    }
+
     pub fn put<T: Serialize>(&self, namespace: &str, key: &str, value: &T) {
         let Some(p) = self.path(namespace, key) else {
             return;
@@ -221,8 +245,19 @@ impl Cache {
             fetched_at: now_secs(),
             data: value,
         };
+        // Write aside, then rename over the entry: `rename` is atomic, so a
+        // concurrent `get` sees the old entry or the new one, never a truncated
+        // file — which it would take for a stale record and delete.
         if let Ok(json) = serde_json::to_string(&env) {
-            let _ = std::fs::write(p, json);
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            let tmp = p.with_extension(format!(
+                "tmp{}-{}",
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::Relaxed)
+            ));
+            if std::fs::write(&tmp, json).is_ok() && std::fs::rename(&tmp, &p).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
         }
     }
 
@@ -584,6 +619,37 @@ mod tests {
             cache.get::<Blob>("npm", "keep@1.0.0").is_some(),
             "the current entry survives"
         );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn get_fresh_expires_by_fetched_at() {
+        let (cache, dir) = tmp_cache("fresh");
+        let p = dir.join("repo-404");
+        std::fs::create_dir_all(&p).unwrap();
+        let write = |key: &str, at: u64| {
+            std::fs::write(
+                p.join(format!("{key}.json")),
+                format!(r#"{{"v":{FORMAT_VERSION},"fetched_at":{at},"data":true}}"#),
+            )
+            .unwrap();
+        };
+        let day = Duration::from_secs(86_400);
+        write("new", now_secs() - 3_600);
+        write("old", now_secs() - 2 * 86_400);
+        assert_eq!(cache.get_fresh::<bool>("repo-404", "new", day), Some(true));
+        assert_eq!(
+            cache.get_fresh::<bool>("repo-404", "old", day),
+            None,
+            "expired"
+        );
+        assert!(
+            p.join("old.json").exists(),
+            "left for the refetch to replace"
+        );
+        cache.put("repo-404", "put", &true);
+        assert_eq!(cache.get_fresh::<bool>("repo-404", "put", day), Some(true));
 
         let _ = std::fs::remove_dir_all(dir);
     }

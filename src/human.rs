@@ -66,17 +66,25 @@ impl Graph {
         if self.total == 0 {
             return (0, 0.0);
         }
-        let index = dependents_index(deps);
-        let mut union: HashSet<DepRef> = HashSet::new();
+        let index = Dependents::new(deps);
+        let mut mark = vec![0u32; index.up.len()];
+        let mut count = 0usize;
+        // A key the graph does not know has no dependents: it counts only itself.
+        let mut strays: HashSet<DepRef> = HashSet::new();
         for m in self.maintainers.iter().take(n) {
             for pkg in &m.owns {
                 if let Some(key) = parse_key(pkg) {
-                    collect_dependents(&index, &key, &mut union);
-                    union.insert(key);
+                    match index.ids.get(&(key.0.as_str(), key.1.as_str())) {
+                        Some(&id) => count += index.mark_up(id, &mut mark, 1),
+                        None => {
+                            strays.insert(key);
+                        }
+                    }
                 }
             }
         }
-        (union.len(), union.len() as f64 / self.total as f64)
+        let union = count + strays.len();
+        (union, union as f64 / self.total as f64)
     }
 
     /// Fraction of the tree with no known maintainer.
@@ -91,49 +99,89 @@ fn parse_key(s: &str) -> Option<DepRef> {
     (!n.is_empty()).then(|| (n.to_string(), v.to_string()))
 }
 
-/// package → the packages that depend on it.
+/// package → the packages that depend on it, over dense ids.
 ///
 /// `Dependency::parents` already *is* that relation — a parent is something that
 /// requires this package — so this is a direct index of it, not an inversion.
 /// Getting the direction wrong here would measure what a package depends on
 /// instead of what depends on it, and report the reach of a leaf as the reach of
 /// the root.
-fn dependents_index(deps: &[Dependency]) -> HashMap<DepRef, Vec<DepRef>> {
-    deps.iter()
-        .map(|d| ((d.name.clone(), d.version.clone()), d.parents.clone()))
-        .collect()
+///
+/// Ids rather than `(String, String)` keys: the reach walk runs once per
+/// maintainer, O(M·(V+E)), and with owned keys every step cloned two strings
+/// into a fresh `HashSet`. A parent that is not itself a node still gets an id —
+/// it is part of the reach — just no entry of its own above it.
+struct Dependents<'a> {
+    ids: HashMap<(&'a str, &'a str), u32>,
+    up: Vec<Vec<u32>>,
 }
 
-/// Everything that (transitively) depends on `key`, added to `out`.
-///
-/// Walks the direction a compromise propagates: a hostile package poisons every
-/// package that requires it, and so on up to the roots.
-fn collect_dependents(
-    dependents: &HashMap<DepRef, Vec<DepRef>>,
-    key: &DepRef,
-    out: &mut HashSet<DepRef>,
-) {
-    let mut stack = vec![key.clone()];
-    while let Some(k) = stack.pop() {
-        for up in dependents.get(&k).into_iter().flatten() {
-            if out.insert(up.clone()) {
-                stack.push(up.clone());
+impl<'a> Dependents<'a> {
+    fn new(deps: &'a [Dependency]) -> Self {
+        let mut g = Dependents {
+            ids: HashMap::with_capacity(deps.len()),
+            up: Vec::with_capacity(deps.len()),
+        };
+        for d in deps {
+            let me = g.intern(&d.name, &d.version);
+            let ups = d.parents.iter().map(|(n, v)| g.intern(n, v)).collect();
+            // A duplicate key keeps the last entry's parents, as the name-keyed
+            // map this replaces did.
+            g.up[me as usize] = ups;
+        }
+        g
+    }
+
+    fn intern(&mut self, name: &'a str, version: &'a str) -> u32 {
+        let next = self.up.len() as u32;
+        let id = *self.ids.entry((name, version)).or_insert(next);
+        if id == next {
+            self.up.push(Vec::new());
+        }
+        id
+    }
+
+    /// Stamp `start` and everything that (transitively) depends on it with
+    /// `stamp`, returning how many were not stamped before. Walks the direction
+    /// a compromise propagates: a hostile package poisons every package that
+    /// requires it, and so on up to the roots. `mark` is reused across walks —
+    /// a new stamp clears it in O(1).
+    fn mark_up(&self, start: u32, mark: &mut [u32], stamp: u32) -> usize {
+        if mark[start as usize] == stamp {
+            return 0;
+        }
+        mark[start as usize] = stamp;
+        let mut n = 1;
+        let mut stack = vec![start];
+        while let Some(k) = stack.pop() {
+            for &up in &self.up[k as usize] {
+                if mark[up as usize] != stamp {
+                    mark[up as usize] = stamp;
+                    n += 1;
+                    stack.push(up);
+                }
             }
         }
+        n
     }
 }
 
 /// Build the maintainer graph.
 pub fn graph(deps: &[Dependency], resolutions: &HashMap<DepRef, Resolution>) -> Graph {
-    let dependents_of = dependents_index(deps);
+    let dependents_of = Dependents::new(deps);
+    let res: HashMap<(&str, &str), &Resolution> = resolutions
+        .iter()
+        .map(|((n, v), r)| ((n.as_str(), v.as_str()), r))
+        .collect();
 
-    let mut owned: BTreeMap<String, BTreeSet<DepRef>> = BTreeMap::new();
+    // Borrowed keys order exactly like the owned ones, so `owns` is unchanged.
+    let mut owned: BTreeMap<&str, BTreeSet<(&str, &str)>> = BTreeMap::new();
     let mut attributed = 0usize;
     let mut unattributed_ecos: BTreeSet<String> = BTreeSet::new();
 
     for d in deps {
-        let key = (d.name.clone(), d.version.clone());
-        let names = resolutions
+        let key = (d.name.as_str(), d.version.as_str());
+        let names = res
             .get(&key)
             .map(|r| r.maintainers.as_slice())
             .unwrap_or(&[]);
@@ -143,22 +191,25 @@ pub fn graph(deps: &[Dependency], resolutions: &HashMap<DepRef, Resolution>) -> 
         }
         attributed += 1;
         for n in names {
-            owned.entry(n.clone()).or_default().insert(key.clone());
+            owned.entry(n).or_default().insert(key);
         }
     }
 
+    let mut mark = vec![0u32; dependents_of.up.len()];
     let mut maintainers: Vec<Maintainer> = owned
         .into_iter()
-        .map(|(name, pkgs)| {
+        .enumerate()
+        .map(|(i, (name, pkgs))| {
             // Reach = the packages themselves plus everything above them.
-            let mut seen: HashSet<DepRef> = pkgs.iter().cloned().collect();
-            for k in &pkgs {
-                collect_dependents(&dependents_of, k, &mut seen);
-            }
+            let stamp = i as u32 + 1;
+            let reach = pkgs
+                .iter()
+                .map(|k| dependents_of.mark_up(dependents_of.ids[k], &mut mark, stamp))
+                .sum();
             Maintainer {
-                name,
+                name: name.to_string(),
                 owns: pkgs.iter().map(|(n, v)| format!("{n}@{v}")).collect(),
-                reach: seen.len(),
+                reach,
             }
         })
         .collect();

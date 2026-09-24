@@ -276,9 +276,10 @@ foreach ($t in Get-ScheduledTask) {
 "#;
 
 /// The scheduler's own cache — what the service reads, as opposed to what the
-/// enumeration shows.
+/// enumeration shows. Appended to [`PS_TASKS`] (it was a PowerShell process of
+/// its own): its lines are task paths starting with `\`, the enumeration's are
+/// JSON objects, so the two stay apart in one output.
 const PS_TASKCACHE: &str = r"
-$ErrorActionPreference = 'SilentlyContinue'
 Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache\Tasks' |
   ForEach-Object { (Get-ItemProperty $_.PSPath).Path } |
   Where-Object { $_ } |
@@ -296,7 +297,13 @@ pub(crate) fn parse_tasks(stdout: &str) -> Vec<Task> {
 }
 
 pub fn task_inventory(opts: Opts) -> Result<Inventory> {
-    let raw = powershell(&format!("{}{}", super::PS_RESOLVE_IMAGE, PS_TASKS)).context("enumerating scheduled tasks")?;
+    let raw = powershell(&format!(
+        "{}{}{}",
+        super::PS_RESOLVE_IMAGE,
+        PS_TASKS,
+        PS_TASKCACHE
+    ))
+    .context("enumerating scheduled tasks")?;
     let tasks = parse_tasks(&raw);
     if tasks.is_empty() {
         anyhow::bail!(
@@ -366,20 +373,18 @@ pub fn task_inventory(opts: Opts) -> Result<Inventory> {
     // A task the scheduler knows about but the enumeration does not show is
     // hiding, which no legitimate installer needs to do.
     let mut notes = Vec::new();
-    if let Ok(cache) = powershell(PS_TASKCACHE) {
-        let cached: Vec<String> = cache
-            .lines()
-            .map(str::trim)
-            .filter(|l| l.starts_with('\\'))
-            .map(String::from)
-            .collect();
-        let enumerated: Vec<String> = tasks.iter().map(Task::full_name).collect();
-        for h in hidden_tasks(&cached, &enumerated) {
-            notes.push(format!(
-                "task '{h}' is registered in the scheduler's cache but absent from the task \
-                 listing [High] — it runs without being visible"
-            ));
-        }
+    let cached: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with('\\'))
+        .map(String::from)
+        .collect();
+    let enumerated: Vec<String> = tasks.iter().map(Task::full_name).collect();
+    for h in hidden_tasks(&cached, &enumerated) {
+        notes.push(format!(
+            "task '{h}' is registered in the scheduler's cache but absent from the task \
+             listing [High] — it runs without being visible"
+        ));
     }
 
     let summary = format!(

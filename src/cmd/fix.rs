@@ -31,21 +31,26 @@ pub(crate) fn run_fix(args: cli::FixArgs) -> Result<()> {
     let scan_url = vuln::scan_url(&net);
     let loader = gochi::Loader::spinner("gochi looking up advisories", ui.animating());
     let mut vulns = Vec::new();
-    let mut unscannable = Vec::new();
-    for d in &detected {
-        match mlab_target(d) {
-            Some((lock, fmt)) => {
-                match vuln::scan(&agent, &cache, token.as_deref(), lock, fmt, &scan_url) {
-                    Ok(mut v) => vulns.append(&mut v),
-                    Err(e) => {
-                        loader.finish(gochi::Mood::Bad, "advisory lookup failed");
-                        return Err(e).with_context(|| format!("scanning {}", d.name()));
-                    }
-                }
+    // An ecosystem the advisory API cannot read is not a clean one, and a plan
+    // that silently omitted it would read as "nothing to fix".
+    let unscannable: Vec<String> = detected
+        .iter()
+        .filter(|d| mlab_target(d).is_none())
+        .map(|d| d.name().to_string())
+        .collect();
+    // Every lockfile at once; the first failure, in detection order, aborts.
+    let (scanned, targets): (Vec<_>, Vec<_>) = detected
+        .iter()
+        .filter_map(|d| mlab_target(d).map(|t| (d, t)))
+        .unzip();
+    let scans = vuln::scan_many(&agent, &cache, token.as_deref(), &targets, &scan_url);
+    for (d, scan) in scanned.into_iter().zip(scans) {
+        match scan {
+            Ok(mut v) => vulns.append(&mut v),
+            Err(e) => {
+                loader.finish(gochi::Mood::Bad, "advisory lookup failed");
+                return Err(e).with_context(|| format!("scanning {}", d.name()));
             }
-            // An ecosystem the advisory API cannot read is not a clean one, and
-            // a plan that silently omitted it would read as "nothing to fix".
-            None => unscannable.push(d.name().to_string()),
         }
     }
     let plan = fix::plan(&deps, &vulns);

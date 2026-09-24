@@ -403,16 +403,23 @@ fn compare(published: &Path, source: &Path, delta: &Path, r: &mut PkgReport) {
     r.only_in_tarball.sort();
 
     if !r.modified.is_empty() || !r.only_in_tarball.is_empty() {
+        // The delta first: it is a handful of files, the checkout can be a
+        // whole monorepo, and a clean delta leaves nothing to explain.
+        let found = analyze::scan_source_tree(delta);
         // Anything the source already contains (the same URL, the same
         // behaviour) is explained: the build copied it, nobody slipped it in.
-        let explained: HashSet<(String, String)> = analyze::scan_source_tree(source)
-            .iter()
-            .map(finding_key)
-            .collect();
+        let explained: HashSet<(String, String)> = if found.is_empty() {
+            HashSet::new()
+        } else {
+            analyze::scan_source_tree(source)
+                .iter()
+                .map(finding_key)
+                .collect()
+        };
         // One separator on both sides: on Windows the analyzers report
         // `C:\…\delta\lib\x.js`, which a `…\delta/` prefix never matches.
         let prefix = format!("{}/", delta.display()).replace('\\', "/");
-        r.findings = analyze::scan_source_tree(delta)
+        r.findings = found
             .into_iter()
             .filter(|f| !explained.contains(&finding_key(f)))
             .map(|mut f| {

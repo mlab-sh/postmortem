@@ -161,22 +161,37 @@ pub fn read_approvals(root: &Path) -> BTreeSet<String> {
 /// Either way this works with nothing installed — the decision list does not
 /// require the code.
 pub fn lockfile_install_scripts(lockfile: &Path) -> BTreeSet<String> {
+    /// Only the two fields read here. The graph parser already read this file,
+    /// but `Dependency` keeps neither field, so it is read again — into this,
+    /// not a `serde_json::Value` of every field of every entry. Leaves stay
+    /// `Value` so an odd type is ignored exactly as `as_bool`/`as_str` did.
+    #[derive(serde::Deserialize)]
+    struct Lock {
+        #[serde(default)]
+        packages: BTreeMap<String, LockEntry>,
+    }
+    #[derive(serde::Deserialize)]
+    struct LockEntry {
+        #[serde(default, rename = "hasInstallScript")]
+        has_install_script: Option<serde_json::Value>,
+        #[serde(default)]
+        resolved: Option<serde_json::Value>,
+    }
+
     let Ok(text) = std::fs::read_to_string(lockfile) else {
         return BTreeSet::new();
     };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+    let Ok(lock) = serde_json::from_str::<Lock>(&text) else {
         return BTreeSet::new();
     };
-    let Some(pkgs) = json.get("packages").and_then(|p| p.as_object()) else {
-        return BTreeSet::new();
-    };
-    pkgs.iter()
+    lock.packages
+        .iter()
         // Installed dependencies only. The root entry and workspace members are
         // your own code, not something npm asks you to approve.
         .filter(|(k, _)| k.contains("node_modules/"))
         .filter(|(_, v)| {
-            v.get("hasInstallScript").and_then(|h| h.as_bool()) == Some(true)
-                || crate::lifecycle::source_of(v.get("resolved").and_then(|r| r.as_str()))
+            v.has_install_script.as_ref().and_then(|h| h.as_bool()) == Some(true)
+                || crate::lifecycle::source_of(v.resolved.as_ref().and_then(|r| r.as_str()))
                     == crate::lifecycle::Source::NonRegistry
         })
         .filter_map(|(k, _)| k.rsplit("node_modules/").next())
@@ -259,14 +274,20 @@ pub fn build(
     }
 
     // Worst first: flagged, then pending, then the rest.
-    entries.sort_by_key(|e| {
-        let tier = match (&e.behaviour, e.approval) {
-            (Behaviour::Flagged(_), _) => 0,
-            (_, Approval::Unmanaged) => 1,
-            (_, Approval::Pending) => 2,
-            _ => 3,
-        };
-        (tier, std::cmp::Reverse(e.severity), e.name.clone())
+    // `sort_by`, not `sort_by_key`: the key held the name by value, so every
+    // comparison cloned two names.
+    let tier = |e: &Entry| match (&e.behaviour, e.approval) {
+        (Behaviour::Flagged(_), _) => 0,
+        (_, Approval::Unmanaged) => 1,
+        (_, Approval::Pending) => 2,
+        _ => 3,
+    };
+    entries.sort_by(|a, b| {
+        (tier(a), std::cmp::Reverse(a.severity), &a.name).cmp(&(
+            tier(b),
+            std::cmp::Reverse(b.severity),
+            &b.name,
+        ))
     });
 
     Report {

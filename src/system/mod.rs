@@ -242,6 +242,12 @@ pub struct Opts {
     /// default from the CLI; `Opts::default()` leaves it off so a caller has to
     /// ask, which keeps the tests explicit about what they exercise.
     pub signatures: bool,
+    /// Skip the whole-machine integrity sweeps (`dpkg --verify`, `rpm -Va`,
+    /// `pacman -Qkk`, expired-key `gpg` probes). Their only output is a line in
+    /// [`Inventory::notes`], which `system inspect` never renders — and they are
+    /// the slowest thing a backend does (`rpm -Va` alone hashes every installed
+    /// file). Inverted so `Opts::default()` keeps them, as `--image` expects.
+    pub skip_integrity: bool,
 }
 
 /// Build the installed inventory for a supported backend. Homebrew ignores
@@ -298,27 +304,24 @@ pub fn root_manager(root: &std::path::Path) -> Option<&'static str> {
 /// loudly, and the caller turns that into a diagnostic: an image whose packages
 /// were never read must say so, because "no OS findings" and "the OS layer was
 /// not examined" are not the same result.
-pub fn inventory_at(manager: &str, root: &std::path::Path, opts: Opts) -> Result<Inventory> {
+///
+/// Alongside comes `package name → the file paths it installed`, for layer
+/// attribution. The backends whose database records file manifests read it for
+/// their own signals anyway, so it is handed over rather than read a second
+/// time; the rest return an empty map, and the caller simply attributes nothing
+/// rather than attributing wrongly.
+pub fn inventory_at(
+    manager: &str,
+    root: &std::path::Path,
+    opts: Opts,
+) -> Result<(Inventory, HashMap<String, Vec<String>>)> {
     match manager {
-        "apk" => apk::apk_inventory_at(root, opts),
+        "apk" => apk::apk_inventory_at(root, opts).map(|inv| (inv, HashMap::new())),
         "apt" => apt::apt_inventory_at(root, opts),
         "dnf" => dnf::dnf_inventory_at(root, opts),
         other => anyhow::bail!(
             "the {other} backend cannot yet read an alternate root — its packages were not examined"
         ),
-    }
-}
-
-/// `package name → the file paths it installed`, under an alternate root.
-///
-/// Only the backends whose database records file manifests can answer; the rest
-/// return an empty map, and the caller simply attributes nothing rather than
-/// attributing wrongly.
-pub fn file_index_at(manager: &str, root: &std::path::Path) -> HashMap<String, Vec<String>> {
-    match manager {
-        "apt" => apt::apt_file_index_at(root),
-        "dnf" => dnf::rpm_file_index(root),
-        _ => HashMap::new(),
     }
 }
 
@@ -342,6 +345,50 @@ pub(super) fn powershell(script: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+
+/// `f` over every item on a pool of `workers` threads, results in item order.
+///
+/// Everything this module fans out is a subprocess or a network round trip —
+/// the threads wait, they don't compute — so the pool is sized for the queue
+/// rather than the cores. Callers print and merge in the input order, so a
+/// parallel run reads exactly like the serial one it replaced.
+pub(crate) fn par_map<T: Sync, R: Send>(
+    items: &[T],
+    workers: usize,
+    f: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
+    let workers = workers.min(items.len());
+    if workers <= 1 {
+        return items.iter().map(f).collect();
+    }
+    let cursor = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<Option<R>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(i) else { break };
+                        done.push((i, f(item)));
+                    }
+                    done
+                })
+            })
+            .collect();
+        let mut slots: Vec<Option<R>> = (0..items.len()).map(|_| None).collect();
+        for h in handles {
+            for (i, r) in h.join().expect("par_map worker panicked") {
+                slots[i] = Some(r);
+            }
+        }
+        slots
+    });
+    slots
+        .into_iter()
+        .map(|s| s.expect("every index claimed once"))
+        .collect()
+}
 
 /// An installed version behind the current one — running old code means missing
 /// upstream (including security) fixes. Mild on its own.
@@ -640,6 +687,17 @@ pub fn render_repos(inv: &Inventory) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Workers finish out of order; the caller must still see input order.
+    #[test]
+    fn par_map_keeps_input_order() {
+        let items: Vec<u64> = (0..50).collect();
+        let out = par_map(&items, 8, |&i| {
+            std::thread::sleep(std::time::Duration::from_millis((50 - i) % 7));
+            i * 2
+        });
+        assert_eq!(out, items.iter().map(|i| i * 2).collect::<Vec<_>>());
+    }
 
     /// The blacklist this replaced reported **every** Windows scheduled task as
     /// writable: task files legitimately grant `FullControl` to the service

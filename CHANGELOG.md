@@ -5,6 +5,103 @@ All notable changes to postmortem are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0]
+
+A performance release, with the detection bugs the profiling turned up. Every
+command was compared against v2.6.0 on real projects (eleven Node, Python,
+Rust, Go and PHP trees; five Linux distributions in containers; the macOS host):
+identical dependency sets, identical exit codes, and every finding difference
+is one of the fixes listed under **Fixed**. The threading model and the rules
+that keep the output stable are on the new [Performance](wiki/Performance.md)
+wiki page.
+
+Measured on a 67 160-file Node project (M-series laptop, warm page cache, best
+of three):
+
+| command | v2.6.0 | 2.7.0 | |
+|---|---|---|---|
+| `scan` | 7.67s | 1.37s | 5.6× |
+| `audit` | 5.75s | 1.16s | 5.0× |
+| `scripts` | 5.42s | 0.31s | 17× |
+| `why --blast <pkg>` | 5.58s | 0.22s | 25× |
+| `tree --online`, cold registry cache, no token | 140.4s | 6.1s | 23× |
+| `system` — apt / dnf / pacman | 2.83 / 1.44 / 1.30s | 1.30 / 0.47 / 0.80s | 1.6–3× |
+| `tree` — poetry.lock, 3 060 packages | 6.98s | 0.23s | 30× |
+
+### Fixed
+
+- **IOC line numbers were wrong for any repeated value.** The line of a finding
+  was found by searching the file for its text from the start, so every
+  occurrence of a URL reported the line of the first — and the search itself
+  made the pass O(findings × file size). Lines now come from the match offset.
+  Locations in `--json` output and baselines keyed on `path:line` shift to the
+  correct lines.
+- **A URL could hide behind a noise host in its query string.** The noise check
+  was `url.contains(host)`, so `https://evil.tk/?r=github.com` was suppressed as
+  GitHub. It now compares the parsed host. `json-schema.org` joined the noise
+  list — it had only ever been silenced by accident, as a substring of
+  `schema.org`.
+- **One invalid UTF-8 byte made a file invisible.** Every analyzer read files
+  as UTF-8 and silently skipped any that were not; a single Latin-1 byte in a
+  comment was enough to evade every detector. Files are now read lossily.
+- **npm packuments over 10 MB lost their provenance signals.** ureq refuses
+  bodies over 10 MB, the fetch failed without a trace, nothing was cached, and
+  it was paid again every run. `@typescript-eslint/*` (15.9 MB) is one:
+  eight packages in a real project gain the `provenance-removed` signal they
+  had been missing. Bodies are now read up to 64 MiB.
+- **A project's virtualenv was scanned twice**, doubling every finding in it
+  (2 300 duplicates on one real project).
+- **`hunt` could panic** on a lockfile whose 400-byte context window ended
+  inside a multi-byte character, and its history replay matched names
+  literally while its current-state check treated PyPI's `-`, `_` and `.` as
+  equal — so a package pinned now could show no history window.
+- **`--vulns` re-uploaded some lockfiles on every run**: an advisory without a
+  summary made the cached scan unreadable, so it was deleted and refetched.
+
+### Changed
+
+- **Analysis runs on every core and reads each file once.** v2.5.0 merged the
+  content analyzers into one parallel pass, but the behaviour, workflow,
+  Dockerfile, IDE-hook and install-hook analyzers still each walked the whole
+  tree, one after another, on one thread — 90 % of a scan's wall time, with
+  the parallel pass lasting 0.4 s of 5.7. The project is now walked once, in
+  parallel, and every analyzer selects from that listing; the analyzers run
+  concurrently; the behaviour markers ride on the content pass's reads of
+  `node_modules`; marker lists are matched by one Aho-Corasick automaton per
+  language. `scripts` runs only the install-hook analyzers it reports on, and
+  `why --blast` only the target package's files.
+- **Findings reported in walk order now come sorted by path**, the same on
+  every machine (directory order was filesystem-dependent). The set is
+  unchanged; a `--json` diff against an older report will show the move once.
+- **The resolver limits requests per host, not packages.** It used to resolve
+  two packages at a time without a GitHub token — throttling npm, PyPI and
+  every cache hit to GitHub's pace. It now runs 16 workers with per-host limits
+  on requests actually sent (GitHub 2, or 8 with a token; crates.io 1; others
+  8), fetches each npm package's history once per name instead of once per
+  version and derives the registry record from it (one request per package
+  instead of two), deduplicates repo lookups across packages of the same repo,
+  remembers a 404 repo for a day, stops calling GitHub once it reports its rate
+  limit spent, keeps connections alive, retries a transient 5xx once, and runs
+  `--vulns` uploads alongside resolution.
+- **`system` runs each backend's queries concurrently**, long integrity sweeps
+  first; dnf batches its `rpm` queries; the Windows layers are read four at a
+  time and Authenticode results are cached per run; `system inspect` skips the
+  integrity sweeps it never displays; `inspect --deep` clones and audits four
+  repositories at a time; `--layers` resolves whiteouts by prefix range.
+- **Lockfile parsers build reverse indexes** instead of quadratic parent scans
+  (poetry, Cargo, Gemfile), pnpm and Yarn Berry parse into typed structures, and
+  terminal output is buffered.
+- **`why` is bounded** at 10 000 paths per installed version; past that the JSON
+  carries `"truncated": true` and, when countable, `"total_paths"`. Neither
+  field appears on real-world graphs (the largest seen has 2 535 paths).
+- The `vuln-scan` cache key is now a stable hash; existing entries are
+  refetched once. `system --vulns` caches each package's answer, clean ones
+  included, for 12 hours. See [Cache](wiki/Cache.md).
+- A malformed (non-mapping) entry in a pnpm or Yarn Berry lockfile now fails the
+  parse with a `parse_failed` diagnostic instead of being skipped.
+- Homebrew: a formula from a third-party tap is read from the tap checkout
+  instead of through `brew cat` (one Ruby start per package).
+
 ## [2.6.0]
 
 ### Added

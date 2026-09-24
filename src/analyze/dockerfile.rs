@@ -70,21 +70,24 @@ fn is_dockerfile(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
         return false;
     };
-    let lower = name.to_lowercase();
-    lower == "dockerfile"
-        || lower == "containerfile"
-        || lower.starts_with("dockerfile.")
-        || lower.starts_with("containerfile.")
-        || lower.ends_with(".dockerfile")
-        || lower.ends_with(".containerfile")
+    // ASCII case-insensitive in place: this runs on every file in the tree,
+    // and lowercasing each name into a new `String` was an allocation apiece.
+    let n = name.as_bytes();
+    let starts = |p: &str| n.len() >= p.len() && n[..p.len()].eq_ignore_ascii_case(p.as_bytes());
+    let ends =
+        |p: &str| n.len() >= p.len() && n[n.len() - p.len()..].eq_ignore_ascii_case(p.as_bytes());
+    n.eq_ignore_ascii_case(b"dockerfile")
+        || n.eq_ignore_ascii_case(b"containerfile")
+        || starts("dockerfile.")
+        || starts("containerfile.")
+        || ends(".dockerfile")
+        || ends(".containerfile")
 }
 
-pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
-    // Dockerfiles have no extension of their own, so the walk matches on the
-    // whole name instead — inside the walk, so a tree of a few thousand files
-    // is not handed back path by path just to be discarded here.
-    for path in util::walk(root, is_dockerfile) {
-        let Ok(text) = std::fs::read_to_string(&path) else {
+pub fn scan_dir(list: &util::Listing, out: &mut Vec<Finding>) {
+    // Dockerfiles have no extension of their own, so match on the whole name.
+    for path in list.select(list.root(), is_dockerfile) {
+        let Some(text) = super::read_lossy(&path) else {
             continue;
         };
         scan_text(&text, &path, out);
@@ -244,8 +247,7 @@ fn logical_lines(text: &str) -> Vec<String> {
 /// drift between the recipe and the artifact it built.
 pub(crate) fn looks_like_secret(name: &str) -> bool {
     name.split(['_', '-', '.', ' '])
-        .map(str::to_ascii_lowercase)
-        .any(|seg| SECRET_NAMES.contains(&seg.as_str()))
+        .any(|seg| SECRET_NAMES.iter().any(|s| s.eq_ignore_ascii_case(seg)))
 }
 
 /// Does this line fetch something and hand it to a shell?

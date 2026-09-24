@@ -42,6 +42,10 @@ struct BrewOut {
 struct Formula {
     name: String,
     tap: Option<String>,
+    /// The recipe's path inside its tap (`Formula/foo.rb`), so a third-party
+    /// recipe can be read from disk rather than through `brew cat`.
+    #[serde(default)]
+    ruby_source_path: Option<String>,
     #[serde(default)]
     installed: Vec<Installed>,
     #[serde(default)]
@@ -90,6 +94,9 @@ struct RuntimeDep {
 struct Cask {
     token: String,
     tap: Option<String>,
+    /// As [`Formula::ruby_source_path`] (`Casks/foo.rb`).
+    #[serde(default)]
+    ruby_source_path: Option<String>,
     #[serde(default)]
     version: Option<String>,
     #[serde(default)]
@@ -135,7 +142,7 @@ pub fn brew_inventory() -> Result<Inventory> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    let (taps, tap_remote) = taps_info;
+    let (taps, tap_remote, tap_path) = taps_info;
     let Parsed {
         deps,
         casks,
@@ -147,7 +154,7 @@ pub fn brew_inventory() -> Result<Inventory> {
     // Ruby) — the untrusted install code. Core/official recipes are skipped.
     // One `brew cat` per package, and each is another Ruby startup, so they go
     // out across a pool instead of one at a time.
-    for (name, sigs) in analyze_install_code_all(&third_party) {
+    for (name, sigs) in analyze_install_code_all(&third_party, &tap_path) {
         signals.entry(name).or_default().extend(sigs);
     }
 
@@ -186,7 +193,17 @@ struct Parsed {
     deps: Vec<Dependency>,
     casks: usize,
     signals: HashMap<String, Vec<SysSignal>>,
-    third_party: Vec<(String, bool)>,
+    third_party: Vec<ThirdParty>,
+}
+
+/// A package from a non-official tap, whose install recipe gets analyzed.
+#[derive(Debug, PartialEq)]
+struct ThirdParty {
+    name: String,
+    is_cask: bool,
+    tap: String,
+    /// The recipe's path inside the tap, when brew reported it.
+    source: Option<String>,
 }
 
 /// Turn `brew info --json=v2` output into the dependency forest, the cask count,
@@ -196,7 +213,7 @@ struct Parsed {
 fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> {
     let parsed: BrewOut = serde_json::from_slice(json)?;
     let mut signals: HashMap<String, Vec<SysSignal>> = HashMap::new();
-    let mut third_party: Vec<(String, bool)> = Vec::new();
+    let mut third_party: Vec<ThirdParty> = Vec::new();
 
     // --- formulae: the dependency forest ---
     let version: HashMap<&str, &str> = parsed
@@ -237,7 +254,12 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> 
         let tap = f.tap.as_deref().filter(|t| !is_official_tap(t));
         if let Some(t) = tap {
             push_signal(&mut signals, &f.name, third_party_tap(t));
-            third_party.push((f.name.clone(), false));
+            third_party.push(ThirdParty {
+                name: f.name.clone(),
+                is_cask: false,
+                tap: t.to_string(),
+                source: f.ruby_source_path.clone(),
+            });
             if let Some(sig) = tap_remote.get(t).and_then(|r| tap_remote_signal(r)) {
                 push_signal(&mut signals, &f.name, sig);
             }
@@ -280,7 +302,12 @@ fn analyze(json: &[u8], tap_remote: &HashMap<String, String>) -> Result<Parsed> 
         let mut sigs = cask_signals(c);
         if let Some(tap) = c.tap.as_deref().filter(|t| !is_official_tap(t)) {
             sigs.push(third_party_tap(tap));
-            third_party.push((c.token.clone(), true));
+            third_party.push(ThirdParty {
+                name: c.token.clone(),
+                is_cask: true,
+                tap: tap.to_string(),
+                source: c.ruby_source_path.clone(),
+            });
             if let Some(sig) = tap_remote.get(tap).and_then(|r| tap_remote_signal(r)) {
                 sigs.push(sig);
             }
@@ -452,7 +479,10 @@ fn read_outdated() -> HashMap<String, (String, String)> {
 /// threads. Each call is a `brew cat` subprocess — all wait, none compute — so
 /// the pool is sized for the queue, not for the cores. Results come back keyed
 /// by package; packages with no signal are dropped.
-fn analyze_install_code_all(third_party: &[(String, bool)]) -> Vec<(String, Vec<SysSignal>)> {
+fn analyze_install_code_all(
+    third_party: &[ThirdParty],
+    tap_path: &HashMap<String, String>,
+) -> Vec<(String, Vec<SysSignal>)> {
     let total = third_party.len();
     if total == 0 {
         return Vec::new();
@@ -470,10 +500,10 @@ fn analyze_install_code_all(third_party: &[(String, bool)]) -> Vec<(String, Vec<
                     if i >= total {
                         break;
                     }
-                    let (name, is_cask) = &third_party[i];
-                    let sigs = analyze_install_code(name, *is_cask);
+                    let p = &third_party[i];
+                    let sigs = analyze_install_code(p, tap_path);
                     if !sigs.is_empty() {
-                        sink.lock().unwrap().push((name.clone(), sigs));
+                        sink.lock().unwrap().push((p.name.clone(), sigs));
                     }
                 }
             });
@@ -486,11 +516,21 @@ fn analyze_install_code_all(third_party: &[(String, bool)]) -> Vec<(String, Vec<
     found
 }
 
-/// Fetch a package's Homebrew recipe (its Ruby) via `brew cat` and static-analyze
-/// it. Only called for third-party packages — the untrusted install code.
-fn analyze_install_code(name: &str, is_cask: bool) -> Vec<SysSignal> {
-    match brew_cat(name, is_cask) {
-        Some(ruby) => analyze_recipe(name, &ruby, "rb"),
+/// Read a package's Homebrew recipe (its Ruby) and static-analyze it. Only
+/// called for third-party packages — the untrusted install code.
+///
+/// A third-party tap is always a local git checkout, so the recipe is read
+/// straight from `<tap path>/<ruby_source_path>`, which is the file `brew cat`
+/// prints. `brew cat` is the fallback: it is a Ruby startup, about a second per
+/// package, for the same bytes.
+fn analyze_install_code(p: &ThirdParty, tap_path: &HashMap<String, String>) -> Vec<SysSignal> {
+    let on_disk = p
+        .source
+        .as_deref()
+        .zip(tap_path.get(&p.tap))
+        .and_then(|(src, dir)| std::fs::read_to_string(std::path::Path::new(dir).join(src)).ok());
+    match on_disk.or_else(|| brew_cat(&p.name, p.is_cask)) {
+        Some(ruby) => analyze_recipe(&p.name, &ruby, "rb"),
         None => Vec::new(),
     }
 }
@@ -519,12 +559,15 @@ fn is_installer_artifact(a: &serde_json::Value) -> bool {
 /// git remotes (taps don't follow a fixed `homebrew-<name>` naming; the remote
 /// is authoritative, e.g. `sn0walice/sshm` → `github.com/Sn0wAlice/sshm`).
 /// Returns the taps plus a `handle → remote` map for the non-official ones (used
-/// to resolve their packages). Best-effort: a failure yields none.
-fn read_tap_info() -> (Vec<Tap>, HashMap<String, String>) {
+/// to resolve their packages), and a `handle → local checkout` map for the same
+/// taps (used to read their recipes). Best-effort: a failure yields none.
+fn read_tap_info() -> (Vec<Tap>, HashMap<String, String>, HashMap<String, String>) {
     #[derive(Deserialize)]
     struct TapInfo {
         name: String,
         remote: Option<String>,
+        #[serde(default)]
+        path: Option<String>,
         #[serde(default)]
         official: bool,
     }
@@ -532,20 +575,26 @@ fn read_tap_info() -> (Vec<Tap>, HashMap<String, String>) {
         .args(["tap-info", "--json", "--installed"])
         .output()
     else {
-        return (Vec::new(), HashMap::new());
+        return (Vec::new(), HashMap::new(), HashMap::new());
     };
     if !out.status.success() {
-        return (Vec::new(), HashMap::new());
+        return (Vec::new(), HashMap::new(), HashMap::new());
     }
     let infos: Vec<TapInfo> = serde_json::from_slice(&out.stdout).unwrap_or_default();
 
     let mut taps = Vec::with_capacity(infos.len());
     let mut remotes = HashMap::new();
+    let mut paths = HashMap::new();
     for t in infos {
         if let Some(r) = &t.remote
             && !t.official
         {
             remotes.insert(t.name.clone(), r.clone());
+        }
+        if let Some(p) = &t.path
+            && !t.official
+        {
+            paths.insert(t.name.clone(), p.clone());
         }
         taps.push(Tap {
             name: t.name,
@@ -553,7 +602,7 @@ fn read_tap_info() -> (Vec<Tap>, HashMap<String, String>) {
             official: t.official,
         });
     }
-    (taps, remotes)
+    (taps, remotes, paths)
 }
 
 /// An official `homebrew/*` tap (core-reviewed, trusted).
@@ -740,7 +789,12 @@ mod tests {
         } = analyze(json, &remote).unwrap();
         assert_eq!(
             third_party,
-            vec![("app".to_string(), false)],
+            vec![ThirdParty {
+                name: "app".to_string(),
+                is_cask: false,
+                tap: "sn0walice/x".to_string(),
+                source: None,
+            }],
             "flagged for recipe analysis"
         );
         let mut forest = tree::build("brew", &["brew".to_string()], &deps, None);

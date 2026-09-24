@@ -215,34 +215,62 @@ fn apk_repos(root: &Path) -> Vec<Repo> {
 /// Install scripts from `lib/apk/db/scripts.tar.gz` under `root`, as
 /// `(member, body)` pairs. Members are named `<name>-<version>.<checksum>.<type>`;
 /// the caller matches them to a package by the `<name>-<version>.` prefix. Empty
-/// when no scripts archive is present.
+/// when no scripts archive is present or it can't be decompressed.
+///
+/// Read in-process in one pass. It was `tar tzf` and then one `tar xzOf` per
+/// member, each re-inflating the archive from the start to reach its member:
+/// quadratic in the archive, and a process per script. Nothing is written to
+/// disk, so a member path is only ever a name here, never somewhere to write.
 fn apk_scripts(root: &Path) -> Vec<(String, String)> {
-    let archive = root.join("lib/apk/db/scripts.tar.gz");
-    let Ok(list) = Command::new("tar").arg("tzf").arg(&archive).output() else {
+    use std::io::Read;
+    let Ok(file) = std::fs::File::open(root.join("lib/apk/db/scripts.tar.gz")) else {
         return Vec::new();
     };
-    if !list.status.success() {
+    let mut tar = Vec::new();
+    if flate2::read::MultiGzDecoder::new(file)
+        .read_to_end(&mut tar)
+        .is_err()
+    {
         return Vec::new();
     }
+    tar_files(&tar)
+}
+
+/// The regular files of an (uncompressed) tar archive, as `(name, body)` in
+/// archive order. Handles ustar prefixes and GNU long names, which is all apk
+/// writes; anything else that isn't a regular file is skipped.
+fn tar_files(tar: &[u8]) -> Vec<(String, String)> {
+    let text = |b: &[u8]| {
+        let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+        String::from_utf8_lossy(&b[..end]).into_owned()
+    };
     let mut out = Vec::new();
-    for member in String::from_utf8_lossy(&list.stdout).lines() {
-        let member = member.trim();
-        if member.is_empty() {
-            continue;
+    let mut long_name: Option<String> = None;
+    let mut off = 0;
+    while let Some(h) = tar.get(off..off + 512) {
+        if h.iter().all(|&b| b == 0) {
+            break; // end-of-archive marker
         }
-        let Ok(body) = Command::new("tar")
-            .arg("xzOf")
-            .arg(&archive)
-            .arg(member)
-            .output()
-        else {
-            continue;
+        let size = usize::from_str_radix(text(&h[124..136]).trim(), 8).unwrap_or(0);
+        let start = off + 512;
+        let Some(body) = tar.get(start..start + size) else {
+            break; // truncated archive
         };
-        if body.status.success() {
-            out.push((
-                member.to_string(),
-                String::from_utf8_lossy(&body.stdout).into_owned(),
-            ));
+        off = start + size.div_ceil(512) * 512;
+        let mut name = text(&h[..100]);
+        if &h[257..262] == b"ustar" {
+            let prefix = text(&h[345..500]);
+            if !prefix.is_empty() {
+                name = format!("{prefix}/{name}");
+            }
+        }
+        match h[156] {
+            b'L' => long_name = Some(text(body)),
+            b'0' | 0 => {
+                let name = long_name.take().unwrap_or(name);
+                out.push((name, String::from_utf8_lossy(body).into_owned()));
+            }
+            _ => long_name = None,
         }
     }
     out
@@ -251,6 +279,46 @@ fn apk_scripts(root: &Path) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A hand-built archive: a ustar file, a GNU long name, a directory (skipped).
+    #[test]
+    fn tar_files_reads_regular_members_in_order() {
+        fn header(name: &str, size: usize, kind: u8) -> Vec<u8> {
+            let mut h = vec![0u8; 512];
+            h[..name.len()].copy_from_slice(name.as_bytes());
+            let sz = format!("{size:011o}");
+            h[124..135].copy_from_slice(sz.as_bytes());
+            h[156] = kind;
+            h[257..262].copy_from_slice(b"ustar");
+            h
+        }
+        fn body(b: &[u8]) -> Vec<u8> {
+            let mut v = b.to_vec();
+            v.resize(b.len().div_ceil(512) * 512, 0);
+            v
+        }
+        let long = format!("{}.post-install", "x".repeat(120));
+        let mut tar = Vec::new();
+        tar.extend(header("dir/", 0, b'5'));
+        tar.extend(header("a-1.0-r0.Q1abc.post-install", 11, b'0'));
+        tar.extend(body(b"#!/bin/sh\nx"));
+        tar.extend(header("././@LongLink", long.len(), b'L'));
+        tar.extend(body(long.as_bytes()));
+        tar.extend(header("ignored", 3, b'0'));
+        tar.extend(body(b"abc"));
+        tar.extend(vec![0u8; 1024]);
+        let files = tar_files(&tar);
+        assert_eq!(
+            files,
+            vec![
+                (
+                    "a-1.0-r0.Q1abc.post-install".to_string(),
+                    "#!/bin/sh\nx".to_string()
+                ),
+                (long, "abc".to_string()),
+            ]
+        );
+    }
 
     #[test]
     fn apk_dep_token_strips() {

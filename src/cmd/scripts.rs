@@ -30,7 +30,7 @@ pub(crate) fn run_scripts(args: cli::ScriptsArgs) -> Result<()> {
         }
     }
     // What those scripts do: needs the code, which may not be there.
-    let findings = analyze::run_all(&detected, &deps, &ui);
+    let findings = analyze::run_install_hooks(&detected, &deps, &ui);
     let code_scanned = analyze::scans_dependency_code(&detected);
     let approvals = scripts::read_approvals(&root);
     let report = scripts::build(&deps, &with_scripts, &approvals, &findings, code_scanned);

@@ -35,7 +35,8 @@
 //! The plan is printed, never applied. Editing a manifest is a decision, and the
 //! snippets are emitted ready to paste.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::io::Write;
 
 use owo_colors::OwoColorize;
 
@@ -199,24 +200,27 @@ fn best_target(vulns: &[Vuln], installed: &str) -> Option<String> {
 /// Walks `parents` upward, stopping at each direct dependency. Cycles terminate
 /// because a node is visited once.
 fn direct_ancestors(dep: &Dependency, index: &BTreeMap<(&str, &str), &Dependency>) -> Vec<String> {
-    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+    // Borrowed keys throughout: the walk cloned every parent list it stepped
+    // onto, and each key again into `seen`.
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
     let mut out: BTreeSet<String> = BTreeSet::new();
-    let mut stack: Vec<(String, String)> = dep.parents.clone();
+    let mut stack: Vec<&(String, String)> = dep.parents.iter().collect();
 
-    while let Some(key) = stack.pop() {
-        if !seen.insert(key.clone()) {
+    while let Some((name, version)) = stack.pop() {
+        let key = (name.as_str(), version.as_str());
+        if !seen.insert(key) {
             continue;
         }
-        let Some(parent) = index.get(&(key.0.as_str(), key.1.as_str())) else {
+        let Some(parent) = index.get(&key) else {
             // An edge to something the parse did not resolve. Name it anyway —
             // it is still the ancestor the user has to deal with.
-            out.insert(key.0.clone());
+            out.insert(name.clone());
             continue;
         };
         if parent.direct {
             out.insert(format!("{}@{}", parent.name, parent.version));
         } else {
-            stack.extend(parent.parents.clone());
+            stack.extend(&parent.parents);
         }
     }
     out.into_iter().collect()
@@ -307,16 +311,21 @@ pub fn override_snippet(
 
 /// Render the plan.
 pub fn render(plan: &Plan, root_label: &str) {
-    println!("{}  {}", "fix".bold(), root_label.dimmed());
+    // Buffered and locked once rather than a lock and a `write` per line;
+    // dropped (flushed) before gochi, which prints on its own.
+    let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+    let _ = writeln!(out, "{}  {}", "fix".bold(), root_label.dimmed());
 
     if plan.is_empty() {
-        println!();
+        let _ = writeln!(out);
+        drop(out);
         crate::gochi::say(crate::gochi::Mood::Happy, "no known vulnerabilities to fix");
         return;
     }
 
     let actionable = plan.actionable().count();
-    println!(
+    let _ = writeln!(
+        out,
         "\n  {} advisor{} across {} package{}\n",
         plan.advisories(),
         if plan.advisories() == 1 { "y" } else { "ies" },
@@ -327,15 +336,21 @@ pub fn render(plan: &Plan, root_label: &str) {
     for r in &plan.remedies {
         let sev = sev_label(r.worst());
         let head = format!("{}@{}", r.name, r.installed);
-        match &r.target {
-            Some(t) => println!(
+        let _ = match &r.target {
+            Some(t) => writeln!(
+                out,
                 "  {sev}  {}  {}  {}",
                 head.bold(),
                 "→".dimmed(),
                 t.green().bold()
             ),
-            None => println!("  {sev}  {}  {}", head.bold(), "(no published fix)".red()),
-        }
+            None => writeln!(
+                out,
+                "  {sev}  {}  {}",
+                head.bold(),
+                "(no published fix)".red()
+            ),
+        };
 
         for v in &r.vulns {
             let mark = if v.fixed.is_none() {
@@ -343,7 +358,8 @@ pub fn render(plan: &Plan, root_label: &str) {
             } else {
                 "·".dimmed().to_string()
             };
-            println!(
+            let _ = writeln!(
+                out,
                 "        {mark} {} {}",
                 v.id.dimmed(),
                 crate::analyze::util::snippet(&v.summary, 78).dimmed()
@@ -355,7 +371,7 @@ pub fn render(plan: &Plan, root_label: &str) {
                 if let Some(t) = &r.target
                     && let Some(cmd) = upgrade_command(r.ecosystem, &r.name, t)
                 {
-                    println!("        {} {}", "direct —".dimmed(), cmd.cyan());
+                    let _ = writeln!(out, "        {} {}", "direct —".dimmed(), cmd.cyan());
                 }
             }
             Position::Transitive => {
@@ -364,22 +380,28 @@ pub fn render(plan: &Plan, root_label: &str) {
                 } else {
                     r.via.join(", ")
                 };
-                println!("        {} {}", "pulled in by".dimmed(), via.yellow());
+                let _ = writeln!(out, "        {} {}", "pulled in by".dimmed(), via.yellow());
                 if let Some(t) = &r.target
                     && let Some((where_, snippet)) = override_snippet(r.ecosystem, &r.name, t)
                 {
-                    println!("        {} {}", "override in".dimmed(), where_.dimmed());
+                    let _ = writeln!(
+                        out,
+                        "        {} {}",
+                        "override in".dimmed(),
+                        where_.dimmed()
+                    );
                     for line in snippet.lines() {
-                        println!("          {}", line.cyan());
+                        let _ = writeln!(out, "          {}", line.cyan());
                     }
                 }
             }
         }
-        println!();
+        let _ = writeln!(out);
     }
 
     if plan.unfixable() > 0 {
-        println!(
+        let _ = writeln!(
+            out,
             "{}",
             format!(
                 "⚠ {} advisor{} have no published fix — an upgrade cannot clear {}",
@@ -395,7 +417,8 @@ pub fn render(plan: &Plan, root_label: &str) {
         .iter()
         .any(|r| r.position == Position::Transitive)
     {
-        println!(
+        let _ = writeln!(
+            out,
             "{}",
             "note: an override forces a version the parent never declared support for — \
              clear the advisory, then run your tests"
@@ -408,6 +431,7 @@ pub fn render(plan: &Plan, root_label: &str) {
     } else {
         crate::gochi::Mood::Bad
     };
+    drop(out);
     crate::gochi::say(
         mood,
         format!(

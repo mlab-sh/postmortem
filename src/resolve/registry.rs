@@ -10,7 +10,8 @@ use crate::model::{DepRef, Dependency, Ecosystem};
 /// The registry endpoint that carries `dep`'s source-repo metadata. `None` for
 /// ecosystems resolved without a registry call (Go, whose module path is the
 /// repo). One endpoint per ecosystem:
-/// - **npm** (Node): the immutable version manifest.
+/// - **npm** (Node): the immutable version manifest. The resolver reads the
+///   same entry out of the packument instead (see `registry_record`).
 /// - **PyPI** (Python): the project JSON (`project_urls` + `home_page`).
 /// - **crates.io** (Rust): the crate record (`repository`).
 /// - **RubyGems** (Ruby): the gem JSON (`source_code_uri` / `homepage_uri`).
@@ -110,30 +111,8 @@ pub(super) fn raw_licenses_from(dep: &Dependency, v: &serde_json::Value) -> Vec<
             })
             .unwrap_or_default()
     };
-    /// npm values may be a bare string or a `{type, url}` object.
-    fn as_text(v: &serde_json::Value) -> Option<String> {
-        v.as_str()
-            .map(String::from)
-            .or_else(|| v.get("type").and_then(|t| t.as_str()).map(String::from))
-    }
-
     match dep.ecosystem {
-        // The versioned manifest. `license` is usually an SPDX string; ancient
-        // packages used `{type: ...}` or a `licenses` array.
-        Ecosystem::Node => {
-            if let Some(l) = v.get("license") {
-                if let Some(t) = as_text(l) {
-                    return vec![t];
-                }
-                if let Some(a) = l.as_array() {
-                    return a.iter().filter_map(as_text).collect();
-                }
-            }
-            v.get("licenses")
-                .and_then(|x| x.as_array())
-                .map(|a| a.iter().filter_map(as_text).collect())
-                .unwrap_or_default()
-        }
+        Ecosystem::Node => npm_licenses(v.get("license"), v.get("licenses")),
         // PyPI's `license` is hand-written prose. PEP 639 added the SPDX-valued
         // `license_expression`, still empty for most projects, so offer it first,
         // then the free text, then the trove classifiers — whose last segment is
@@ -186,6 +165,33 @@ pub(super) fn raw_licenses_from(dep: &Dependency, v: &serde_json::Value) -> Vec<
         // OS packages: licensing is a distro concern, not resolved here.
         _ => Vec::new(),
     }
+}
+
+/// An npm version's raw licenses, from its `license` and `licenses` fields.
+/// `license` is usually an SPDX string; ancient packages used `{type: ...}` or
+/// a `licenses` array.
+pub(super) fn npm_licenses(
+    license: Option<&serde_json::Value>,
+    licenses: Option<&serde_json::Value>,
+) -> Vec<String> {
+    /// npm values may be a bare string or a `{type, url}` object.
+    fn as_text(v: &serde_json::Value) -> Option<String> {
+        v.as_str()
+            .map(String::from)
+            .or_else(|| v.get("type").and_then(|t| t.as_str()).map(String::from))
+    }
+    if let Some(l) = license {
+        if let Some(t) = as_text(l) {
+            return vec![t];
+        }
+        if let Some(a) = l.as_array() {
+            return a.iter().filter_map(as_text).collect();
+        }
+    }
+    licenses
+        .and_then(|x| x.as_array())
+        .map(|a| a.iter().filter_map(as_text).collect())
+        .unwrap_or_default()
 }
 
 /// Candidate repo URLs from a registry manifest, in priority order. `repo_for`

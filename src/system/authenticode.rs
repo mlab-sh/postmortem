@@ -66,14 +66,66 @@ const SYSTEM_ROOTS: &[&str] = &[
 
 // --- verification -------------------------------------------------------------
 
-/// Verify a batch of files in one PowerShell round-trip.
+/// Every file verified so far this run, keyed by lowercased path; `None` for a
+/// path that did not exist. asep, task, service, scoop, jobs and choco all ask
+/// about overlapping binaries, and each answer costs ~120 ms.
+static VERIFIED: std::sync::OnceLock<std::sync::Mutex<HashMap<String, Option<SigInfo>>>> =
+    std::sync::OnceLock::new();
+
+/// Verify files' signatures: one [`SigInfo`] per input path that exists, in
+/// input order, carrying the caller's spelling of the path.
 ///
-/// Batched on purpose: at ~120 ms per file, one process per path would dominate
-/// the scan.
+/// A file is verified once per run whatever asks for it (see [`VERIFIED`]).
+/// What is left is split into up to four batches verified concurrently: each
+/// batch is one PowerShell round-trip, as one process per path would dominate
+/// the scan, but a single batch is a sequential loop at ~120 ms a file — up to
+/// 12 binaries per choco package all behind one another.
 pub(crate) fn verify(paths: &[String]) -> Vec<SigInfo> {
-    if paths.is_empty() {
-        return Vec::new();
+    let cache = VERIFIED.get_or_init(Default::default);
+    let todo: Vec<String> = {
+        let done = cache.lock().unwrap_or_else(|e| e.into_inner());
+        let mut seen = std::collections::HashSet::new();
+        paths
+            .iter()
+            .filter(|p| {
+                let key = p.to_lowercase();
+                !done.contains_key(&key) && seen.insert(key)
+            })
+            .cloned()
+            .collect()
+    };
+    if !todo.is_empty() {
+        // Below ~8 files a second PowerShell startup costs more than it saves.
+        let chunks: Vec<&[String]> = todo.chunks(todo.len().div_ceil(4).max(8)).collect();
+        let results = par_map(&chunks, 4, |chunk| verify_uncached(chunk));
+        let mut done = cache.lock().unwrap_or_else(|e| e.into_inner());
+        for (chunk, found) in chunks.iter().zip(results) {
+            // A batch whose PowerShell failed is not recorded: nothing was learned.
+            let Some(found) = found else { continue };
+            let mut by_path: HashMap<String, SigInfo> = found
+                .into_iter()
+                .map(|i| (i.path.to_lowercase(), i))
+                .collect();
+            for p in *chunk {
+                let key = p.to_lowercase();
+                let info = by_path.remove(&key);
+                done.insert(key, info);
+            }
+        }
     }
+    let done = cache.lock().unwrap_or_else(|e| e.into_inner());
+    paths
+        .iter()
+        .filter_map(|p| {
+            let mut info = done.get(&p.to_lowercase())?.clone()?;
+            info.path = p.clone();
+            Some(info)
+        })
+        .collect()
+}
+
+/// One PowerShell round-trip over `paths`. `None` when PowerShell itself failed.
+fn verify_uncached(paths: &[String]) -> Option<Vec<SigInfo>> {
     let list = paths
         .iter()
         .map(|p| format!("'{}'", p.replace('\'', "''")))
@@ -102,7 +154,36 @@ foreach ($p in @({list})) {{
 }}
 "
     );
-    powershell(&script).map(|o| parse(&o)).unwrap_or_default()
+    powershell(&script).ok().map(|o| parse(&o))
+}
+
+/// Index `(owner, path)` pairs by lowercased path, so verified files can be
+/// matched back to their owners without a scan of every pair per file.
+pub(crate) fn owners_by_path(owned: &[(String, String)]) -> HashMap<String, Vec<&str>> {
+    let mut idx: HashMap<String, Vec<&str>> = HashMap::new();
+    for (owner, path) in owned {
+        idx.entry(path.to_ascii_lowercase())
+            .or_default()
+            .push(owner);
+    }
+    idx
+}
+
+/// The verified files `owner` owns, in verification order.
+pub(crate) fn owned_by(
+    verified: &[SigInfo],
+    owners: &HashMap<String, Vec<&str>>,
+    owner: &str,
+) -> Vec<SigInfo> {
+    verified
+        .iter()
+        .filter(|i| {
+            owners
+                .get(&i.path.to_ascii_lowercase())
+                .is_some_and(|o| o.contains(&owner))
+        })
+        .cloned()
+        .collect()
 }
 
 pub(crate) fn parse(stdout: &str) -> Vec<SigInfo> {

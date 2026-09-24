@@ -36,7 +36,10 @@ pub struct Vuln {
     /// GHSA / CVE / OSV id.
     pub id: String,
     pub severity: Severity,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    /// `default` as well: an empty summary is written without the key, and
+    /// without it here that record failed to read back — the whole cached
+    /// scan was dropped as corrupt and the lockfile re-sent on every run.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub summary: String,
     /// The earliest version that fixes this advisory *for the installed
     /// version*, when the database publishes one.
@@ -114,6 +117,44 @@ pub fn scan(
     Ok(out)
 }
 
+/// [`scan`] over several lockfiles at once, results in input order. Each scan
+/// is one upload and a server-side resolve, so a monorepo's lockfiles no longer
+/// queue behind each other; four at a time keeps a large one polite to the
+/// service. The request count, and so the quota spent, is unchanged.
+pub fn scan_many(
+    agent: &crate::settings::Agents,
+    cache: &Cache,
+    token: Option<&str>,
+    targets: &[(&Path, &str)],
+    scan_url: &str,
+) -> Vec<Result<Vec<VulnPackage>>> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let out: Vec<std::sync::Mutex<Option<Result<Vec<VulnPackage>>>>> =
+        targets.iter().map(|_| Default::default()).collect();
+    std::thread::scope(|s| {
+        for _ in 0..targets.len().min(4) {
+            s.spawn(|| {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some((lock, fmt)) = targets.get(i) else {
+                        break;
+                    };
+                    *out[i].lock().unwrap() = Some(scan(agent, cache, token, lock, fmt, scan_url));
+                }
+            });
+        }
+    });
+    out.into_iter()
+        .map(|slot| slot.into_inner().unwrap().expect("every target scanned"))
+        .collect()
+}
+
+/// How long a coordinate's advisory lookup is reused. Unlike a lockfile scan,
+/// a clean answer is cached too — most of an OS inventory is clean, and
+/// re-asking for all of it made every run one large request — so it has to
+/// expire: an advisory published tomorrow must reach tomorrow's run.
+const COORDINATE_TTL: Duration = Duration::from_secs(12 * 3600);
+
 /// Scan a pre-resolved coordinate set — `(ecosystem, name, version)` — through
 /// mlab's `/api/v2/scan` in its **pre-parsed** mode (`{"packages":[…]}`). Used by
 /// the [`crate::osv`] system path, whose packages come from the OS package
@@ -122,7 +163,9 @@ pub fn scan(
 ///
 /// Unlike [`scan`], the pre-parsed response echoes no `packages` array — only
 /// `results`, aligned to input order — so we zip against the coordinates we
-/// sent. Cached by the coordinate-set content hash.
+/// sent. Each coordinate's answer, clean or not, is cached for
+/// [`COORDINATE_TTL`], and only the coordinates without one are sent: an
+/// upgrade of three packages is a three-package request, not the inventory.
 pub(crate) fn scan_coordinates(
     agent: &crate::settings::Agents,
     cache: &Cache,
@@ -130,9 +173,54 @@ pub(crate) fn scan_coordinates(
     coords: &[(String, String, String)],
     scan_url: &str,
 ) -> Result<Vec<VulnPackage>> {
-    if coords.is_empty() {
-        return Ok(Vec::new());
+    let key = |(eco, name, version): &(String, String, String)| format!("{eco}|{name}@{version}");
+    let mut known: Vec<Option<Vec<Vuln>>> = coords
+        .iter()
+        .map(|c| cache.get_fresh::<Vec<Vuln>>("vuln-coord", &key(c), COORDINATE_TTL))
+        .collect();
+    let unknown: Vec<usize> = (0..coords.len()).filter(|&i| known[i].is_none()).collect();
+    if !unknown.is_empty() {
+        let sent: Vec<(String, String, String)> =
+            unknown.iter().map(|&i| coords[i].clone()).collect();
+        for (i, answer) in unknown
+            .iter()
+            .zip(query_coordinates(agent, token, &sent, scan_url)?)
+        {
+            if let Some(vulns) = &answer {
+                cache.put("vuln-coord", &key(&coords[*i]), vulns);
+                if !vulns.is_empty() {
+                    let (_, name, version) = &coords[*i];
+                    cache.put("vuln", &format!("{name}@{version}"), vulns);
+                }
+            }
+            known[*i] = answer;
+        }
     }
+
+    let mut out = Vec::new();
+    for ((eco, name, version), vulns) in coords.iter().zip(known) {
+        let Some(vulns) = vulns.filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        out.push(VulnPackage {
+            name: name.clone(),
+            version: version.clone(),
+            ecosystem: eco.clone(),
+            vulns,
+        });
+    }
+    Ok(out)
+}
+
+/// One pre-parsed `/api/v2/scan` request: per coordinate, in input order, its
+/// advisories — or `None` where the service had no answer (see
+/// [`parse_coordinate_results`]).
+fn query_coordinates(
+    agent: &crate::settings::Agents,
+    token: Option<&str>,
+    coords: &[(String, String, String)],
+    scan_url: &str,
+) -> Result<Vec<Option<Vec<Vuln>>>> {
     let packages: Vec<_> = coords
         .iter()
         .map(|(eco, name, version)| {
@@ -141,11 +229,6 @@ pub(crate) fn scan_coordinates(
         .collect();
     let payload = serde_json::to_vec(&serde_json::json!({ "packages": packages }))
         .context("serializing scan coordinates")?;
-
-    let key = format!("sys-{}", content_key(&payload));
-    if let Some(hit) = cache.get::<Vec<VulnPackage>>("vuln-scan", &key) {
-        return Ok(hit);
-    }
 
     let mut req = agent
         .for_url(scan_url)
@@ -168,48 +251,39 @@ pub(crate) fn scan_coordinates(
     };
 
     let doc: serde_json::Value = serde_json::from_str(&body).context("parsing mlab response")?;
-    let out = parse_coordinate_results(coords, &doc);
-
-    for vp in &out {
-        cache.put("vuln", &format!("{}@{}", vp.name, vp.version), &vp.vulns);
-    }
-    cache.put("vuln-scan", &key, &out);
-    Ok(out)
+    Ok(parse_coordinate_results(coords, &doc))
 }
 
 /// Zip the coordinates we sent against the pre-parsed scan's `results` (aligned
-/// to input order), keeping only coordinates that carry advisories. A result
-/// with `ok:false` is an outage/unqueryable marker, not "no vulns" — skip it
-/// (its `vulns` is absent, so it naturally drops out).
+/// to input order): each coordinate's advisories, empty when clean. A result
+/// with `ok:false` — or none at all — is an outage/unqueryable marker, not "no
+/// vulns": it comes back `None`, reported as clean for this run but never
+/// cached as clean.
 fn parse_coordinate_results(
     coords: &[(String, String, String)],
     doc: &serde_json::Value,
-) -> Vec<VulnPackage> {
-    let Some(results) = doc.get("results").and_then(|r| r.as_array()) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for ((eco, name, version), res) in coords.iter().zip(results) {
-        let vulns: Vec<Vuln> = res
-            .get("vulns")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
+) -> Vec<Option<Vec<Vuln>>> {
+    let results = doc
+        .get("results")
+        .and_then(|r| r.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    coords
+        .iter()
+        .enumerate()
+        .map(|(i, (_, name, version))| {
+            let res = results.get(i)?;
+            if res.get("ok").and_then(|o| o.as_bool()) == Some(false) {
+                return None;
+            }
+            let arr = res.get("vulns")?.as_array()?;
+            Some(
                 arr.iter()
                     .map(|v| parse_vuln_for(v, name, version))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if vulns.is_empty() {
-            continue;
-        }
-        out.push(VulnPackage {
-            name: name.clone(),
-            version: version.clone(),
-            ecosystem: eco.clone(),
-            vulns,
-        });
-    }
-    out
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 /// Zip mlab's parallel `packages` / `results` arrays into per-package vulns,
@@ -481,11 +555,29 @@ fn cvss_roundup(x: f64) -> f64 {
     }
 }
 
+/// The cache key for a lockfile's content: SipHash-2-4 under two fixed keys,
+/// 128 bits.
+///
+/// Not `DefaultHasher`, whose algorithm the standard library is free to change
+/// between releases: a toolchain upgrade re-keyed every scan and re-sent every
+/// lockfile against the anonymous 8/h. `SipHasher` is deprecated only in
+/// favour of that one, and is pinned to SipHash-2-4. (Moving to it re-keys the
+/// cache once.)
+///
+/// Not FNV either, though it would be as stable: the key decides whose scan a
+/// lockfile gets, and a lockfile is attacker-supplied — a PR can carry one
+/// crafted to collide with the base branch's, and inherit its clean result.
+/// FNV collisions are constructible; 128 bits of SipHash put even a birthday
+/// pair at 2^64.
+#[allow(deprecated)]
 fn content_key(bytes: &[u8]) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut h);
-    format!("{:016x}", h.finish())
+    use std::hash::{Hasher, SipHasher};
+    let half = |k: u64| {
+        let mut h = SipHasher::new_with_keys(k, !k);
+        h.write(bytes);
+        h.finish()
+    };
+    format!("{:016x}{:016x}", half(0), half(1))
 }
 
 #[cfg(test)]
@@ -538,10 +630,53 @@ mod tests {
             ]
         });
         let out = parse_coordinate_results(&coords, &doc);
-        assert_eq!(out.len(), 1, "only the vulnerable coordinate is kept");
-        assert_eq!(out[0].name, "curl");
-        assert_eq!(out[0].ecosystem, "Debian:12");
-        assert_eq!(out[0].vulns[0].severity, Severity::Critical);
+        assert_eq!(out.len(), 3, "one answer per coordinate sent");
+        assert_eq!(out[0], Some(vec![]), "clean, and said so");
+        assert_eq!(out[1].as_ref().unwrap()[0].severity, Severity::Critical);
+        assert_eq!(out[2], None, "an outage is not clean");
+    }
+
+    #[test]
+    fn coordinates_answered_by_the_cache_send_nothing() {
+        let dir = std::env::temp_dir().join(format!("pm-vuln-coord-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = Cache::at(dir.clone());
+        let coords: Vec<(String, String, String)> = vec![
+            ("Debian:12".into(), "clean-pkg".into(), "1.0".into()),
+            ("Debian:12".into(), "curl".into(), "7.74.0".into()),
+        ];
+        cache.put("vuln-coord", "Debian:12|clean-pkg@1.0", &Vec::<Vuln>::new());
+        let hit = Vuln {
+            id: "DEBIAN-CVE-2022-32207".into(),
+            severity: Severity::Critical,
+            summary: String::new(),
+            fixed: None,
+        };
+        cache.put("vuln-coord", "Debian:12|curl@7.74.0", &vec![hit.clone()]);
+        // Nothing listens here: any request would fail the call.
+        let agents = crate::settings::NetworkSettings::default().agents(Duration::from_secs(1));
+        let out = scan_coordinates(&agents, &cache, None, &coords, "http://127.0.0.1:9/scan")
+            .expect("answered from the cache alone");
+        assert_eq!(out.len(), 1);
+        assert_eq!((out[0].name.as_str(), &out[0].vulns), ("curl", &vec![hit]));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn content_key_is_stable_siphash() {
+        // The SipHash-2-4 reference vector (key 00..0f, empty message): pins
+        // the algorithm, which is the whole point of not using DefaultHasher.
+        #[allow(deprecated)]
+        let reference = {
+            use std::hash::{Hasher, SipHasher};
+            SipHasher::new_with_keys(0x0706_0504_0302_0100, 0x0f0e_0d0c_0b0a_0908).finish()
+        };
+        assert_eq!(reference, 0x726f_db47_dd0e_0e31);
+        // And the key itself, so a change to how it is derived is a decision.
+        assert_eq!(content_key(b"{}").len(), 32);
+        assert_eq!(content_key(b"{}"), content_key(b"{}"));
+        assert_ne!(content_key(b"{}"), content_key(b"{ }"));
+        assert_eq!(content_key(b""), "4d0617e48cf8737b15f9c9e4409f3326");
     }
 
     #[test]

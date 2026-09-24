@@ -29,6 +29,7 @@
 //! for this package. All of it is data the scan already produced — no network.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::io::Write;
 
 use owo_colors::OwoColorize;
 
@@ -229,7 +230,11 @@ fn finding_is_for(f: &Finding, target: &str) -> bool {
 
 /// Render the blast radius.
 pub fn render(b: &Blast, root_label: &str) {
-    println!(
+    // Buffered and locked once rather than a lock and a `write` per line;
+    // dropped (flushed) before gochi, which prints on its own.
+    let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+    let _ = writeln!(
+        out,
         "{}  {}  {}",
         "blast radius".bold(),
         b.package.cyan(),
@@ -237,7 +242,7 @@ pub fn render(b: &Blast, root_label: &str) {
     );
 
     let versions = b.versions.join(", ");
-    println!("\n  {:<12} {}", "installed".dimmed(), versions);
+    let _ = writeln!(out, "\n  {:<12} {}", "installed".dimmed(), versions);
 
     let reach = format!(
         "{} of {} packages depend on it ({:.0}%)",
@@ -250,7 +255,7 @@ pub fn render(b: &Blast, root_label: &str) {
     } else {
         reach
     };
-    println!("  {:<12} {reach}", "reach".dimmed());
+    let _ = writeln!(out, "  {:<12} {reach}", "reach".dimmed());
 
     let ships = if b.ships() {
         format!("yes — {} (it is in the shipped artifact)", b.scope.as_str())
@@ -259,7 +264,7 @@ pub fn render(b: &Blast, root_label: &str) {
     } else {
         "no — dev/test only".green().to_string()
     };
-    println!("  {:<12} {ships}", "ships".dimmed());
+    let _ = writeln!(out, "  {:<12} {ships}", "ships".dimmed());
 
     let trig = match b.trigger {
         Trigger::Install => "install hook — executes on every install, before review"
@@ -271,10 +276,11 @@ pub fn render(b: &Blast, root_label: &str) {
             .truecolor(255, 165, 0)
             .to_string(),
     };
-    println!("  {:<12} {trig}", "runs".dimmed());
+    let _ = writeln!(out, "  {:<12} {trig}", "runs".dimmed());
 
     if !b.via.is_empty() {
-        println!(
+        let _ = writeln!(
+            out,
             "  {:<12} {}",
             "entered via".dimmed(),
             b.via.join(", ").yellow()
@@ -282,32 +288,34 @@ pub fn render(b: &Blast, root_label: &str) {
     }
 
     // The ceiling first: this is what a hostile version could reach.
-    println!("\n  {}", "if compromised, it reaches".bold());
+    let _ = writeln!(out, "\n  {}", "if compromised, it reaches".bold());
     for e in b.exposure() {
-        println!("    {} {e}", "•".red());
+        let _ = writeln!(out, "    {} {e}", "•".red());
     }
 
     // Then the floor, explicitly labelled as such.
     if !b.observed.is_empty() || !b.findings.is_empty() {
-        println!("\n  {}", "what its current code does".bold());
+        let _ = writeln!(out, "\n  {}", "what its current code does".bold());
         for o in &b.observed {
-            println!("    {} {o}", "·".dimmed());
+            let _ = writeln!(out, "    {} {o}", "·".dimmed());
         }
         for f in &b.findings {
-            println!(
+            let _ = writeln!(
+                out,
                 "    {} [{}] {}",
                 "·".dimmed(),
                 f.category.as_str().dimmed(),
                 crate::analyze::util::snippet(&f.detail, 80)
             );
         }
-        println!(
+        let _ = writeln!(
+            out,
             "    {}",
             "— a lower bound, not a limit: a hostile version is not restricted to this".dimmed()
         );
     }
 
-    println!();
+    let _ = writeln!(out);
     let mood = if b.trigger == Trigger::Install || (b.ships() && b.share() >= 0.25) {
         crate::gochi::Mood::Bad
     } else if b.ships() {
@@ -315,6 +323,7 @@ pub fn render(b: &Blast, root_label: &str) {
     } else {
         crate::gochi::Mood::Idle
     };
+    drop(out);
     crate::gochi::say(mood, verdict(b));
 }
 

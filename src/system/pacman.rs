@@ -16,10 +16,33 @@ use super::*;
 /// ships an install hook. `online` additionally enriches foreign/AUR packages
 /// via the AUR RPC.
 pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
-    let out = Command::new("pacman")
-        .arg("-Qi")
-        .output()
-        .context("running `pacman -Qi`")?;
+    // Six independent pacman/find calls that used to run one after another.
+    // `pacman -Qkk` re-hashes every installed file and dominates, so it starts
+    // first and the rest run beside it.
+    let (out, raw, file_index, setuid, outdated, modified) = std::thread::scope(|s| {
+        let modified = s.spawn(|| {
+            if opts.skip_integrity {
+                0
+            } else {
+                pacman_modified_files()
+            }
+        });
+        let raw = s.spawn(read_foreign);
+        let file_index = s.spawn(pacman_file_index);
+        // pacman describes this machine only; the image path goes through apt/dnf/apk.
+        let setuid = s.spawn(|| find_setuid_files_at(std::path::Path::new("/")));
+        let outdated = s.spawn(read_pacman_outdated);
+        let out = Command::new("pacman").arg("-Qi").output();
+        (
+            out,
+            raw.join().unwrap_or_default(),
+            file_index.join().unwrap_or_default(),
+            setuid.join().unwrap_or_default(),
+            outdated.join().unwrap_or_default(),
+            modified.join().unwrap_or(0),
+        )
+    });
+    let out = out.context("running `pacman -Qi`")?;
     if !out.status.success() {
         anyhow::bail!(
             "`pacman -Qi` failed: {}",
@@ -31,7 +54,6 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
     // Foreign packages (not from an official repo) = AUR builds / manual installs
     // — the untrusted surface. An un-synced sync-DB reports ~everything foreign,
     // which is useless, so it's skipped unless forced.
-    let raw = read_foreign();
     let unsynced = !raw.is_empty() && raw.len() * 10 >= deps.len() * 9;
     let mut warnings: Vec<String> = Vec::new();
     let foreign = if unsynced && !opts.force_aur {
@@ -46,43 +68,50 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
     };
 
     if !foreign.is_empty() {
-        let aur = if opts.online {
-            aur_info(&foreign)
-        } else {
-            HashMap::new()
+        // One settings load and one pair of agents for the whole AUR pass (it
+        // was one of each per package), honouring `no_proxy` like every other
+        // networked lookup.
+        let aur_net = opts.online.then(|| {
+            let net = crate::settings::Settings::load_or_warn().network;
+            let agents = net.agents(std::time::Duration::from_secs(15));
+            (agents, net.endpoints.aur())
+        });
+        let aur = match &aur_net {
+            Some((agents, base)) => aur_info(&foreign, agents, base),
+            None => HashMap::new(),
         };
         let version_of: HashMap<&str, &str> = deps
             .iter()
             .map(|d| (d.name.as_str(), d.version.as_str()))
             .collect();
-        for name in &foreign {
-            for sig in foreign_signals(aur.get(name)) {
-                push_signal(&mut signals, name, sig);
-            }
+        // Per package: a PKGBUILD download (a round trip each) and two recipe
+        // scans. They go out across a pool and come back in `foreign` order, so
+        // the signals land exactly as the serial loop pushed them.
+        let per_pkg = par_map(&foreign, 8, |name| {
+            let mut sigs = foreign_signals(aur.get(name));
             // Static-analyze the local `.install` hook (the shell that runs on
             // this machine at install/upgrade/removal) — offline.
             if let Some(ver) = version_of.get(name.as_str()) {
-                for sig in analyze_pacman_install(name, ver) {
-                    push_signal(&mut signals, name, sig);
-                }
+                sigs.extend(analyze_pacman_install(name, ver));
             }
             // Static-analyze the AUR PKGBUILD (the untrusted build recipe) — online.
-            if opts.online
+            if let Some((agents, base)) = &aur_net
                 && aur.contains_key(name)
-                && let Some(pkgbuild) = fetch_pkgbuild(name)
+                && let Some(pkgbuild) = fetch_pkgbuild(name, agents, base)
             {
-                for sig in analyze_recipe(name, &pkgbuild, "sh") {
-                    push_signal(&mut signals, name, sig);
-                }
+                sigs.extend(analyze_recipe(name, &pkgbuild, "sh"));
+            }
+            sigs
+        });
+        for (name, sigs) in foreign.iter().zip(per_pkg) {
+            for sig in sigs {
+                push_signal(&mut signals, name, sig);
             }
         }
     }
 
     // Execution & privilege: the boot/scheduled/auth/setuid surface a package sets
     // up through its files (shared with the apt/dnf backends).
-    let file_index = pacman_file_index();
-    // pacman describes this machine only; the image path goes through apt/dnf/apk.
-    let setuid = find_setuid_files_at(std::path::Path::new("/"));
     for d in &deps {
         if let Some(files) = file_index.get(&d.name) {
             for sig in persistence_signals(files, &setuid) {
@@ -92,7 +121,7 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
     }
 
     // Version drift (needs a synced DB; best-effort).
-    for (name, (old, new)) in read_pacman_outdated() {
+    for (name, (old, new)) in outdated {
         signals
             .entry(name)
             .or_default()
@@ -100,7 +129,6 @@ pub fn pacman_inventory(opts: Opts) -> Result<Inventory> {
     }
 
     // Integrity & trust caveats.
-    let modified = pacman_modified_files();
     if modified > 0 {
         warnings.push(format!(
             "{modified} installed file(s) modified since install (pacman -Qkk)"
@@ -212,28 +240,31 @@ struct AurPkg {
 }
 
 /// Query the AUR RPC v5 `info` endpoint (batched) for a set of package names.
-/// Best-effort: network failures yield an empty map.
-fn aur_info(names: &[String]) -> HashMap<String, AurPkg> {
-    let net = crate::settings::Settings::load_or_warn().network;
-    let agent = net
-        .apply(ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)))
-        .build();
-    let aur = net.endpoints.aur();
-    let mut out = HashMap::new();
-    for chunk in names.chunks(120) {
+/// Best-effort: network failures yield an empty map. Batches go out
+/// concurrently and merge in batch order.
+fn aur_info(
+    names: &[String],
+    agents: &crate::settings::Agents,
+    aur: &str,
+) -> HashMap<String, AurPkg> {
+    let chunks: Vec<&[String]> = names.chunks(120).collect();
+    let batches = par_map(&chunks, 4, |chunk| {
         let query: String = chunk.iter().map(|n| format!("&arg[]={n}")).collect();
         let url = format!("{aur}/rpc/v5/info?{}", query.trim_start_matches('&'));
-        let Ok(resp) = agent.get(&url).set("User-Agent", UA).call() else {
-            continue;
-        };
-        let Ok(text) = resp.into_string() else {
-            continue;
-        };
-        if let Ok(parsed) = serde_json::from_str::<AurResp>(&text) {
-            out.extend(parsed.results.into_iter().map(|p| (p.name.clone(), p)));
-        }
-    }
-    out
+        let resp = agents
+            .for_url(&url)
+            .get(&url)
+            .set("User-Agent", UA)
+            .call()
+            .ok()?;
+        serde_json::from_str::<AurResp>(&resp.into_string().ok()?).ok()
+    });
+    batches
+        .into_iter()
+        .flatten()
+        .flat_map(|parsed| parsed.results)
+        .map(|p| (p.name.clone(), p))
+        .collect()
 }
 
 /// Static-analyze a foreign package's local `.install` hook (shell), if any. The
@@ -247,16 +278,10 @@ fn analyze_pacman_install(name: &str, version: &str) -> Vec<SysSignal> {
 }
 
 /// Fetch a package's AUR PKGBUILD (its untrusted build recipe). Best-effort.
-fn fetch_pkgbuild(name: &str) -> Option<String> {
-    let net = crate::settings::Settings::load_or_warn().network;
-    let agent = net
-        .apply(ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(15)))
-        .build();
-    let url = format!(
-        "{}/cgit/aur.git/plain/PKGBUILD?h={name}",
-        net.endpoints.aur()
-    );
-    agent
+fn fetch_pkgbuild(name: &str, agents: &crate::settings::Agents, aur: &str) -> Option<String> {
+    let url = format!("{aur}/cgit/aur.git/plain/PKGBUILD?h={name}");
+    agents
+        .for_url(&url)
         .get(&url)
         .set("User-Agent", UA)
         .call()

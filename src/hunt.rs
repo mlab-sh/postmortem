@@ -15,7 +15,7 @@
 //!    week is still an exposure — its install scripts ran on every machine that
 //!    installed it in between.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -106,9 +106,10 @@ impl Target {
         }
     }
 
-    fn matches(&self, name: &str, version: &str) -> bool {
-        norm_name(&self.name) == norm_name(name)
-            && self.version.as_deref().is_none_or(|v| norm_ver(v) == norm_ver(version))
+    /// The version half of a match; the name half goes through `norm_name`
+    /// keys (see `Names`).
+    fn wants(&self, version: &str) -> bool {
+        self.version.as_deref().is_none_or(|v| norm_ver(v) == norm_ver(version))
     }
 }
 
@@ -217,7 +218,7 @@ pub struct Outcome {
 
 /// Passes 2 and 3 over the discovered projects, `workers()` at a time.
 pub fn hunt(projects: &[PathBuf], targets: &[Target], history: bool, animate: bool) -> Outcome {
-    let names = name_regex(targets);
+    let names = Names::new(targets);
     let quiet = ui::Ui::silent();
     let bar = crate::gochi::Loader::start(projects.len() as u64, animate);
     bar.step("hunting");
@@ -267,7 +268,7 @@ fn hunt_project(
     dir: &Path,
     targets: &[Target],
     history: bool,
-    names: &regex::Regex,
+    names: &Names,
     quiet: &ui::Ui,
 ) -> Result<(Vec<Hit>, bool)> {
     let detected = detect::detect(dir)?;
@@ -279,6 +280,12 @@ fn hunt_project(
         return Ok((Vec::new(), false));
     }
     let (_, deps, _) = crate::cmd::common::parse_detected(detected, quiet, &[])?;
+    // Normalised once here, not per target per pin file: that was two
+    // `String`s per dependency each time, 100k+ on a big lockfile and a feed.
+    let mut by_name: HashMap<String, Vec<&Dependency>> = HashMap::new();
+    for d in &deps {
+        by_name.entry(norm_name(&d.name)).or_default().push(d);
+    }
 
     let mut out = Vec::new();
     let mut replayed = false;
@@ -293,7 +300,7 @@ fn hunt_project(
             None => Vec::new(),
         };
         for (i, t) in targets.iter().enumerate() {
-            let current = current_versions(&deps, eco, t);
+            let current = current_versions(by_name.get(&names.keys[i]), eco, t);
             let history = windows.get(i).cloned().unwrap_or_default();
             if current.is_empty() && history.is_empty() {
                 continue;
@@ -327,10 +334,12 @@ fn pin_file(d: &Detected) -> Option<&Path> {
     }
 }
 
-fn current_versions(deps: &[Dependency], eco: &str, t: &Target) -> Vec<String> {
-    let mut v: Vec<String> = deps
-        .iter()
-        .filter(|d| d.ecosystem.as_str() == eco && t.matches(&d.name, &d.version))
+/// `same_name`: the project's dependencies whose `norm_name` is the target's.
+fn current_versions(same_name: Option<&Vec<&Dependency>>, eco: &str, t: &Target) -> Vec<String> {
+    let mut v: Vec<String> = same_name
+        .into_iter()
+        .flatten()
+        .filter(|d| d.ecosystem.as_str() == eco && t.wants(&d.version))
         .map(|d| d.version.clone())
         .collect();
     v.sort();
@@ -364,22 +373,52 @@ fn git_toplevel(dir: &Path) -> Option<PathBuf> {
         .ok()
 }
 
-/// One alternation over every target name. The regex crate compiles a literal
-/// alternation to a multi-pattern searcher, so a revision is scanned once
-/// whatever the number of targets — a 500-line IOC feed costs what one does.
-pub fn name_regex(targets: &[Target]) -> regex::Regex {
-    let mut names: Vec<String> = targets.iter().map(|t| regex::escape(&t.name)).collect();
-    names.sort_by_key(|n| std::cmp::Reverse(n.len())); // longest first: `foo-bar` before `foo`
-    names.dedup();
-    regex::RegexBuilder::new(&format!("(?i){}", names.join("|")))
-        .build()
-        .expect("escaped literals always compile")
+/// The target names, compiled once per hunt.
+pub struct Names {
+    /// One alternation over every target name. The regex crate compiles a
+    /// literal alternation to a multi-pattern searcher, so a revision is
+    /// scanned once whatever the number of targets — a 500-line IOC feed costs
+    /// what one does.
+    re: regex::Regex,
+    /// `norm_name(target.name)`, index-aligned with the targets.
+    keys: Vec<String>,
+    /// Target indices by `keys`, so a match finds its targets in one lookup
+    /// instead of a scan of the whole list per match.
+    by_key: HashMap<String, Vec<usize>>,
+}
+
+impl Names {
+    pub fn new(targets: &[Target]) -> Self {
+        // Separators as a class: `norm_name` makes `-`, `_` and `.` one
+        // character for what is pinned now, so history must agree —
+        // `python-dateutil` is pinned as `python_dateutil` in plenty of files.
+        let mut alts: Vec<String> = targets
+            .iter()
+            .map(|t| t.name.split(['-', '_', '.']).map(regex::escape).collect::<Vec<_>>().join("[-_.]"))
+            .collect();
+        alts.sort_by_key(|n| std::cmp::Reverse(n.len())); // longest first: `foo-bar` before `foo`
+        alts.dedup();
+        // `-u` folds ASCII case only, where Unicode `(?i)` expands every
+        // letter to its full case class (`k` also matches the Kelvin sign) and
+        // defeats the literal prefilter; a match is then compared
+        // ASCII-case-insensitively anyway. Unicode is kept for non-ASCII names.
+        let flags = if targets.iter().all(|t| t.name.is_ascii()) { "(?i-u)" } else { "(?i)" };
+        let re = regex::RegexBuilder::new(&format!("{flags}{}", alts.join("|")))
+            .build()
+            .expect("escaped literals always compile");
+        let keys: Vec<String> = targets.iter().map(|t| norm_name(&t.name)).collect();
+        let mut by_key: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, k) in keys.iter().enumerate() {
+            by_key.entry(k.clone()).or_default().push(i);
+        }
+        Names { re, keys, by_key }
+    }
 }
 
 /// Replay `file`'s first-parent history, oldest first, and return per target
 /// the windows during which it was pinned. `None` when git has no history for
 /// the file (untracked, or not a repository after all).
-fn replay(top: &Path, file: &Path, targets: &[Target], names: &regex::Regex) -> Option<Vec<Vec<Window>>> {
+fn replay(top: &Path, file: &Path, targets: &[Target], names: &Names) -> Option<Vec<Vec<Window>>> {
     let rel = file.strip_prefix(top).ok()?.to_string_lossy().replace('\\', "/");
     let log = Command::new("git")
         .arg("-C")
@@ -488,19 +527,28 @@ fn cat_file_batch(
 // ponytail: textual, not parsed — a version line belonging to the *next* entry
 // can match when an entry has none. Re-parse the flipping revisions with the
 // real parsers if that ever produces a false window.
-pub fn present_in(text: &str, targets: &[Target], names: &regex::Regex) -> HashSet<usize> {
+pub fn present_in(text: &str, targets: &[Target], names: &Names) -> HashSet<usize> {
     let mut found = HashSet::new();
-    for m in names.find_iter(text) {
+    for m in names.re.find_iter(text) {
         let before = text[..m.start()].chars().next_back();
         let after = text[m.end()..].chars().next();
         let part = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || "-_.".contains(c));
         if part(before) || part(after) {
             continue;
         }
-        let name = m.as_str();
-        let tail = &text[m.end()..text.len().min(m.end() + 400)];
-        for (i, t) in targets.iter().enumerate() {
-            if found.contains(&i) || !t.name.eq_ignore_ascii_case(name) {
+        let Some(idx) = names.by_key.get(&norm_name(m.as_str())) else {
+            continue;
+        };
+        // 400 bytes can land inside a multi-byte char (a non-ASCII author
+        // name in a lockfile comment), and slicing there panics.
+        let mut end = text.len().min(m.end() + 400);
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        let tail = &text[m.end()..end];
+        for &i in idx {
+            let t = &targets[i];
+            if found.contains(&i) {
                 continue;
             }
             let hit = match &t.version {
@@ -529,6 +577,10 @@ pub fn present_in(text: &str, targets: &[Target], names: &regex::Regex) -> HashS
             if hit {
                 found.insert(i);
             }
+        }
+        // Nothing left to learn from the rest of a 10k-line lockfile.
+        if found.len() == targets.len() {
+            break;
         }
     }
     found
@@ -656,7 +708,7 @@ mod tests {
 
     fn hits(text: &str, spec: &str) -> bool {
         let ts = vec![t(spec)];
-        present_in(text, &ts, &name_regex(&ts)).contains(&0)
+        present_in(text, &ts, &Names::new(&ts)).contains(&0)
     }
 
     #[test]
@@ -687,8 +739,46 @@ mod tests {
     fn many_targets_one_pass() {
         let ts: Vec<Target> = ["a-pkg@1.0.0", "b-pkg@2.0.0", "c-pkg"].iter().map(|s| t(s)).collect();
         let text = "\"node_modules/b-pkg\": {\n \"version\": \"2.0.0\"\n},\n\"node_modules/c-pkg\": {\n \"version\": \"9.9.9\"\n}";
-        let got = present_in(text, &ts, &name_regex(&ts));
+        let got = present_in(text, &ts, &Names::new(&ts));
         assert_eq!(got, HashSet::from([1, 2]));
+    }
+
+    #[test]
+    fn history_and_current_agree_on_pypi_separators() {
+        // What is pinned now is matched through `norm_name`; history must not
+        // miss the same pin just because it was spelled with `_` or `.`.
+        let ts = vec![t("python-dateutil@2.8.2")];
+        for pin in ["python_dateutil==2.8.2\n", "Python.Dateutil==2.8.2\n", "python-dateutil==2.8.2\n"] {
+            assert!(hits(pin, "python-dateutil@2.8.2"), "{pin}");
+        }
+        use crate::model::{Ecosystem, LicenseSource, Scope};
+        let dep = |name: &str| Dependency {
+            name: name.into(),
+            version: "2.8.2".into(),
+            ecosystem: Ecosystem::Python,
+            direct: true,
+            scope: Scope::Prod,
+            licenses: Vec::new(),
+            license_source: LicenseSource::Unknown,
+            resolved_url: None,
+            integrity: None,
+            parents: Vec::new(),
+        };
+        let deps = [dep("python_dateutil"), dep("requests")];
+        let mut by_name: HashMap<String, Vec<&Dependency>> = HashMap::new();
+        for d in &deps {
+            by_name.entry(norm_name(&d.name)).or_default().push(d);
+        }
+        let names = Names::new(&ts);
+        let got = current_versions(by_name.get(&names.keys[0]), Ecosystem::Python.as_str(), &ts[0]);
+        assert_eq!(got, vec!["2.8.2"]);
+    }
+
+    #[test]
+    fn a_tail_ending_inside_a_multibyte_char_does_not_panic() {
+        // 400 bytes after the name lands in the middle of a 3-byte `€`.
+        let text = format!("keyv@1.0.0 {}€€", "x".repeat(388));
+        assert!(hits(&text, "keyv@1.0.0"));
     }
 
     #[test]
@@ -726,7 +816,7 @@ mod tests {
         }
         let ts = vec![t("event-stream@3.3.6"), t("event-stream")];
         let top = git_toplevel(&base).unwrap();
-        let w = replay(&top, &top.join("package-lock.json"), &ts, &name_regex(&ts)).unwrap();
+        let w = replay(&top, &top.join("package-lock.json"), &ts, &Names::new(&ts)).unwrap();
         let _ = std::fs::remove_dir_all(&base);
         assert_eq!(w[0].len(), 1);
         assert_eq!(w[0][0].from.subject, "bump deps");

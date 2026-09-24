@@ -6,15 +6,18 @@
 //!
 //! Only the manifests and lockfiles are fetched, never the repository. A
 //! dependency diff needs nothing else, and cloning a large repo twice to read
-//! two JSON files would dominate the runtime. Each side costs one tree listing
-//! plus one download per manifest found, so a typical project is a handful of
-//! requests.
+//! two JSON files would dominate the runtime. Each side costs one tree listing,
+//! plus one download per *distinct* manifest found — a file the PR leaves alone
+//! is the same blob on both sides and is downloaded once — so a typical
+//! project is a handful of requests.
 //!
 //! Both sides are read from the **base** repository even when the PR comes from
 //! a fork: GitHub keeps the PR head reachable there, so the fork's name is never
 //! needed and a deleted fork does not break the lookup.
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 
@@ -175,11 +178,56 @@ pub fn materialize(pr: &PrRef, settings: &mut Settings, ui: &crate::ui::Ui) -> R
     };
 
     let fetch_phase = ui.phase("fetching manifests");
+    let token = token.as_deref();
+    // The two listings are independent: side by side, not one after the other.
+    let (base_list, head_list) = std::thread::scope(|s| {
+        let base = s.spawn(|| list_manifests(&agents, ep, token, pr, &meta.base_sha));
+        let head = list_manifests(&agents, ep, token, pr, &meta.head_sha);
+        (base.join().expect("tree listing thread"), head)
+    });
+    let sides_list = [
+        (&meta.base_sha, &sides.base, base_list?),
+        (&meta.head_sha, &sides.head, head_list?),
+    ];
+
+    // A PR touches a few manifests; the rest are the same blob on both sides.
+    // Each distinct blob is downloaded once, from whichever commit has it
+    // first, a few at a time.
+    let mut blobs: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
+    for (sha, _, entries) in &sides_list {
+        for (path, blob) in entries {
+            blobs.entry(blob).or_insert((sha, path));
+        }
+    }
+    let blobs: Vec<_> = blobs.into_iter().collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let fetched: Mutex<HashMap<&str, Result<String>>> = Mutex::new(HashMap::new());
+    std::thread::scope(|s| {
+        for _ in 0..blobs.len().min(4) {
+            s.spawn(|| {
+                while let Some((blob, (sha, path))) =
+                    blobs.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                {
+                    let body = fetch_file(&agents, ep, token, pr, sha, path);
+                    fetched.lock().unwrap().insert(blob, body);
+                }
+            });
+        }
+    });
+    let mut fetched = fetched.into_inner().unwrap();
+    // The first failure in blob order, so the error does not depend on timing.
+    for (blob, _) in &blobs {
+        if let Some(Err(_)) = fetched.get(blob) {
+            return Err(fetched.remove(blob).expect("present").unwrap_err());
+        }
+    }
+
     let mut files = 0;
-    for (sha, dir) in [(&meta.base_sha, &sides.base), (&meta.head_sha, &sides.head)] {
-        let paths = list_manifests(&agents, ep, token.as_deref(), pr, sha)?;
-        for p in &paths {
-            let body = fetch_file(&agents, ep, token.as_deref(), pr, sha, p)?;
+    for (_, dir, entries) in &sides_list {
+        for (p, blob) in entries {
+            let Some(Ok(body)) = fetched.get(blob.as_str()) else {
+                unreachable!("every blob was fetched");
+            };
             let dest = dir.join(p);
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)
@@ -294,14 +342,15 @@ fn fetch_meta(
     })
 }
 
-/// The manifest/lockfile paths present in the tree at `sha`.
+/// The manifest/lockfile paths present in the tree at `sha`, each with its blob
+/// sha — the content address that lets an unchanged file be fetched once.
 fn list_manifests(
     agents: &crate::settings::Agents,
     ep: &Endpoints,
     token: Option<&str>,
     pr: &PrRef,
     sha: &str,
-) -> Result<Vec<String>> {
+) -> Result<Vec<(String, String)>> {
     let url = format!(
         "{}/repos/{}/{}/git/trees/{sha}?recursive=1",
         ep.github(),
@@ -319,7 +368,7 @@ fn list_manifests(
         );
     }
 
-    let mut out: Vec<String> = Vec::new();
+    let mut out: Vec<(String, String)> = Vec::new();
     for e in v
         .get("tree")
         .and_then(|t| t.as_array())
@@ -339,8 +388,11 @@ fn list_manifests(
             continue;
         }
         let name = path.rsplit('/').next().unwrap_or(path);
+        let Some(blob) = e.get("sha").and_then(|x| x.as_str()) else {
+            continue;
+        };
         if WANTED.contains(&name) {
-            out.push(path.to_string());
+            out.push((path.to_string(), blob.to_string()));
         }
     }
     out.sort();

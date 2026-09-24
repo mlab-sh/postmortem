@@ -50,6 +50,17 @@ fn build_deps(
     direct: &HashSet<String>,
     groups: &HashMap<String, Scope>,
 ) -> Vec<Dependency> {
+    // Reverse index: gem name → indices of the specs that depend on it, in lock
+    // order and deduplicated — each spec used to scan every other spec, O(S²·d).
+    let mut dependents: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (i, o) in specs.iter().enumerate() {
+        for d in &o.deps {
+            let v = dependents.entry(d).or_default();
+            if v.last() != Some(&i) {
+                v.push(i);
+            }
+        }
+    }
     specs
         .iter()
         .map(|spec| Dependency {
@@ -62,9 +73,12 @@ fn build_deps(
             license_source: LicenseSource::Unknown,
             resolved_url: spec.remote.clone(),
             integrity: None,
-            parents: specs
-                .iter()
-                .filter(|o| o.name != spec.name && o.deps.iter().any(|d| d == &spec.name))
+            parents: dependents
+                .get(spec.name.as_str())
+                .into_iter()
+                .flatten()
+                .map(|&i| &specs[i])
+                .filter(|o| o.name != spec.name)
                 .map(|o| (o.name.clone(), o.version.clone()))
                 .collect(),
         })

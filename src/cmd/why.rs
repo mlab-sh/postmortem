@@ -23,9 +23,10 @@ pub(crate) fn run_why(args: cli::WhyArgs) -> Result<()> {
     if args.blast {
         // The behavioural half needs the offline analyzers; the positional half
         // does not, so a failure there would still leave a useful answer — but
-        // running them is cheap and local, so they always run.
+        // running them is cheap and local, so they always run — over the
+        // package's own files only, the only findings `blast` looks at.
         let findings = {
-            let f = analyze::run_all(&detected, &deps, &ui);
+            let f = analyze::run_for_package(&detected, &deps, &ui, &args.package);
             analyze::drop_test_iocs(f, false, &root)
         };
         // Whether the dependencies' own code was on disk decides between "no

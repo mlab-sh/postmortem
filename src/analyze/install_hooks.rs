@@ -14,6 +14,7 @@
 //! libs, or base64 — typical exfil patterns (ctx 0.2.6, `request` typosquats).
 
 use serde::Deserialize;
+use std::ffi::OsStr;
 use std::path::Path;
 
 use crate::analyze::util;
@@ -54,12 +55,16 @@ struct PkgJson {
     gypfile: Option<bool>,
 }
 
-pub fn scan_node(node_modules: &Path, sources: &lifecycle::Sources, out: &mut Vec<Finding>) {
-    for pkg_json in util::walk_files(node_modules, &["json"]) {
-        if pkg_json.file_name().and_then(|s| s.to_str()) != Some("package.json") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&pkg_json) else {
+pub fn scan_node(
+    list: &util::Listing,
+    node_modules: &Path,
+    sources: &lifecycle::Sources,
+    out: &mut Vec<Finding>,
+) {
+    for pkg_json in list.select(node_modules, |p| {
+        p.file_name() == Some(OsStr::new("package.json"))
+    }) {
+        let Some(text) = super::read_lossy(&pkg_json) else {
             continue;
         };
         let Ok(parsed) = serde_json::from_str::<PkgJson>(&text) else {
@@ -80,9 +85,10 @@ pub fn scan_node(node_modules: &Path, sources: &lifecycle::Sources, out: &mut Ve
             let Some(cmd) = parsed.scripts.get(hook) else {
                 continue;
             };
-            let suspicious = SUSPICIOUS_SCRIPT_PATTERNS
-                .iter()
-                .any(|p| cmd.to_lowercase().contains(&p.to_lowercase()));
+            // The patterns are lowercase already; lowercase the command once,
+            // not once per pattern.
+            let lower = cmd.to_lowercase();
+            let suspicious = SUSPICIOUS_SCRIPT_PATTERNS.iter().any(|p| lower.contains(p));
             let severity = if suspicious {
                 Severity::High
             } else {
@@ -160,12 +166,9 @@ const PY_SUSPICIOUS_IN_SETUP: &[&str] = &[
     "os.environ",
 ];
 
-pub fn scan_python(root: &Path, out: &mut Vec<Finding>) {
-    for setup_py in util::walk_files(root, &["py"]) {
-        if setup_py.file_name().and_then(|s| s.to_str()) != Some("setup.py") {
-            continue;
-        }
-        let Ok(text) = std::fs::read_to_string(&setup_py) else {
+pub fn scan_python(list: &util::Listing, root: &Path, out: &mut Vec<Finding>) {
+    for setup_py in list.select(root, |p| p.file_name() == Some(OsStr::new("setup.py"))) {
+        let Some(text) = super::read_lossy(&setup_py) else {
             continue;
         };
         let hits: Vec<&&str> = PY_SUSPICIOUS_IN_SETUP
@@ -220,7 +223,7 @@ mod tests {
 
     fn scan(nm: &Path, sources: &Sources) -> Vec<Finding> {
         let mut out = Vec::new();
-        scan_node(nm, sources, &mut out);
+        scan_node(&util::Listing::walk(nm), nm, sources, &mut out);
         std::fs::remove_dir_all(nm.parent().unwrap()).ok();
         out
     }

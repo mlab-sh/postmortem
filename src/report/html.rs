@@ -174,11 +174,25 @@ fn sev_label(s: Severity) -> &'static str {
 }
 
 fn esc(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+    let mut out = String::with_capacity(s.len());
+    esc_into(&mut out, s);
+    out
+}
+
+/// [`esc`] appended to `out`: one pass, no intermediate strings (the chained
+/// `replace` it replaces built five). Same output — `&` is the only character
+/// an escape introduces, and it is escaped only where it was in the input.
+fn esc_into(out: &mut String, s: &str) {
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
 }
 
 /// The `tree --html` report.
@@ -357,31 +371,40 @@ fn collect<'a>(nodes: &'a [crate::tree::Node], out: &mut Vec<&'a crate::tree::No
 
 /// The forest as nested lists — plain HTML, so it prints and searches natively.
 fn forest_html(nodes: &[crate::tree::Node]) -> String {
+    let mut s = String::new();
+    forest_into(&mut s, nodes);
+    s
+}
+
+/// The forest as nested lists, appended to `s`. One buffer for the whole
+/// forest: returning a `String` per subtree copied every subtree into its
+/// parent's `format!`, O(N·depth) bytes moved.
+fn forest_into(s: &mut String, nodes: &[crate::tree::Node]) {
+    use std::fmt::Write;
     if nodes.is_empty() {
-        return String::new();
+        return;
     }
-    let mut s = String::from("<ul>");
+    s.push_str("<ul>");
     for n in nodes {
-        let risk = match n.risk {
-            Some(r) if r > 0 => format!(r#" <span class="loc">risk {r}</span>"#),
-            _ => String::new(),
-        };
+        s.push_str("<li>");
+        esc_into(s, &n.name);
+        s.push_str("<span class=\"loc\">@");
+        esc_into(s, &n.version);
+        s.push_str("</span>");
+        if let Some(r) = n.risk
+            && r > 0
+        {
+            let _ = write!(s, r#" <span class="loc">risk {r}</span>"#);
+        }
         // The terminal view marks these too; without them a collapsed diamond
         // dep looks like a leaf that genuinely has no children.
-        let mark = if n.deduped {
-            r#" <span class="loc">(*)</span>"#
+        if n.deduped {
+            s.push_str(r#" <span class="loc">(*)</span>"#);
         } else if n.truncated {
-            r#" <span class="loc">(…)</span>"#
-        } else {
-            ""
-        };
-        s.push_str(&format!(
-            "<li>{}<span class=\"loc\">@{}</span>{risk}{mark}{}</li>",
-            esc(&n.name),
-            esc(&n.version),
-            forest_html(&n.children),
-        ));
+            s.push_str(r#" <span class="loc">(…)</span>"#);
+        }
+        forest_into(s, &n.children);
+        s.push_str("</li>");
     }
     s.push_str("</ul>");
-    s
 }

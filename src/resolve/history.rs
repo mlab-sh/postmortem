@@ -1,6 +1,8 @@
 //! Reading a registry's *release history*: what changed between the installed
 //! version and the one before it. One reader per registry document shape.
 
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
@@ -70,13 +72,8 @@ pub(super) struct VersionMeta {
 }
 
 /// Where a package's release history lives: the cache namespace to file it
-/// under, the document's URL, and the reader for that document's shape. See
-/// [`Resolver::history_source`].
-type HistorySource = (
-    &'static str,
-    String,
-    fn(&serde_json::Value, &str) -> VersionMeta,
-);
+/// under, and the document's URL. See [`Resolver::history_source`].
+type HistorySource = (&'static str, String);
 
 /// Flag a gap this large (days) between releases as a dormancy anomaly.
 const DORMANT_DAYS: i64 = 365;
@@ -120,17 +117,14 @@ pub(super) fn parse_ts(s: &str) -> Option<i64> {
 /// that wasn't there before, a suspiciously long dormancy, and a publisher that
 /// never shipped an earlier version (account-takeover / trojanized-update tells,
 /// à la event-stream and ua-parser-js).
-fn compute_version_meta(doc: &serde_json::Value, version: &str) -> VersionMeta {
+fn compute_version_meta(doc: &NpmPackument, version: &str) -> VersionMeta {
     // The maintainer set is a property of the package, not of a version, so it
     // is recorded before any of the version-comparison logic can return early.
     let mut meta = VersionMeta {
-        maintainers: maintainer_names(doc.get("maintainers")),
+        maintainers: maintainer_names(doc.maintainers.as_ref()),
         ..Default::default()
     };
-    let (Some(times), Some(versions)) = (
-        doc.get("time").and_then(|t| t.as_object()),
-        doc.get("versions").and_then(|v| v.as_object()),
-    ) else {
+    let (Some(times), Some(versions)) = (&doc.time, &doc.versions) else {
         return meta;
     };
     let Some(inst_ts) = times
@@ -163,7 +157,7 @@ fn compute_version_meta(doc: &serde_json::Value, version: &str) -> VersionMeta {
         if ts >= inst_ts {
             continue;
         }
-        if let Some(p) = versions.get(v).and_then(publisher) {
+        if let Some(p) = versions.get(v).and_then(NpmVersion::publisher) {
             prior_publishers.push(p.to_string());
         }
         if prior.is_none_or(|(_, pt)| ts > pt) {
@@ -176,15 +170,20 @@ fn compute_version_meta(doc: &serde_json::Value, version: &str) -> VersionMeta {
     };
 
     let inst = versions.get(version);
-    let inst_hook = inst.is_some_and(has_install_hook);
-    let prior_hook = versions.get(prior_v).is_some_and(has_install_hook);
+    let inst_hook = inst.is_some_and(NpmVersion::has_install_hook);
+    let prior_hook = versions
+        .get(prior_v)
+        .is_some_and(NpmVersion::has_install_hook);
 
     meta.install_script_added = Some(inst_hook && !prior_hook);
     // Provenance regression: the prior version was published with an OIDC/CI
     // attestation and this one wasn't (the axios pattern — a direct token push
     // that skipped Trusted Publishing).
     meta.provenance_removed = Some(
-        versions.get(prior_v).is_some_and(has_provenance) && !inst.is_some_and(has_provenance),
+        versions
+            .get(prior_v)
+            .is_some_and(NpmVersion::has_provenance)
+            && !inst.is_some_and(NpmVersion::has_provenance),
     );
     let gap = (inst_ts - prior_ts) / 86_400;
     if gap >= DORMANT_DAYS {
@@ -192,7 +191,7 @@ fn compute_version_meta(doc: &serde_json::Value, version: &str) -> VersionMeta {
     }
     // npm has not always recorded `_npmUser`. A publisher missing on either side
     // leaves the comparison unanswerable, which is not the same as answering no.
-    meta.new_publisher = match inst.and_then(publisher) {
+    meta.new_publisher = match inst.and_then(NpmVersion::publisher) {
         Some(ip) if !prior_publishers.is_empty() => Some(!prior_publishers.iter().any(|p| p == ip)),
         _ => None,
     };
@@ -206,7 +205,7 @@ fn compute_version_meta(doc: &serde_json::Value, version: &str) -> VersionMeta {
 ///
 /// This reads the document already fetched for the repository and the license,
 /// so the Rust path pays no request of its own — see `registry_record`.
-fn compute_version_meta_crates(doc: &serde_json::Value, version: &str) -> VersionMeta {
+pub(super) fn compute_version_meta_crates(doc: &serde_json::Value, version: &str) -> VersionMeta {
     // crates.io publishes no owner list in this document (`/owners` is its own
     // request), so `maintainers` stays empty — meaning unknown, never "nobody".
     let mut meta = VersionMeta::default();
@@ -356,28 +355,85 @@ fn pypi_owners(v: Option<&serde_json::Value>) -> Vec<String> {
     out
 }
 
-/// Does a version manifest carry an npm provenance attestation (published via
-/// Trusted Publishing / `--provenance`, i.e. `dist.attestations`)?
-fn has_provenance(manifest: &serde_json::Value) -> bool {
-    manifest
-        .get("dist")
-        .and_then(|d| d.get("attestations"))
-        .is_some()
-}
-
-/// Does a version manifest declare an install lifecycle script?
+/// The part of an npm packument postmortem reads — the release history, the
+/// maintainer set, and a few fields per version — deserialized directly, so
+/// serde skips everything else unallocated. A packument repeats each version's
+/// whole `package.json` (dependencies, readme, description…): for a package
+/// with a few thousand releases that is tens of MB as a `serde_json::Value`,
+/// of which this keeps a small fraction.
 ///
-/// [`crate::lifecycle::ALWAYS`] and not the longer list: a packument version is
-/// a registry artifact by definition, and a registry tarball's `prepare` ran on
-/// the publisher's machine before packing, never on an installing one.
-fn has_install_hook(manifest: &serde_json::Value) -> bool {
-    manifest
-        .get("scripts")
-        .and_then(|s| s.as_object())
-        .is_some_and(|s| crate::lifecycle::ALWAYS.iter().any(|k| s.contains_key(*k)))
+/// The fields keep the shapes the maps had as JSON (`BTreeMap`, the same order
+/// `serde_json::Map` iterates in), and a field whose shape varies between
+/// publishers stays a `Value`, so every reader sees what it saw before.
+#[derive(Deserialize, Default)]
+pub struct NpmPackument {
+    #[serde(default)]
+    pub time: Option<BTreeMap<String, serde_json::Value>>,
+    #[serde(default)]
+    pub versions: Option<BTreeMap<String, NpmVersion>>,
+    #[serde(default)]
+    pub maintainers: Option<serde_json::Value>,
 }
 
-/// The npm user who published this version (`_npmUser.name`).
+/// One entry of [`NpmPackument::versions`].
+#[derive(Deserialize, Default)]
+pub struct NpmVersion {
+    #[serde(default, rename = "_npmUser")]
+    pub npm_user: Option<serde_json::Value>,
+    #[serde(default)]
+    pub scripts: Option<serde_json::Value>,
+    #[serde(default)]
+    pub dist: Option<serde_json::Value>,
+    #[serde(default)]
+    pub repository: Option<serde_json::Value>,
+    #[serde(default)]
+    pub license: Option<serde_json::Value>,
+    #[serde(default)]
+    pub licenses: Option<serde_json::Value>,
+    /// Whether the key is there at all — npm's own check, so a `null`
+    /// deprecation message still counts.
+    #[serde(default, deserialize_with = "present")]
+    pub deprecated: bool,
+}
+
+fn present<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    serde::de::IgnoredAny::deserialize(d).map(|_| true)
+}
+
+impl NpmVersion {
+    /// The npm user who published this version (`_npmUser.name`).
+    pub fn publisher(&self) -> Option<&str> {
+        self.npm_user.as_ref()?.get("name").and_then(|n| n.as_str())
+    }
+
+    /// Does it carry an npm provenance attestation (published via Trusted
+    /// Publishing / `--provenance`, i.e. `dist.attestations`)?
+    pub fn has_provenance(&self) -> bool {
+        self.dist
+            .as_ref()
+            .and_then(|d| d.get("attestations"))
+            .is_some()
+    }
+
+    /// Does it declare an install lifecycle script?
+    ///
+    /// [`crate::lifecycle::ALWAYS`] and not the longer list: a packument
+    /// version is a registry artifact by definition, and a registry tarball's
+    /// `prepare` ran on the publisher's machine before packing, never on an
+    /// installing one.
+    pub fn has_install_hook(&self) -> bool {
+        self.scripts
+            .as_ref()
+            .and_then(|s| s.as_object())
+            .is_some_and(|s| crate::lifecycle::ALWAYS.iter().any(|k| s.contains_key(*k)))
+    }
+
+    /// The declared repository URL: a bare string or `{type, url}`.
+    pub fn repo_url(&self) -> Option<String> {
+        super::repo::repo_url_of(self.repository.as_ref()?)
+    }
+}
+
 /// Account names from an npm/Packagist `maintainers` array (`[{name, email}]`),
 /// deduplicated and sorted so the graph is stable across runs.
 pub(super) fn maintainer_names(v: Option<&serde_json::Value>) -> Vec<String> {
@@ -400,16 +456,18 @@ pub(super) fn maintainer_names(v: Option<&serde_json::Value>) -> Vec<String> {
     out
 }
 
-pub(super) fn publisher(manifest: &serde_json::Value) -> Option<&str> {
-    manifest
-        .get("_npmUser")
-        .and_then(|u| u.get("name"))
-        .and_then(|n| n.as_str())
+/// A downloaded history document: npm's typed, the others' as JSON.
+pub(super) enum HistoryDoc {
+    Npm(NpmPackument),
+    Json(serde_json::Value),
 }
+
+/// A history document already downloaded, by URL (`None` inside: a 404).
+pub(super) type Fetched = Option<(String, Option<HistoryDoc>)>;
 
 impl Resolver {
     /// Where a package's release history lives: the cache namespace to file it
-    /// under, the document's URL, and the reader for that document's shape.
+    /// under, and the document's URL. [`read_history`] knows each shape.
     ///
     /// `None` for the registries that publish only a *current* view of a package
     /// (RubyGems, Packagist, deps.dev) and for the ecosystems with no registry
@@ -417,11 +475,10 @@ impl Resolver {
     /// which is a different thing from a history that came back clean.
     pub(super) fn history_source(&self, dep: &Dependency) -> Option<HistorySource> {
         Some(match dep.ecosystem {
-            Ecosystem::Node => (
-                "npm-meta",
-                format!("{}/{}", self.endpoints.npm(), dep.name),
-                compute_version_meta as fn(&serde_json::Value, &str) -> VersionMeta,
-            ),
+            // The packument is also where `registry_record` reads npm's repo
+            // and license, through the same per-worker slot: one request for
+            // both, where the version manifest used to be a second.
+            Ecosystem::Node => ("npm-meta", format!("{}/{}", self.endpoints.npm(), dep.name)),
             // The crate record carries every version. It is also the document
             // `registry_url` already fetches, so `registry_record` fills this
             // namespace itself — this URL is the fallback for a cache written
@@ -429,56 +486,97 @@ impl Resolver {
             Ecosystem::Rust => (
                 "crates-meta",
                 format!("{}/api/v1/crates/{}", self.endpoints.crates(), dep.name),
-                compute_version_meta_crates,
             ),
             // PyPI splits the two: the *version-pinned* document `registry_url`
             // asks for (because a license is per-version) carries no `releases`
             // map, so the history costs one extra request against the name-only
-            // document — derived once and cached per version forever.
+            // document — derived once and cached per version forever. When the
+            // pinned version is the latest, `registry_record` reads it from this
+            // document too and skips the pinned one.
             Ecosystem::Python => (
                 "pypi-meta",
                 format!("{}/pypi/{}/json", self.endpoints.pypi(), dep.name),
-                compute_version_meta_pypi,
             ),
             _ => return None,
         })
+    }
+
+    /// The history-sized document at `url`, downloaded at most once per worker
+    /// for all the versions of a name: `slot` keeps the last one (`None`
+    /// inside: a 404). `npm` reads it as a typed [`NpmPackument`].
+    pub(super) fn history_doc<'a>(
+        &self,
+        url: &str,
+        npm: bool,
+        slot: &'a mut Fetched,
+    ) -> Result<Option<&'a HistoryDoc>> {
+        if !matches!(slot, Some((u, _)) if u == url) {
+            let doc = if npm {
+                self.get_typed(url, &[])?.map(HistoryDoc::Npm)
+            } else {
+                self.get_json(url, &[])?.map(HistoryDoc::Json)
+            };
+            *slot = Some((url.to_string(), doc));
+        }
+        Ok(slot.as_ref().and_then(|(_, doc)| doc.as_ref()))
     }
 
     /// Provenance anomalies for the installed version, from whichever document
     /// its registry publishes a release history in. Cached per `(name, version)`
     /// (the history up to a published version is immutable). `Ok(None)` means
     /// the ecosystem has no such document; a fetch failure caches as "clean".
-    pub(super) fn version_meta(&self, dep: &Dependency) -> Result<Option<VersionMeta>> {
-        let Some((ns, url, read)) = self.history_source(dep) else {
+    ///
+    /// `fetched` is the last history document this caller downloaded: the URL
+    /// is per *name*, so the next version of the same package reads it again
+    /// instead of downloading it again.
+    pub(super) fn version_meta(
+        &self,
+        dep: &Dependency,
+        fetched: &mut Fetched,
+    ) -> Result<Option<VersionMeta>> {
+        let Some((ns, url)) = self.history_source(dep) else {
             return Ok(None);
         };
         let key = format!("{}@{}", dep.name, dep.version);
         if let Some(hit) = self.cache.get::<VersionMeta>(ns, &key) {
             return Ok(Some(hit));
         }
-        let meta = match self.get_json(&url, &[])? {
-            Some(doc) => read(&doc, &dep.version),
+        let meta = match self.history_doc(&url, dep.ecosystem == Ecosystem::Node, fetched)? {
+            Some(doc) => read_history(dep.ecosystem, doc, &dep.version),
             None => VersionMeta::default(),
         };
         self.cache.put(ns, &key, &meta);
         Ok(Some(meta))
     }
 
-    /// The raw npm packument for a package — its whole publish history.
+    /// The npm packument for a package — its whole publish history.
     ///
     /// Deliberately **not** cached. Everything else read from a packument is
     /// derived per `(name, version)` and immutable once published, but a history
     /// gains an entry every time someone publishes; a cached copy would go quiet
     /// exactly when a new release is the thing worth seeing.
-    pub fn packument(&self, name: &str) -> Result<Option<serde_json::Value>> {
+    pub fn packument(&self, name: &str) -> Result<Option<NpmPackument>> {
         let url = format!("{}/{}", self.endpoints.npm(), name);
-        self.get_json(&url, &[])
+        self.get_typed(&url, &[])
+    }
+}
+
+/// Read a history document with its registry's reader.
+fn read_history(eco: Ecosystem, doc: &HistoryDoc, version: &str) -> VersionMeta {
+    match doc {
+        HistoryDoc::Npm(p) => compute_version_meta(p, version),
+        HistoryDoc::Json(v) if eco == Ecosystem::Rust => compute_version_meta_crates(v, version),
+        HistoryDoc::Json(v) => compute_version_meta_pypi(v, version),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn npm(doc: serde_json::Value) -> NpmPackument {
+        serde_json::from_value(doc).expect("a packument")
+    }
 
     #[test]
     fn version_meta_catches_event_stream_pattern() {
@@ -494,7 +592,7 @@ mod tests {
                 "2.0.0": { "_npmUser": { "name": "eve" }, "scripts": { "postinstall": "node ./x.js" } },
             }
         });
-        let m = compute_version_meta(&doc, "2.0.0");
+        let m = compute_version_meta(&npm(doc), "2.0.0");
         assert_eq!(
             m.install_script_added,
             Some(true),
@@ -523,7 +621,7 @@ mod tests {
                 "1.0.1": { "_npmUser": { "name": "alice" } },
             }
         });
-        let m = compute_version_meta(&doc, "1.0.1");
+        let m = compute_version_meta(&npm(doc), "1.0.1");
         assert_eq!(m.install_script_added, Some(false), "compared, and absent");
         assert_eq!(m.new_publisher, Some(false));
         assert!(m.dormant_gap_days.is_none());
@@ -599,7 +697,7 @@ mod tests {
             }
         });
         assert_eq!(
-            compute_version_meta(&doc, "1.0.1").provenance_removed,
+            compute_version_meta(&npm(doc), "1.0.1").provenance_removed,
             Some(true)
         );
 
@@ -615,7 +713,7 @@ mod tests {
             }
         });
         assert_eq!(
-            compute_version_meta(&steady, "1.0.1").provenance_removed,
+            compute_version_meta(&npm(steady), "1.0.1").provenance_removed,
             Some(false)
         );
     }
@@ -626,7 +724,7 @@ mod tests {
             "time": { "1.0.0": "2023-01-01T00:00:00.000Z" },
             "versions": { "1.0.0": { "scripts": { "postinstall": "x" } } }
         });
-        let m = compute_version_meta(&doc, "1.0.0");
+        let m = compute_version_meta(&npm(doc), "1.0.0");
         // No predecessor → neither question has an answer. Unevaluated, not
         // clean: a first release *does* ship a postinstall here.
         assert!(m.install_script_added.is_none());

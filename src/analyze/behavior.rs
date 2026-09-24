@@ -15,9 +15,11 @@
 //! Substring-only (no AST), so it stays cheap; the markers are chosen to be
 //! things ordinary library code does not contain.
 
+use aho_corasick::AhoCorasick;
 use std::path::Path;
+use std::sync::OnceLock;
 
-use crate::analyze::util;
+use crate::analyze::{Lang, util};
 use crate::model::{Category, Finding, Severity};
 
 /// Source extensions worth scanning — the behaviours span languages.
@@ -83,34 +85,60 @@ const GROUPS: &[Group] = &[
     },
 ];
 
-pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
-    for path in util::walk_files(root, SRC_EXTS) {
-        let Ok(text) = std::fs::read_to_string(&path) else {
+/// Across the shared read pool: this pass walks the whole project root,
+/// `node_modules` included, and was the single largest serial cost of a scan.
+/// JavaScript under `skip_js` is left out: the content pass over that
+/// directory already ran [`scan_text`] on it.
+pub fn scan_dir(list: &util::Listing, skip_js: Option<&Path>, out: &mut Vec<Finding>) {
+    let files = list.select(list.root(), |p| {
+        covers(p) && !(skip_js.is_some_and(|d| p.starts_with(d)) && Lang::JavaScript.matches(p))
+    });
+    out.extend(super::par_scan(&files, scan_text));
+}
+
+/// Whether this pass reads `path` (by extension).
+pub fn covers(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| SRC_EXTS.iter().any(|x| x.eq_ignore_ascii_case(e)))
+}
+
+/// Every group's needles in one automaton, pattern ids in `GROUPS` order.
+fn automaton() -> &'static AhoCorasick {
+    static AC: OnceLock<AhoCorasick> = OnceLock::new();
+    AC.get_or_init(|| {
+        let all: Vec<&str> = GROUPS.iter().flat_map(|g| g.needles).copied().collect();
+        util::automaton(&all)
+    })
+}
+
+/// One pass over `text` for all groups' needles (it was one `contains` each).
+pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
+    let counts = util::needle_counts(automaton(), text);
+    let mut ids = counts.iter();
+    let mut dep = None;
+    for g in GROUPS {
+        // This group's slice of the pattern ids, in its needle order.
+        let hits: Vec<&str> = g
+            .needles
+            .iter()
+            .zip(ids.by_ref())
+            .filter(|&(_, &n)| n > 0)
+            .map(|(&needle, _)| needle)
+            .collect();
+        if hits.is_empty() {
             continue;
-        };
-        for g in GROUPS {
-            let hits: Vec<&str> = g
-                .needles
-                .iter()
-                .copied()
-                .filter(|&n| text.contains(n))
-                .collect();
-            if hits.is_empty() {
-                continue;
-            }
-            let dep = util::node_pkg_from_path(&path)
-                .or_else(|| util::python_pkg_from_path(&path))
-                .unwrap_or_else(|| "<project>".into());
-            out.push(Finding {
-                dependency: dep,
-                severity: g.severity,
-                category: Category::SensitiveApi,
-                detail: format!("{}: {}", g.label, hits.join(", ")),
-                location: Some(path.display().to_string()),
-                evidence: None,
-                enrich_url: None,
-            });
         }
+        let dep = dep.get_or_insert_with(|| util::owner(path, "<project>"));
+        out.push(Finding {
+            dependency: dep.clone(),
+            severity: g.severity,
+            category: Category::SensitiveApi,
+            detail: format!("{}: {}", g.label, hits.join(", ")),
+            location: Some(path.display().to_string()),
+            evidence: None,
+            enrich_url: None,
+        });
     }
 }
 
@@ -137,7 +165,7 @@ mod tests {
         fs::write(tmp.join("clean.js"), "export const add = (a,b) => a+b;").unwrap();
 
         let mut out = Vec::new();
-        scan_dir(&tmp, &mut out);
+        scan_dir(&util::Listing::walk(&tmp), None, &mut out);
         assert!(
             out.iter()
                 .any(|f| f.detail.contains("credential/secret") && f.severity == Severity::High)

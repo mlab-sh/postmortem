@@ -38,22 +38,25 @@ const INJECTABLE: &[&str] = &[
 ];
 
 /// Is this path a workflow file (`…/.github/workflows/*.yml|yaml`)?
+/// Components are compared in place (ASCII case-insensitive): this runs on
+/// every YAML file in the tree, `node_modules` included, and collecting them
+/// as lowercased `String`s cost an allocation per component.
 fn is_workflow(path: &Path) -> bool {
-    let comps: Vec<String> = path
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
-        .collect();
-    comps
-        .windows(2)
-        .any(|w| w[0] == ".github" && w[1] == "workflows")
+    let mut prev_github = false;
+    path.components().any(|c| {
+        let c = c.as_os_str();
+        let hit = prev_github && c.eq_ignore_ascii_case("workflows");
+        prev_github = c.eq_ignore_ascii_case(".github");
+        hit
+    })
 }
 
-pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
-    for path in util::walk_files(root, &["yml", "yaml"]) {
+pub fn scan_dir(list: &util::Listing, out: &mut Vec<Finding>) {
+    for path in list.files(list.root(), &["yml", "yaml"]) {
         if !is_workflow(&path) {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Some(text) = super::read_lossy(&path) else {
             continue;
         };
         let name = path
@@ -189,7 +192,7 @@ mod tests {
             "on: push\njobs:\n  y:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n").unwrap();
 
         let mut out = Vec::new();
-        scan_dir(&tmp, &mut out);
+        scan_dir(&util::Listing::walk(&tmp), &mut out);
         let has = |s: &str| out.iter().any(|f| f.detail.contains(s));
         assert!(has("mutable branch"), "tj-actions@main flagged");
         assert!(has("self-hosted"));

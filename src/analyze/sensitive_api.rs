@@ -4,8 +4,9 @@
 //! and roll up at Low severity unless the file ALSO matched obfuscation/install-hook
 //! analyzers — escalation is left to the orchestration layer in v2.
 
-use std::collections::HashSet;
+use aho_corasick::AhoCorasick;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use crate::analyze::util;
 use crate::model::{Category, Finding, Severity};
@@ -208,18 +209,25 @@ fn apis(lang: Lang) -> &'static [&'static str] {
     }
 }
 
+fn automaton(lang: Lang) -> &'static AhoCorasick {
+    static AC: [OnceLock<AhoCorasick>; Lang::ALL.len()] =
+        [const { OnceLock::new() }; Lang::ALL.len()];
+    AC[lang as usize].get_or_init(|| util::automaton(apis(lang)))
+}
+
+/// One pass over `text` for the whole table (it was one `contains` per API).
 pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
-    let mut hit: HashSet<&'static str> = HashSet::new();
-    for api in apis(lang) {
-        if text.contains(api) {
-            hit.insert(api);
-        }
-    }
-    if hit.is_empty() {
+    let counts = util::needle_counts(automaton(lang), text);
+    let mut apis: Vec<&str> = apis(lang)
+        .iter()
+        .zip(counts)
+        .filter(|&(_, n)| n > 0)
+        .map(|(&api, _)| api)
+        .collect();
+    if apis.is_empty() {
         return;
     }
     let dep = util::owner(path, "<project>");
-    let mut apis: Vec<&str> = hit.into_iter().collect();
     apis.sort();
     let severity = if apis.len() >= 3 {
         Severity::Medium
@@ -245,6 +253,27 @@ mod tests {
         let mut out = Vec::new();
         scan_text(std::path::Path::new(file), content, &mut out, lang);
         out
+    }
+
+    /// A repeated API would be reported twice; the `HashSet` this replaced
+    /// used to hide that.
+    #[test]
+    fn api_tables_have_no_duplicates() {
+        for &lang in Lang::ALL {
+            let mut v = apis(lang).to_vec();
+            v.sort();
+            v.dedup();
+            assert_eq!(v.len(), apis(lang).len(), "{lang:?}");
+        }
+    }
+
+    /// `exec(` sits inside `.exec(`: both are reported, as two `contains` did.
+    #[test]
+    fn overlapping_needles_both_count() {
+        let f = scan_one("a.java", "Runtime.getRuntime().exec(cmd)", Lang::Java);
+        assert_eq!(f[0].detail, "uses .exec(, Runtime.getRuntime");
+        let f = scan_one("a.c", "execvp(a); execve(b)", Lang::Cpp);
+        assert_eq!(f[0].detail, "uses execv, execve, execvp");
     }
 
     #[test]

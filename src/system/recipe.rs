@@ -25,10 +25,12 @@ pub(super) fn analyze_recipe(name: &str, code: &str, ext: &str) -> Vec<SysSignal
 
     // Piping a download straight into a shell/interpreter during install — the
     // clearest install-time remote-code-execution tell.
-    let pipe = regex::Regex::new(
-        r"(?i)(curl|wget|fetch)\b[^\n|]*\|\s*(sudo\s+)?(sh|bash|zsh|ruby|python)",
-    )
-    .expect("static regex");
+    // Compiled once per run: this is called for every analyzed package.
+    static PIPE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let pipe = PIPE.get_or_init(|| {
+        regex::Regex::new(r"(?i)(curl|wget|fetch)\b[^\n|]*\|\s*(sudo\s+)?(sh|bash|zsh|ruby|python)")
+            .expect("static regex")
+    });
     if pipe.is_match(code) {
         sigs.push(SysSignal::new(
             "install-remote-exec (pipe to shell)",

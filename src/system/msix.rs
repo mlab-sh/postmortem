@@ -51,7 +51,14 @@ foreach ($p in Get-AppxPackage) {
   $caps = @()
   $st = $false
   $bt = $false
-  $m = Get-AppxPackageManifest $p
+  # The manifest file is read directly: `Get-AppxPackageManifest` resolves the
+  # package again for every call. The cmdlet stays as the fallback.
+  $m = $null
+  $mf = Join-Path ([string]$p.InstallLocation) 'AppxManifest.xml'
+  if ($p.InstallLocation -and (Test-Path -LiteralPath $mf)) {
+    try { $m = New-Object xml; $m.Load($mf) } catch { $m = $null }
+  }
+  if ($null -eq $m) { $m = Get-AppxPackageManifest $p }
   if ($m) {
     # XML comment nodes come through as '#comment'; drop anything not a real element.
     foreach ($n in $m.Package.Capabilities.ChildNodes) { if ($n.Name -and -not $n.Name.StartsWith('#')) { $caps += $n.Name } }
@@ -72,14 +79,16 @@ foreach ($p in Get-AppxPackage) {
 }
 ";
 
-/// Reads whether sideloading was explicitly turned on.
+/// Reads whether sideloading was explicitly turned on. Appended to
+/// [`PS_INVENTORY`] (it was a PowerShell process of its own); its one line is
+/// prefixed `sideload:` so the package parser, which reads `{` lines, skips it.
 const PS_SIDELOAD: &str = r"
 $k = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
-$p = Get-ItemProperty $k -ErrorAction SilentlyContinue
-[pscustomobject]@{
-  AllowAllTrustedApps = [int]$p.AllowAllTrustedApps
-  AllowDevelopment    = [int]$p.AllowDevelopmentWithoutDevLicense
-} | ConvertTo-Json -Compress
+$unlock = Get-ItemProperty $k -ErrorAction SilentlyContinue
+'sideload:' + ([pscustomobject]@{
+  AllowAllTrustedApps = [int]$unlock.AllowAllTrustedApps
+  AllowDevelopment    = [int]$unlock.AllowDevelopmentWithoutDevLicense
+} | ConvertTo-Json -Compress)
 ";
 
 /// Capabilities worth a finding, with why. Deliberately excludes
@@ -247,7 +256,8 @@ pub(crate) fn surface_signals(pkg: &AppxPkg) -> Vec<SysSignal> {
 /// Build the MSIX/AppX inventory.
 pub fn msix_inventory(opts: Opts) -> Result<Inventory> {
     let _ = opts;
-    let stdout = powershell(PS_INVENTORY).context("listing AppX packages")?;
+    let stdout =
+        powershell(&format!("{PS_INVENTORY}{PS_SIDELOAD}")).context("listing AppX packages")?;
     let pkgs = parse_packages(&stdout);
     if pkgs.is_empty() {
         anyhow::bail!(
@@ -282,7 +292,9 @@ pub fn msix_inventory(opts: Opts) -> Result<Inventory> {
 
     // Sideloading is a machine-wide posture, not a property of any one package.
     let mut notes = Vec::new();
-    if let Ok(raw) = powershell(PS_SIDELOAD)
+    if let Some(raw) = stdout
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("sideload:"))
         && let Ok(v) = serde_json::from_str::<serde_json::Value>(raw.trim())
     {
         if v.get("AllowAllTrustedApps").and_then(|x| x.as_i64()) == Some(1) {

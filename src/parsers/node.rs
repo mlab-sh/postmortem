@@ -8,7 +8,7 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use crate::model::{DepRef, Dependency, Ecosystem, License, LicenseSource, Scope};
@@ -21,7 +21,7 @@ struct Lockfile {
     packages: BTreeMap<String, PkgEntry>,
 }
 
-#[derive(Debug, Deserialize, Default, Clone)]
+#[derive(Debug, Deserialize, Default)]
 struct PkgEntry {
     #[serde(default)]
     version: Option<String>,
@@ -42,9 +42,6 @@ struct PkgEntry {
     dev_dependencies: HashMap<String, String>,
     #[serde(default, rename = "optionalDependencies")]
     optional_dependencies: HashMap<String, String>,
-    #[serde(default, rename = "peerDependencies")]
-    #[allow(dead_code)]
-    peer_dependencies: HashMap<String, String>,
 }
 
 pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
@@ -59,12 +56,13 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
         );
     }
 
-    let root = lock.packages.get("").cloned().unwrap_or_default();
+    let empty = PkgEntry::default();
+    let root = lock.packages.get("").unwrap_or(&empty);
     // The root entry is the only place package-lock states *intent*: which of
     // its three fields lists a dependency is what makes it prod / dev / optional.
     // Everything below is inferred from the graph by `crate::scope::propagate`.
     // A name listed in several fields keeps the strongest scope (prod wins).
-    let mut root_direct: HashMap<String, Scope> = HashMap::new();
+    let mut root_direct: HashMap<&str, Scope> = HashMap::new();
     let declared_roots = [
         (&root.dependencies, Scope::Prod),
         (&root.optional_dependencies, Scope::Optional),
@@ -72,13 +70,13 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
     ];
     for (map, scope) in declared_roots {
         for name in map.keys() {
-            let e = root_direct.entry(name.clone()).or_insert(scope);
+            let e = root_direct.entry(name.as_str()).or_insert(scope);
             *e = (*e).max(scope);
         }
     }
 
     // Index every installed package by path → (name, version, entry)
-    let mut by_path: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let mut by_path: BTreeMap<&str, DepRef> = BTreeMap::new();
     for (key, entry) in &lock.packages {
         if key.is_empty() {
             continue;
@@ -87,31 +85,35 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
             continue;
         };
         let version = entry.version.clone().unwrap_or_else(|| "unknown".into());
-        by_path.insert(key.clone(), (name.to_string(), version));
+        by_path.insert(key.as_str(), (name.to_string(), version));
     }
 
     // Resolve each declared dep to its installed path using npm hoisting rules:
-    // look in <pkg_dir>/node_modules/<dep>, then walk up.
-    let resolve = |from_key: &str, dep_name: &str| -> Option<String> {
-        let mut current: String = from_key.to_string();
+    // look in <pkg_dir>/node_modules/<dep>, then walk up. `buf` is reused across
+    // every probe: a deep install path costs one probe per hoisting level, and a
+    // `format!` each was one allocation per level per declared edge.
+    let resolve = |from_key: &str, dep_name: &str, buf: &mut String| -> Option<(&str, &DepRef)> {
+        let mut current: &str = from_key;
         loop {
-            let candidate = if current.is_empty() {
-                format!("node_modules/{dep_name}")
-            } else {
-                format!("{current}/node_modules/{dep_name}")
-            };
-            if by_path.contains_key(&candidate) {
-                return Some(candidate);
+            buf.clear();
+            if !current.is_empty() {
+                buf.push_str(current);
+                buf.push('/');
+            }
+            buf.push_str("node_modules/");
+            buf.push_str(dep_name);
+            if let Some((k, r)) = by_path.get_key_value(buf.as_str()) {
+                return Some((*k, r));
             }
             if current.is_empty() {
                 return None;
             }
             // Walk up by stripping the trailing `/node_modules/<seg>` segment.
             match current.rfind("/node_modules/") {
-                Some(i) => current.truncate(i),
+                Some(i) => current = &current[..i],
                 None => {
                     if current.starts_with("node_modules/") {
-                        current.clear();
+                        current = "";
                     } else {
                         return None;
                     }
@@ -121,14 +123,19 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
     };
 
     // Build (DepRef -> Dependency), merging multiple install paths for the same
-    // (name, version) and collecting all parents.
-    let mut acc: BTreeMap<DepRef, Dependency> = BTreeMap::new();
+    // (name, version) and collecting all parents. Keyed by a borrow of the
+    // `by_path` value — `&(String, String)` orders exactly like the owned
+    // tuple, so the output order is unchanged — and each entry carries the set
+    // of parents already recorded: a package shared by p parents used to pay an
+    // O(p) `contains` per edge, O(p²) in all.
+    let mut acc: BTreeMap<&DepRef, (Dependency, HashSet<&DepRef>)> = BTreeMap::new();
+    let mut buf = String::new();
     // Reverse-index parents: for each (parent_name, parent_version, dep_path), add to dep entry
     for (parent_key, parent_entry) in &lock.packages {
-        let parent_ref: Option<DepRef> = if parent_key.is_empty() {
+        let parent_ref: Option<&DepRef> = if parent_key.is_empty() {
             None
         } else {
-            by_path.get(parent_key).cloned()
+            by_path.get(parent_key.as_str())
         };
         let declared = parent_entry
             .dependencies
@@ -136,43 +143,42 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
             .chain(parent_entry.dev_dependencies.keys())
             .chain(parent_entry.optional_dependencies.keys());
         for dep_name in declared {
-            let Some(resolved_key) = resolve(parent_key, dep_name) else {
+            let Some((resolved_key, dep_ref)) = resolve(parent_key, dep_name, &mut buf) else {
                 continue;
             };
-            let Some((rn, rv)) = by_path.get(&resolved_key).cloned() else {
-                continue;
-            };
-            let entry = lock
-                .packages
-                .get(&resolved_key)
-                .cloned()
-                .unwrap_or_default();
-            let (lics, lsrc) = entry_licenses_sourced(&entry);
-            let dep_key = (rn.clone(), rv.clone());
-            let dep = acc.entry(dep_key.clone()).or_insert_with(|| Dependency {
-                name: rn.clone(),
-                version: rv.clone(),
-                ecosystem: Ecosystem::Node,
-                direct: false,
-                scope: Scope::Prod,
-                licenses: lics,
-                license_source: lsrc,
-                resolved_url: entry.resolved.clone(),
-                integrity: entry.integrity.clone(),
-                parents: Vec::new(),
+            // Every `by_path` key came from `lock.packages`, so this is a
+            // borrow, never a miss — the entry was deep-copied here before.
+            let entry = &lock.packages[resolved_key];
+            let (dep, seen) = acc.entry(dep_ref).or_insert_with(|| {
+                // Licenses are normalised once per (name, version), not once
+                // per edge pointing at it.
+                let (lics, lsrc) = entry_licenses_sourced(entry);
+                let dep = Dependency {
+                    name: dep_ref.0.clone(),
+                    version: dep_ref.1.clone(),
+                    ecosystem: Ecosystem::Node,
+                    direct: false,
+                    scope: Scope::Prod,
+                    licenses: lics,
+                    license_source: lsrc,
+                    resolved_url: entry.resolved.clone(),
+                    integrity: entry.integrity.clone(),
+                    parents: Vec::new(),
+                };
+                (dep, HashSet::new())
             });
             // Mark direct if root is the parent and root listed this dep, and
             // seed the scope the root declared it under.
             if parent_key.is_empty()
-                && let Some(scope) = root_direct.get(&rn)
+                && let Some(scope) = root_direct.get(dep_ref.0.as_str())
             {
                 dep.direct = true;
                 dep.scope = *scope;
             }
-            if let Some(pr) = parent_ref.clone()
-                && !dep.parents.contains(&pr)
+            if let Some(pr) = parent_ref
+                && seen.insert(pr)
             {
-                dep.parents.push(pr);
+                dep.parents.push(pr.clone());
             }
             if dep.resolved_url.is_none() {
                 dep.resolved_url = entry.resolved.clone();
@@ -186,28 +192,33 @@ pub fn parse_lockfile(path: &Path) -> Result<Vec<Dependency>> {
     // Catch any installed packages not referenced by anyone (defensive: bare lock
     // entries for stuff like bundled deps or root's own peer slot). Add them
     // with no parents; mark direct if applicable.
-    for (key, (name, version)) in &by_path {
-        let dep_key = (name.clone(), version.clone());
-        if let std::collections::btree_map::Entry::Vacant(slot) = acc.entry(dep_key) {
-            let entry = lock.packages.get(key).cloned().unwrap_or_default();
-            let (lics, lsrc) = entry_licenses_sourced(&entry);
-            let declared = parent_is_root(key).then(|| root_direct.get(name)).flatten();
-            slot.insert(Dependency {
-                name: name.clone(),
-                version: version.clone(),
-                ecosystem: Ecosystem::Node,
-                direct: declared.is_some(),
-                scope: declared.copied().unwrap_or(Scope::Prod),
-                licenses: lics,
-                license_source: lsrc,
-                resolved_url: entry.resolved.clone(),
-                integrity: entry.integrity.clone(),
-                parents: Vec::new(),
-            });
+    for (key, dep_ref) in &by_path {
+        if let std::collections::btree_map::Entry::Vacant(slot) = acc.entry(dep_ref) {
+            let entry = &lock.packages[*key];
+            let (lics, lsrc) = entry_licenses_sourced(entry);
+            let (name, version) = dep_ref;
+            let declared = parent_is_root(key)
+                .then(|| root_direct.get(name.as_str()))
+                .flatten();
+            slot.insert((
+                Dependency {
+                    name: name.clone(),
+                    version: version.clone(),
+                    ecosystem: Ecosystem::Node,
+                    direct: declared.is_some(),
+                    scope: declared.copied().unwrap_or(Scope::Prod),
+                    licenses: lics,
+                    license_source: lsrc,
+                    resolved_url: entry.resolved.clone(),
+                    integrity: entry.integrity.clone(),
+                    parents: Vec::new(),
+                },
+                HashSet::new(),
+            ));
         }
     }
 
-    Ok(acc.into_values().collect())
+    Ok(acc.into_values().map(|(d, _)| d).collect())
 }
 
 /// The licenses plus the source to record for them. An empty list must stay

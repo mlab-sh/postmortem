@@ -27,7 +27,7 @@
 //! dependency, so every derived form (separator-stripped, homoglyph-folded) is
 //! computed **once** when a corpus is first touched rather than per comparison.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::model::Ecosystem;
@@ -46,12 +46,28 @@ const MAVEN: &str = include_str!("data/maven-popular.txt");
 /// for all few-thousand entries — two allocations per entry per dependency, so
 /// millions on a real lockfile. Precomputing makes the scan linear in corpus
 /// size with no allocation in the hot loop.
+///
+/// The derived forms (`stripped`, `folded`, `skel`) come from `lowered` on
+/// the Go corpus, which is only ever compared lowercased, and from the name
+/// as written everywhere else.
 struct Corpus {
     names: Vec<&'static str>,
     /// `strip_sep(name)`, index-aligned with `names`.
     stripped: Vec<String>,
     /// `homoglyph(name)`, index-aligned with `names`.
     folded: Vec<String>,
+    /// `version_skeleton(name)`, index-aligned with `names`.
+    skel: Vec<String>,
+    /// `name.chars().count()`, index-aligned with `names`.
+    lens: Vec<usize>,
+    /// Indices (ascending) by `stripped` form, by `folded` form, and by char
+    /// length (`by_len[l]`). A flat entry can only fire on an equal derived
+    /// form or, for the edit rules, a length within one — ~650 of npm's 5k
+    /// names for an 8-char name — so `check_flat` visits just those: ~7× less
+    /// time per dependency (npm 226 → 30 µs on a name that matches nothing).
+    by_stripped: HashMap<String, Vec<usize>>,
+    by_folded: HashMap<String, Vec<usize>>,
+    by_len: Vec<Vec<usize>>,
     /// Lowercased, index-aligned with `names`. Go module paths are
     /// case-sensitive as *paths* but 67 of the popular ones carry a capital
     /// (`github.com/BurntSushi/toml`, `Azure`, `Microsoft`), and a dependency
@@ -62,20 +78,45 @@ struct Corpus {
 }
 
 impl Corpus {
-    fn build(raw: &'static str) -> Self {
+    fn build(raw: &'static str, lower: bool) -> Self {
         let names: Vec<&'static str> = raw
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .collect();
-        let stripped = names.iter().map(|n| strip_sep(n)).collect();
-        let folded = names.iter().map(|n| homoglyph(n)).collect();
-        let lowered = names.iter().map(|n| n.to_lowercase()).collect();
+        let lowered: Vec<String> = names.iter().map(|n| n.to_lowercase()).collect();
+        let base: Vec<&str> = if lower {
+            lowered.iter().map(String::as_str).collect()
+        } else {
+            names.clone()
+        };
+        let stripped: Vec<String> = base.iter().map(|n| strip_sep(n)).collect();
+        let folded: Vec<String> = base.iter().map(|n| homoglyph(n)).collect();
+        let skel = base.iter().map(|n| version_skeleton(n)).collect();
+        let lens: Vec<usize> = names.iter().map(|n| n.chars().count()).collect();
+        let (mut by_stripped, mut by_folded) = (HashMap::new(), HashMap::new());
+        let mut by_len = vec![Vec::new(); lens.iter().max().map_or(0, |m| m + 1)];
+        for i in 0..names.len() {
+            by_stripped
+                .entry(stripped[i].clone())
+                .or_insert_with(Vec::new)
+                .push(i);
+            by_folded
+                .entry(folded[i].clone())
+                .or_insert_with(Vec::new)
+                .push(i);
+            by_len[lens[i]].push(i);
+        }
         let set = names.iter().copied().collect();
         Corpus {
             names,
             stripped,
             folded,
+            skel,
+            lens,
+            by_stripped,
+            by_folded,
+            by_len,
             lowered,
             set,
         }
@@ -83,20 +124,20 @@ impl Corpus {
 }
 
 macro_rules! corpus {
-    ($fn_name:ident, $raw:ident) => {
+    ($fn_name:ident, $raw:ident, $lower:expr) => {
         fn $fn_name() -> &'static Corpus {
             static C: OnceLock<Corpus> = OnceLock::new();
-            C.get_or_init(|| Corpus::build($raw))
+            C.get_or_init(|| Corpus::build($raw, $lower))
         }
     };
 }
-corpus!(npm, NPM);
-corpus!(pypi, PYPI);
-corpus!(crates, CRATES);
-corpus!(rubygems, RUBYGEMS);
-corpus!(packagist, PACKAGIST);
-corpus!(go, GO);
-corpus!(maven, MAVEN);
+corpus!(npm, NPM, false);
+corpus!(pypi, PYPI, false);
+corpus!(crates, CRATES, false);
+corpus!(rubygems, RUBYGEMS, false);
+corpus!(packagist, PACKAGIST, false);
+corpus!(go, GO, true);
+corpus!(maven, MAVEN, false);
 
 /// The corpus for an ecosystem, or `None` where we have no list — the OS
 /// package managers, whose names are distribution-specific.
@@ -184,10 +225,18 @@ fn check_flat(name: &str, c: &Corpus) -> Option<Match> {
     let n_sep = strip_sep(n);
     let n_homo = homoglyph(n);
     let nlen = n.chars().count();
-    for (i, &t) in c.names.iter().enumerate() {
-        if t == n {
-            return None;
-        }
+    // Only the entries that can fire, in corpus order so the first match wins
+    // exactly as a full walk would. (`t == n` cannot occur: `set` held it.)
+    let mut cand: Vec<usize> = Vec::new();
+    cand.extend(c.by_stripped.get(&n_sep).into_iter().flatten());
+    cand.extend(c.by_folded.get(&n_homo).into_iter().flatten());
+    for l in nlen.saturating_sub(1)..=nlen + 1 {
+        cand.extend(c.by_len.get(l).into_iter().flatten());
+    }
+    cand.sort_unstable();
+    cand.dedup();
+    for i in cand {
+        let t = c.names[i];
         // Punctuation variant: same letters, different separators/none.
         if n_sep == c.stripped[i] {
             return Some(hit(t, "punctuation variant"));
@@ -198,7 +247,7 @@ fn check_flat(name: &str, c: &Corpus) -> Option<Match> {
         }
         // The edit-distance rules can only fire on near-equal lengths; the check
         // is far cheaper than the walk, so it gates both.
-        let tlen = t.chars().count();
+        let tlen = c.lens[i];
         if nlen.abs_diff(tlen) > 1 {
             continue;
         }
@@ -280,7 +329,7 @@ fn check_two_part(p: &str, c: &Corpus, shape: TwoPart) -> Option<Match> {
             return None;
         }
         // Same project, another version — see `version_skeleton`.
-        if p_skel.as_deref() == Some(version_skeleton(t).as_str()) {
+        if p_skel.as_deref() == Some(c.skel[i].as_str()) {
             continue;
         }
         // Siblings under one owned namespace — see `TwoPart::verified_vendor`.
@@ -301,7 +350,7 @@ fn check_two_part(p: &str, c: &Corpus, shape: TwoPart) -> Option<Match> {
         {
             return Some(hit(t, "vendor variant"));
         }
-        if plen.abs_diff(t.chars().count()) > 1 {
+        if plen.abs_diff(c.lens[i]) > 1 {
             continue;
         }
         if lev1(p, t) {
@@ -421,18 +470,29 @@ fn confusable_of(name: &str) -> Option<String> {
 
 /// True if `a` and `b` differ by exactly one insertion, deletion, or
 /// substitution — cheaper and tighter than a full Levenshtein.
+///
+/// Registry names are ASCII in practice, where a byte is a char: comparing
+/// them in place skips two `Vec<char>` allocations per call, and this runs on
+/// every length-compatible corpus entry.
 fn lev1(a: &str, b: &str) -> bool {
+    if a.is_ascii() && b.is_ascii() {
+        return lev1_of(a.as_bytes(), b.as_bytes());
+    }
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    lev1_of(&a, &b)
+}
+
+fn lev1_of<T: PartialEq>(a: &[T], b: &[T]) -> bool {
     let (la, lb) = (a.len(), b.len());
     if la.abs_diff(lb) > 1 {
         return false;
     }
     if la == lb {
         // exactly one substitution
-        return a.iter().zip(&b).filter(|(x, y)| x != y).count() == 1;
+        return a.iter().zip(b).filter(|(x, y)| x != y).count() == 1;
     }
     // one insertion/deletion: walk the shorter against the longer
-    let (short, long) = if la < lb { (&a, &b) } else { (&b, &a) };
+    let (short, long) = if la < lb { (a, b) } else { (b, a) };
     let (mut i, mut j, mut skipped) = (0, 0, false);
     while i < short.len() && j < long.len() {
         if short[i] == long[j] {
@@ -467,10 +527,12 @@ pub fn check_module_path(path: &str) -> Option<Match> {
     }
     let (ph, po, pr) = split_path(p);
     let p_skel = version_skeleton(p);
+    let p_sep = strip_sep(p);
+    let p_homo = homoglyph(p);
     for (i, t) in c.lowered.iter().map(String::as_str).enumerate() {
         // Same module, another version — `gopkg.in/yaml.v1` vs `.v3`,
         // `hashicorp/hcl2` vs `hcl`. See `version_skeleton`.
-        if p_skel == version_skeleton(t) {
+        if p_skel == c.skel[i] {
             continue;
         }
         // Siblings under one owned namespace. Nobody but `github.com/aws` can
@@ -484,13 +546,13 @@ pub fn check_module_path(path: &str) -> Option<Match> {
         // Whole-path near-miss. The corpus entry keeps its own spelling in
         // the report — it is what the user would go and look up.
         let shown = c.names[i];
-        if strip_sep(p) == strip_sep(t) {
+        if p_sep == c.stripped[i] {
             return Some(hit(shown, "punctuation variant"));
         }
         if lev1(p, t) {
             return Some(hit(shown, "1 edit away"));
         }
-        if homoglyph(p) == homoglyph(t) {
+        if p_homo == c.folded[i] {
             return Some(hit(shown, "homoglyph"));
         }
         // Owner-squat: same host + repo, an impostor owner near/suffixed.
@@ -535,9 +597,17 @@ fn owner_squat(pop: &str, candidate: &str) -> bool {
     strip_sep(pop) == strip_sep(candidate) || lev1(pop, candidate)
 }
 
-/// True if `a` is `b` with one pair of adjacent characters swapped.
+/// True if `a` is `b` with one pair of adjacent characters swapped. Bytes
+/// when both are ASCII, as in `lev1`.
 fn transposition(a: &str, b: &str) -> bool {
+    if a.is_ascii() && b.is_ascii() {
+        return transposition_of(a.as_bytes(), b.as_bytes());
+    }
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    transposition_of(&a, &b)
+}
+
+fn transposition_of<T: PartialEq>(a: &[T], b: &[T]) -> bool {
     if a.len() != b.len() || a == b {
         return false;
     }
@@ -849,5 +919,247 @@ mod tests {
             packagist().names.iter().filter(|n| n.contains('/')).count() > 1000,
             "packagist corpus should be vendor/name coordinates"
         );
+    }
+
+    // --- reference: the full walks the indexed paths replaced, as they were ---
+
+    fn ref_lev1(a: &str, b: &str) -> bool {
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        lev1_of(&a, &b)
+    }
+
+    fn ref_transposition(a: &str, b: &str) -> bool {
+        let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+        transposition_of(&a, &b)
+    }
+
+    fn ref_check(name: &str, eco: Ecosystem) -> Option<Match> {
+        let c = corpus_for(eco)?;
+        match eco {
+            Ecosystem::Php => ref_two_part(&name.to_lowercase(), c, PACKAGIST_SHAPE),
+            Ecosystem::Java => ref_two_part(name, c, MAVEN_SHAPE),
+            Ecosystem::Go => ref_module_path(name),
+            _ => ref_flat(name, c),
+        }
+    }
+
+    fn ref_flat(n: &str, c: &Corpus) -> Option<Match> {
+        if c.set.contains(n) {
+            return None;
+        }
+        if let Some((_, bare)) = n.split_once('/')
+            && n.starts_with('@')
+        {
+            return (bare.len() >= 4 && c.set.contains(bare))
+                .then(|| hit(bare, "popular name under a foreign scope"));
+        }
+        if n.len() < 4 {
+            return None;
+        }
+        if let Some(skel) = confusable_of(n) {
+            let target = c
+                .set
+                .get(skel.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or(skel);
+            return Some(hit(&target, "unicode confusable"));
+        }
+        let n_sep = strip_sep(n);
+        let n_homo = homoglyph(n);
+        let nlen = n.chars().count();
+        for (i, &t) in c.names.iter().enumerate() {
+            if t == n {
+                return None;
+            }
+            if n_sep == c.stripped[i] {
+                return Some(hit(t, "punctuation variant"));
+            }
+            if n_homo == c.folded[i] {
+                return Some(hit(t, "homoglyph"));
+            }
+            let tlen = t.chars().count();
+            if nlen.abs_diff(tlen) > 1 {
+                continue;
+            }
+            if tlen >= 4 && ref_lev1(n, t) {
+                return Some(hit(t, "1 edit away"));
+            }
+            if ref_transposition(n, t) {
+                return Some(hit(t, "transposed"));
+            }
+        }
+        None
+    }
+
+    fn ref_two_part(p: &str, c: &Corpus, shape: TwoPart) -> Option<Match> {
+        if c.set.contains(p) {
+            return None;
+        }
+        let (pv, pn) = p.split_once(shape.sep)?;
+        if pn.len() < 4 {
+            return None;
+        }
+        if let Some(skel) = confusable_of(p) {
+            let target = c
+                .set
+                .get(skel.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or(skel);
+            return Some(hit(&target, "unicode confusable"));
+        }
+        let p_skel = shape.versioned_names.then(|| version_skeleton(p));
+        let p_sep = strip_sep(p);
+        let p_homo = homoglyph(p);
+        let plen = p.chars().count();
+        for (i, &t) in c.names.iter().enumerate() {
+            if t == p {
+                return None;
+            }
+            if p_skel.as_deref() == Some(version_skeleton(t).as_str()) {
+                continue;
+            }
+            if shape.verified_vendor && t.split_once(shape.sep).is_some_and(|(tv, _)| tv == pv) {
+                continue;
+            }
+            if p_sep == c.stripped[i] {
+                return Some(hit(t, "punctuation variant"));
+            }
+            if p_homo == c.folded[i] {
+                return Some(hit(t, "homoglyph"));
+            }
+            if shape.vendor_variant
+                && let Some((tv, tn)) = t.split_once(shape.sep)
+                && tn == pn
+                && tv != pv
+            {
+                return Some(hit(t, "vendor variant"));
+            }
+            if plen.abs_diff(t.chars().count()) > 1 {
+                continue;
+            }
+            if ref_lev1(p, t) {
+                return Some(hit(t, "1 edit away"));
+            }
+            if ref_transposition(p, t) {
+                return Some(hit(t, "transposed"));
+            }
+        }
+        None
+    }
+
+    fn ref_module_path(path: &str) -> Option<Match> {
+        let normalized = path.trim_end_matches('/').to_lowercase();
+        let p = normalized
+            .rsplit_once('/')
+            .filter(|(_, v)| is_major(v))
+            .map(|(base, _)| base)
+            .unwrap_or(normalized.as_str());
+        let c = go();
+        if c.lowered.iter().any(|t| t == p) {
+            return None;
+        }
+        let (ph, po, pr) = split_path(p);
+        for (i, t) in c.lowered.iter().map(String::as_str).enumerate() {
+            if version_skeleton(p) == version_skeleton(t) {
+                continue;
+            }
+            let (th, to, tr) = split_path(t);
+            if (ph, po) == (th, to) && !po.is_empty() {
+                continue;
+            }
+            let shown = c.names[i];
+            if strip_sep(p) == strip_sep(t) {
+                return Some(hit(shown, "punctuation variant"));
+            }
+            if ref_lev1(p, t) {
+                return Some(hit(shown, "1 edit away"));
+            }
+            if homoglyph(p) == homoglyph(t) {
+                return Some(hit(shown, "homoglyph"));
+            }
+            if ph == th && pr == tr && !pr.is_empty() && po != to && owner_squat(to, po) {
+                return Some(hit(shown, "owner variant"));
+            }
+        }
+        None
+    }
+
+    /// Every near-miss shape the matcher knows, derived from real corpus
+    /// entries, so each rule and each tie between rules gets exercised.
+    fn probes_from(name: &str) -> Vec<String> {
+        let ch: Vec<char> = name.chars().collect();
+        let s = |v: &[char]| v.iter().collect::<String>();
+        let mut out = vec![name.to_string(), name.to_uppercase(), format!("{name}x")];
+        let k = ch.len() / 2;
+        if ch.len() > 1 {
+            let mut v = ch.clone();
+            v.remove(k);
+            out.push(s(&v)); // deletion
+            let mut v = ch.clone();
+            v[k] = if v[k] == 'q' { 'z' } else { 'q' };
+            out.push(s(&v)); // substitution
+            let mut v = ch.clone();
+            v.swap(k - 1, k);
+            out.push(s(&v)); // transposition
+        }
+        let mut v = ch.clone();
+        v.insert(k, 'e');
+        out.push(s(&v)); // insertion
+        out.push(name.replace(['-', '_', '.'], "")); // punctuation
+        out.push(name.replace('-', "_"));
+        out.push(name.replace('o', "0").replace('l', "1")); // digit homoglyph
+        out.push(name.replacen('e', "\u{0435}", 1)); // Cyrillic confusable
+        out.push(name.replacen('o', "\u{03bf}", 1)); // Greek confusable
+        out.push(format!("@evil/{name}"));
+        out.push(format!("{name}/v2"));
+        out
+    }
+
+    #[test]
+    fn indexed_matchers_agree_with_the_full_walk() {
+        let fixed = [
+            "crossenv",
+            "l0dash",
+            "recat",
+            "expres",
+            "requsts",
+            "urllib",
+            "rustdecimal",
+            "nokogri",
+            "evilcorp/monolog",
+            "com.gogle.guava:guava",
+            "github.com/boltdb-go/bolt",
+            "my-bespoke-internal-thing",
+            "zzzzzzzzzzzz",
+            "a",
+            "abcd",
+            "",
+            "@acme/coro",
+            "r\u{0435}act",
+            "n\u{0435}thereum",
+            "日本語パッケージ",
+        ];
+        let mut compared = 0;
+        for (eco, c) in [
+            (Ecosystem::Node, npm()),
+            (Ecosystem::Python, pypi()),
+            (Ecosystem::Rust, crates()),
+            (Ecosystem::Ruby, rubygems()),
+            (Ecosystem::Php, packagist()),
+            (Ecosystem::Go, go()),
+            (Ecosystem::Java, maven()),
+        ] {
+            let mut probes: Vec<String> = fixed.iter().map(|s| s.to_string()).collect();
+            // Every 20th entry: a spread across the corpus without making the
+            // O(corpus) reference walk dominate the test run.
+            for n in c.names.iter().step_by(20) {
+                probes.extend(probes_from(n));
+            }
+            for p in &probes {
+                assert_eq!(check(p, eco), ref_check(p, eco), "{eco:?} {p:?}");
+                compared += 1;
+            }
+        }
+        assert!(compared > 5000, "only {compared} probes compared");
     }
 }

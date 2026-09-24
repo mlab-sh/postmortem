@@ -10,7 +10,7 @@
 //! visible in the tree; an entry past its `expires` date stops bypassing and is
 //! surfaced as a warning, so a stale exception can never silently hide a risk.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
@@ -118,10 +118,11 @@ impl Outcome {
 /// fails on *newly introduced* risk, not on pre-existing debt.
 #[derive(Debug, Default)]
 pub struct Baseline {
-    /// `(name, version)` of deps that were already flagged.
-    flagged: HashSet<(String, String)>,
-    /// `(name, version, advisory-id)` of vulns already known.
-    vulns: HashSet<(String, String, String)>,
+    /// name → versions of deps that were already flagged. Nested rather than
+    /// keyed by an owned tuple so a lookup borrows instead of allocating one.
+    flagged: HashMap<String, HashSet<String>>,
+    /// name@version → advisory ids of vulns already known.
+    vulns: HashMap<String, HashMap<String, HashSet<String>>>,
 }
 
 // Minimal projections of the `tree --json` schema — just the fields the diff
@@ -169,7 +170,10 @@ impl Baseline {
         let mut b = Baseline::default();
         fn walk(n: &BaseNode, b: &mut Baseline) {
             if n.severity.is_some() {
-                b.flagged.insert((n.name.clone(), n.version.clone()));
+                b.flagged
+                    .entry(n.name.clone())
+                    .or_default()
+                    .insert(n.version.clone());
             }
             for c in &n.children {
                 walk(c, b);
@@ -181,19 +185,24 @@ impl Baseline {
         for p in &parsed.vulnerabilities {
             for v in &p.vulns {
                 b.vulns
-                    .insert((p.name.clone(), p.version.clone(), v.id.clone()));
+                    .entry(p.name.clone())
+                    .or_default()
+                    .entry(p.version.clone())
+                    .or_default()
+                    .insert(v.id.clone());
             }
         }
         Ok(b)
     }
 
     fn has_flagged(&self, name: &str, version: &str) -> bool {
-        self.flagged
-            .contains(&(name.to_string(), version.to_string()))
+        self.flagged.get(name).is_some_and(|v| v.contains(version))
     }
     fn has_vuln(&self, name: &str, version: &str, id: &str) -> bool {
         self.vulns
-            .contains(&(name.to_string(), version.to_string(), id.to_string()))
+            .get(name)
+            .and_then(|v| v.get(version))
+            .is_some_and(|ids| ids.contains(id))
     }
 }
 
@@ -249,15 +258,17 @@ pub fn evaluate(
     let mut seen = HashSet::new();
     let mut bypassed = HashSet::new();
 
-    fn walk(
-        node: &Node,
+    // Keys borrow from the tree: an owned `(String, String)` per node visited
+    // was two allocations each, whether or not the node counted.
+    fn walk<'a>(
+        node: &'a Node,
         allowed: &impl Fn(&str, &str) -> bool,
         baseline: Option<&Baseline>,
-        seen: &mut HashSet<(String, String)>,
-        bypassed: &mut HashSet<(String, String)>,
+        seen: &mut HashSet<(&'a str, &'a str)>,
+        bypassed: &mut HashSet<(&'a str, &'a str)>,
         m: &mut Metrics,
     ) {
-        let key = (node.name.clone(), node.version.clone());
+        let key = (node.name.as_str(), node.version.as_str());
         if allowed(&node.name, &node.version) {
             // Allowlisted: count it as a bypass only if it *would* have counted.
             if node.severity.is_some() {
@@ -290,7 +301,7 @@ pub fn evaluate(
     for p in &tree.vulnerabilities {
         if allowed(&p.name, &p.version) {
             if !p.vulns.is_empty() {
-                bypassed.insert((p.name.clone(), p.version.clone()));
+                bypassed.insert((p.name.as_str(), p.version.as_str()));
             }
             continue;
         }
@@ -707,7 +718,10 @@ mod tests {
             vec![],
         );
         let mut base = Baseline::default();
-        base.flagged.insert(("old-bad".into(), "1.0.0".into()));
+        base.flagged
+            .entry("old-bad".into())
+            .or_default()
+            .insert("1.0.0".into());
         let p = Policy {
             max_high: Some(0),
             ..Default::default()
@@ -725,7 +739,10 @@ mod tests {
     fn baseline_passes_when_no_new_risk() {
         let t = tree(vec![node("old-bad", Some(Severity::High), 90, 0)], vec![]);
         let mut base = Baseline::default();
-        base.flagged.insert(("old-bad".into(), "1.0.0".into()));
+        base.flagged
+            .entry("old-bad".into())
+            .or_default()
+            .insert("1.0.0".into());
         let p = Policy {
             max_high: Some(0),
             max_risk: Some(0),
@@ -748,7 +765,11 @@ mod tests {
         );
         let mut base = Baseline::default();
         base.vulns
-            .insert(("a".into(), "1.0.0".into(), "CVE-0000-0000".into()));
+            .entry("a".into())
+            .or_default()
+            .entry("1.0.0".into())
+            .or_default()
+            .insert("CVE-0000-0000".into());
         let p = Policy {
             max_vulns: Some(0),
             ..Default::default()

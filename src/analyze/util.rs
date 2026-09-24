@@ -1,5 +1,7 @@
-use ignore::WalkBuilder;
+use aho_corasick::AhoCorasick;
+use ignore::{DirEntry, WalkBuilder, WalkState};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// The source languages the content analyzers cover.
 ///
@@ -43,6 +45,14 @@ impl Lang {
         Lang::PowerShell,
         Lang::Lua,
     ];
+
+    /// Whether `path`'s extension is one of this language's, compared the way
+    /// [`Listing::files`] compares it.
+    pub fn matches(self, path: &Path) -> bool {
+        path.extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| self.exts().iter().any(|x| x.eq_ignore_ascii_case(e)))
+    }
 
     pub fn exts(self) -> &'static [&'static str] {
         match self {
@@ -102,66 +112,139 @@ pub fn python_pkg_from_path(path: &Path) -> Option<String> {
     None
 }
 
-/// Best-effort: walk a directory, respect `.gitignore` and hidden-file conventions,
-/// yield files matching any extension in `exts`. File-size capped.
-pub fn walk_files(root: &Path, exts: &[&str]) -> impl Iterator<Item = PathBuf> {
-    let exts: Vec<String> = exts.iter().map(|s| s.to_ascii_lowercase()).collect();
-    walk(root, move |p| {
-        if exts.is_empty() {
-            return true;
-        }
-        let ext = p
-            .extension()
-            .and_then(|s| s.to_str())
-            .map(|s| s.to_ascii_lowercase())
-            .unwrap_or_default();
-        exts.iter().any(|e| e == &ext)
-    })
+/// Every readable file under one root, listed once and shared by every analyzer
+/// that looks at that root.
+///
+/// Each analyzer used to walk the tree itself: five full walks of the same
+/// `node_modules` per scan (IDE hooks, behaviour, workflows, Dockerfiles,
+/// install hooks) on top of the content pass, each a single-threaded chain of
+/// `opendir`/`getdirentries` — they were the critical path once the analyzers
+/// ran concurrently. One parallel walk replaces them.
+///
+/// Files are sorted by path, so what an analyzer emits in walk order is the
+/// same on every machine (readdir order is filesystem-dependent), and the files
+/// below any directory are one contiguous run (`Path`'s order is
+/// component-wise), which is how [`Listing::select`] serves a subdirectory
+/// without walking it again.
+pub struct Listing {
+    root: PathBuf,
+    files: Vec<PathBuf>,
+    /// Set by [`Listing::owned_by`]: the package this listing is narrowed to,
+    /// kept so a directory walked on its own is narrowed the same way.
+    only: Option<String>,
 }
 
-/// Walk a directory, yielding the files `keep` selects. Callers that match on
-/// an extension want [`walk_files`]; this is for the ones that match on the
-/// whole name, because their targets have no extension of their own
-/// (`Dockerfile`). Passing `|_| true` would walk the tree and pay a `metadata`
-/// syscall per file to hand every path back — which is what the Dockerfile scan
-/// used to do through `walk_files(root, &[])`.
-pub fn walk(root: &Path, keep: impl Fn(&Path) -> bool) -> impl Iterator<Item = PathBuf> {
-    WalkBuilder::new(root)
-        .hidden(false)
-        .follow_links(false)
-        .standard_filters(false) // include node_modules, ignore .gitignore — we WANT vendored code
-        .build()
-        .filter_map(Result::ok)
-        .filter_map(move |e| {
-            // `file_type` rides along with the readdir entry, and `keep` is a
-            // name test — both free. They gate the one syscall we still pay,
-            // the `metadata` behind the size cap.
-            let ft = e.file_type()?;
-            if ft.is_dir() {
-                return None;
+impl Listing {
+    /// Walk `root` without respecting `.gitignore` or hidden-file conventions —
+    /// vendored and dot-directory code is exactly what we want. Files over
+    /// [`MAX_FILE_BYTES`] are left out.
+    pub fn walk(root: &Path) -> Listing {
+        /// A worker's finds, handed over when the walker drops its visitor.
+        struct Local<'s> {
+            found: Vec<PathBuf>,
+            sink: &'s Mutex<Vec<PathBuf>>,
+        }
+        impl Drop for Local<'_> {
+            fn drop(&mut self) {
+                self.sink.lock().unwrap().append(&mut self.found);
             }
-            let p = e.path();
-            if !keep(p) {
-                return None;
-            }
-            // A symlink is resolved explicitly: `follow_links(false)` stops the
-            // walk descending through linked *directories*, but a linked file
-            // is ordinary source that must still be read — pnpm's
-            // `node_modules` is built almost entirely out of them, and skipping
-            // them would blind the scan to a whole package manager.
-            // `DirEntry::metadata` does not follow, so ask the filesystem.
-            let md = if ft.is_symlink() {
-                std::fs::metadata(p).ok()?
-            } else {
-                e.metadata().ok()?
+        }
+
+        let sink = Mutex::new(Vec::new());
+        WalkBuilder::new(root)
+            .hidden(false)
+            .follow_links(false)
+            .standard_filters(false) // include node_modules, ignore .gitignore — we WANT vendored code
+            .threads(std::thread::available_parallelism().map_or(4, |n| n.get()))
+            .build_parallel()
+            .run(|| {
+                let mut local = Local {
+                    found: Vec::new(),
+                    sink: &sink,
+                };
+                Box::new(move |entry| {
+                    if let Some(p) = entry.ok().as_ref().and_then(readable_file) {
+                        local.found.push(p);
+                    }
+                    WalkState::Continue
+                })
+            });
+        let mut files = sink.into_inner().unwrap();
+        files.sort_unstable();
+        Listing {
+            root: root.to_path_buf(),
+            files,
+            only: None,
+        }
+    }
+
+    /// Only the files [`owner`] attributes to `pkg`: every copy of
+    /// `node_modules/<pkg>` (nested ones included, but not the packages nested
+    /// inside it) or `site-packages/<pkg>`. Every analyzer names its findings
+    /// after the owner of the file they come from, so this is all of `pkg`'s.
+    pub fn owned_by(mut self, pkg: &str) -> Listing {
+        self.files.retain(|p| is_owned_by(p, pkg));
+        self.only = Some(pkg.to_string());
+        self
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The files under `dir` that `keep` selects. `dir` is normally the root
+    /// or inside it; anything else — or a subdirectory that is itself a link,
+    /// which the root walk did not descend — is walked on its own, as the
+    /// per-analyzer walk used to.
+    pub fn select(&self, dir: &Path, keep: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+        let covered = dir == self.root
+            || (dir.starts_with(&self.root)
+                && std::fs::symlink_metadata(dir).is_ok_and(|m| !m.file_type().is_symlink()));
+        if !covered {
+            let sub = Listing::walk(dir);
+            let sub = match &self.only {
+                Some(pkg) => sub.owned_by(pkg),
+                None => sub,
             };
-            if !md.is_file() || md.len() > MAX_FILE_BYTES {
-                return None;
-            }
-            Some(p.to_path_buf())
+            return sub.select(dir, keep);
+        }
+        let start = self.files.partition_point(|p| p.as_path() < dir);
+        self.files[start..]
+            .iter()
+            .take_while(|p| p.starts_with(dir))
+            .filter(|p| keep(p))
+            .cloned()
+            .collect()
+    }
+
+    /// The files under `dir` with one of `exts` (ASCII case-insensitive).
+    pub fn files(&self, dir: &Path, exts: &[&str]) -> Vec<PathBuf> {
+        self.select(dir, |p| {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| exts.iter().any(|x| x.eq_ignore_ascii_case(e)))
         })
-        .collect::<Vec<_>>()
-        .into_iter()
+    }
+}
+
+/// The path of a walk entry worth reading: a regular file within the size cap.
+///
+/// A symlink is resolved explicitly: `follow_links(false)` stops the walk
+/// descending through linked *directories*, but a linked file is ordinary
+/// source that must still be read — pnpm's `node_modules` is built almost
+/// entirely out of them, and skipping them would blind the scan to a whole
+/// package manager. `DirEntry::metadata` does not follow, so ask the filesystem.
+fn readable_file(e: &DirEntry) -> Option<PathBuf> {
+    let ft = e.file_type()?;
+    if ft.is_dir() {
+        return None;
+    }
+    let md = if ft.is_symlink() {
+        std::fs::metadata(e.path()).ok()?
+    } else {
+        e.metadata().ok()?
+    };
+    (md.is_file() && md.len() <= MAX_FILE_BYTES).then(|| e.path().to_path_buf())
 }
 
 /// Shannon entropy in bits/byte over the given text. Uses byte frequencies — good
@@ -185,10 +268,26 @@ pub fn shannon_entropy(s: &[u8]) -> f64 {
         .sum()
 }
 
-/// Find the line number of the first occurrence of `needle` in `text` (1-indexed).
-pub fn line_of(text: &str, needle: &str) -> Option<u32> {
-    let idx = text.find(needle)?;
-    Some(text[..idx].bytes().filter(|&b| b == b'\n').count() as u32 + 1)
+/// Most needles one automaton may carry in [`needle_counts`].
+pub const MAX_NEEDLES: usize = 32;
+
+/// How often each of `ac`'s patterns occurs in `text`, by pattern id — one pass
+/// for a whole needle list instead of one `contains` per needle. Overlapping,
+/// so a needle inside another (`exec(` within `.exec(`) is counted as a
+/// `contains` of each would have found it.
+pub fn needle_counts(ac: &AhoCorasick, text: &str) -> [u32; MAX_NEEDLES] {
+    let mut counts = [0u32; MAX_NEEDLES];
+    for m in ac.find_overlapping_iter(text) {
+        counts[m.pattern().as_usize()] += 1;
+    }
+    counts
+}
+
+/// An automaton for [`needle_counts`]. The default `MatchKind::Standard` is
+/// the one overlapping search needs.
+pub fn automaton(needles: &[&str]) -> AhoCorasick {
+    assert!(needles.len() <= MAX_NEEDLES, "raise MAX_NEEDLES");
+    AhoCorasick::new(needles).expect("static needle list")
 }
 
 /// Truncate an evidence snippet for safe display.
@@ -234,6 +333,13 @@ pub fn owner(path: &Path, project_label: &str) -> String {
         return p;
     }
     project_label.to_string()
+}
+
+/// `owner(path, _) == pkg`, for a real package name (never the project label).
+fn is_owned_by(path: &Path, pkg: &str) -> bool {
+    node_pkg_from_path(path)
+        .or_else(|| python_pkg_from_path(path))
+        .is_some_and(|p| p == pkg)
 }
 
 #[cfg(test)]
@@ -301,12 +407,65 @@ mod walk_tests {
         std::fs::write(store.join("real.js"), "console.log(1)").unwrap();
         std::os::unix::fs::symlink(store.join("real.js"), pkg.join("index.js")).unwrap();
 
-        let found: Vec<PathBuf> = walk_files(&base, &["js"]).collect();
+        let found = Listing::walk(&base).files(&base, &["js"]);
         std::fs::remove_dir_all(&base).ok();
 
         assert!(
             found.iter().any(|p| p.ends_with("node_modules/p/index.js")),
             "symlinked source must be walked, got {found:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod listing_tests {
+    use super::*;
+
+    /// A subdirectory is served from the root listing as one contiguous run:
+    /// its own files, and not a sibling that merely shares its name as a prefix
+    /// (`a.b`, `ab` sort right next to `a/…`).
+    #[test]
+    fn select_serves_a_subdirectory_without_its_siblings() {
+        let base = std::env::temp_dir().join(format!("pm-listing-{}", std::process::id()));
+        for f in ["a/x.js", "a/deep/y.js", "a.b/z.js", "ab/w.js", "top.js"] {
+            let p = base.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "x").unwrap();
+        }
+        let list = Listing::walk(&base);
+        let under_a = list.files(&base.join("a"), &["js"]);
+        let all = list.files(&base, &["JS"]);
+        std::fs::remove_dir_all(&base).ok();
+
+        assert_eq!(under_a, vec![base.join("a/deep/y.js"), base.join("a/x.js")]);
+        assert_eq!(all.len(), 5, "extension match is case-insensitive: {all:?}");
+    }
+
+    /// Narrowed to a package: each copy of it, nested ones too, but neither
+    /// the packages nested inside it nor a sibling sharing its name's prefix.
+    #[test]
+    fn owned_by_keeps_every_copy_of_one_package() {
+        let base = std::env::temp_dir().join(format!("pm-owned-{}", std::process::id()));
+        for f in [
+            "node_modules/t/a.js",
+            "node_modules/x/node_modules/t/b.js",
+            "node_modules/t/node_modules/u/c.js",
+            "node_modules/tt/d.js",
+            "src/e.js",
+        ] {
+            let p = base.join(f);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, "x").unwrap();
+        }
+        let got = Listing::walk(&base).owned_by("t").files(&base, &["js"]);
+        std::fs::remove_dir_all(&base).ok();
+
+        assert_eq!(
+            got,
+            vec![
+                base.join("node_modules/t/a.js"),
+                base.join("node_modules/x/node_modules/t/b.js"),
+            ]
         );
     }
 }

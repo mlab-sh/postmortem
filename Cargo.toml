@@ -1,6 +1,6 @@
 [package]
 name = "postmortem"
-version = "2.6.0"
+version = "2.7.0"
 edition = "2024"
 description = "Supply-chain scanner. Flags malicious install code, typosquats, and shady provenance across your dependencies and your OS packages."
 license = "Apache-2.0"
@@ -39,12 +39,16 @@ thiserror = "1"
 walkdir = "2"
 ignore = "0.4"
 regex = "1"
+aho-corasick = "1"
+memchr = "2"
 owo-colors = "4"
 comfy-table = { version = "7", features = ["custom_styling"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 indicatif = "0.18"
 ureq = "2"
 serde_yaml = "0.9"
+# Already in the tree through ureq; used directly to read apk's scripts archive.
+flate2 = "1"
 
 [profile.release]
 lto = "thin"

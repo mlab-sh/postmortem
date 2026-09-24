@@ -22,10 +22,18 @@ postmortem cache prune --stale            # drop entries an upgrade invalidated
 | `npm-meta/` | npm packument provenance (per `name@version`). |
 | `crates-meta/` | crates.io release-history provenance (per `name@version`), derived from the record already fetched into `registry/`. |
 | `pypi-meta/` | PyPI release-history provenance and owner set (per `name@version`). |
-| `vuln/`, `vuln-scan/` | advisory lookups (`--vulns`), keyed by package and by lockfile content-hash. |
+| `npm-manifest/` | npm version manifests (`ghost`), immutable once published. |
+| `repo-404/` | declared repos that answered 404 — **kept for one day**, so a dangling repo is not re-asked on every run, but a private repo that goes public is seen again. |
+| `vuln/`, `vuln-scan/` | advisory lookups (`--vulns`), keyed by package and by lockfile content-hash (SipHash-2-4 under fixed keys — stable across Rust releases, unlike the `DefaultHasher` it replaced, so a toolchain upgrade no longer invalidates it). |
+| `vuln-coord/` | `system --vulns` answers per OS-package coordinate, **clean ones included**, kept for 12 hours; only coordinates without a fresh answer are sent. |
 
 Because a published version's metadata never changes, resolutions are cached
-indefinitely; re-runs are near-instant.
+indefinitely; re-runs are near-instant. The two exceptions are answers that can
+change without a new release — a missing repo (`repo-404/`, one day) and "no
+known advisory" for an OS package (`vuln-coord/`, 12 hours).
+
+Entries are written to a temporary file and renamed into place, so a
+concurrent reader sees the old entry or the new one, never a torn file.
 
 ## Record format and versioning
 

@@ -367,16 +367,9 @@ pub fn scoop_inventory(opts: Opts) -> Result<Inventory> {
     if opts.signatures && !targets.is_empty() {
         let paths: Vec<String> = targets.iter().map(|(_, p)| p.clone()).collect();
         let verified = super::authenticode::verify(&paths);
+        let owners = super::authenticode::owners_by_path(&targets);
         for app in apps.iter().map(|a| a.name.clone()) {
-            let mine: Vec<_> = verified
-                .iter()
-                .filter(|info| {
-                    targets
-                        .iter()
-                        .any(|(o, p)| *o == app && p.eq_ignore_ascii_case(&info.path))
-                })
-                .cloned()
-                .collect();
+            let mine = super::authenticode::owned_by(&verified, &owners, &app);
             for sig in super::authenticode::signals_for_batch(&mine) {
                 push_signal(&mut signals, &app, sig);
             }

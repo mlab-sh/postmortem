@@ -113,118 +113,33 @@ pub(crate) fn parse_detected(
     omit: &[model::Scope],
 ) -> Result<ParsedProject> {
     let parse_phase = ui.phase("parsing dependencies");
+    // Ecosystems parse independently, so a multi-ecosystem project parses them
+    // on scoped threads — wall time is the slowest parser, not the sum. Results
+    // are merged in detection order and the warnings are noted after the join,
+    // also in that order, so the graph and the output stay deterministic.
+    let results: Vec<(Vec<model::Dependency>, Vec<model::Diagnostic>)> = match detected.as_slice() {
+        [eco] => {
+            parse_phase.set(format!("parsing {} manifest", eco.name()));
+            vec![parse_one(eco)]
+        }
+        many => {
+            parse_phase.set(format!("parsing {} manifests", many.len()));
+            std::thread::scope(|s| {
+                let handles: Vec<_> = many.iter().map(|eco| s.spawn(|| parse_one(eco))).collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().unwrap_or_else(|p| std::panic::resume_unwind(p)))
+                    .collect()
+            })
+        }
+    };
     let mut deps = Vec::new();
     let mut diags: Vec<model::Diagnostic> = Vec::new();
-    let mut diag = |eco: &str, kind: &str, message: String| {
-        parse_phase.note(format!("warn: {message}"));
-        diags.push(model::Diagnostic {
-            ecosystem: eco.into(),
-            kind: kind.into(),
-            message,
-        });
-    };
-    for eco in &detected {
-        parse_phase.set(format!("parsing {} manifest", eco.name()));
-        match eco {
-            // Dispatch Node by lockfile flavor: npm (JSON), pnpm (YAML), yarn (v1/berry).
-            detect::Detected::Node {
-                manifest, lockfile, ..
-            } => {
-                let fname = lockfile.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                let parsed = match fname {
-                    "pnpm-lock.yaml" => parsers::pnpm::parse(lockfile),
-                    "yarn.lock" => parsers::yarn::parse(manifest, lockfile),
-                    _ => parsers::node::parse_lockfile(lockfile),
-                };
-                match parsed {
-                    Ok(mut d) => deps.append(&mut d),
-                    Err(e) => diag(
-                        "node",
-                        "parse_failed",
-                        format!("{fname} parse failed: {e:#}"),
-                    ),
-                }
-            }
-            detect::Detected::Python {
-                manifest, lockfile, ..
-            } => match parsers::python::parse_any(manifest, lockfile.as_deref()) {
-                Ok(mut d) => deps.append(&mut d),
-                Err(e) => diag(
-                    "python",
-                    "parse_failed",
-                    format!("python parse failed: {e:#}"),
-                ),
-            },
-            detect::Detected::Rust {
-                manifest, lockfile, ..
-            } => match parsers::rust::parse_lockfile(lockfile, Some(manifest)) {
-                Ok(mut d) => deps.append(&mut d),
-                Err(e) => diag(
-                    "rust",
-                    "parse_failed",
-                    format!("Cargo.lock parse failed: {e:#}"),
-                ),
-            },
-            detect::Detected::Ruby {
-                manifest, lockfile, ..
-            } => match parsers::ruby::parse_lockfile(lockfile, manifest.as_deref()) {
-                Ok(mut d) => deps.append(&mut d),
-                Err(e) => diag(
-                    "ruby",
-                    "parse_failed",
-                    format!("Gemfile.lock parse failed: {e:#}"),
-                ),
-            },
-            detect::Detected::Php {
-                manifest, lockfile, ..
-            } => match parsers::php::parse_lockfile(lockfile, manifest.as_deref()) {
-                Ok(mut d) => deps.append(&mut d),
-                Err(e) => diag(
-                    "php",
-                    "parse_failed",
-                    format!("composer.lock parse failed: {e:#}"),
-                ),
-            },
-            detect::Detected::Go {
-                manifest, lockfile, ..
-            } => {
-                match parsers::go::parse(manifest, lockfile.as_deref()) {
-                    Ok(mut d) => deps.append(&mut d),
-                    Err(e) => diag("go", "parse_failed", format!("go.mod parse failed: {e:#}")),
-                }
-                // go.mod carries no edge data — the graph is a flat classified list.
-                diag(
-                    "go",
-                    "flat_graph",
-                    "go graph is flat — transitive parent edges are not reconstructed offline (needs `go mod graph`)".into(),
-                );
-                for (from, to) in parsers::go::replaces(manifest) {
-                    diag(
-                        "go",
-                        "replace_directive",
-                        format!(
-                            "go.mod replaces {from} => {to} (module redirected — verify the target)"
-                        ),
-                    );
-                }
-            }
-            detect::Detected::Java {
-                manifest, lockfile, ..
-            } => {
-                match parsers::java::parse(manifest.as_deref(), lockfile.as_deref()) {
-                    Ok(mut d) => deps.append(&mut d),
-                    Err(e) => diag(
-                        "java",
-                        "parse_failed",
-                        format!("JVM manifest/lockfile parse failed: {e:#}"),
-                    ),
-                }
-                diag(
-                    "java",
-                    "flat_graph",
-                    "JVM graph is flat — Maven lists direct deps only and Gradle locks carry no edges (no transitive closure offline)".into(),
-                );
-            }
+    for (mut d, ds) in results {
+        deps.append(&mut d);
+        for diag in ds {
+            parse_phase.note(format!("warn: {}", diag.message));
+            diags.push(diag);
         }
     }
     // Parsers only classify the *direct* deps a manifest names; resolve the rest
@@ -260,6 +175,122 @@ pub(crate) fn parse_detected(
     }
 
     Ok((detected, deps, diags))
+}
+
+/// Parse one detected ecosystem: its dependencies plus the diagnostics it
+/// raised. No UI here — it runs on a worker thread in [`parse_detected`].
+fn parse_one(eco: &detect::Detected) -> (Vec<model::Dependency>, Vec<model::Diagnostic>) {
+    let mut deps = Vec::new();
+    let mut diags: Vec<model::Diagnostic> = Vec::new();
+    let mut diag = |eco: &str, kind: &str, message: String| {
+        diags.push(model::Diagnostic {
+            ecosystem: eco.into(),
+            kind: kind.into(),
+            message,
+        });
+    };
+    match eco {
+        // Dispatch Node by lockfile flavor: npm (JSON), pnpm (YAML), yarn (v1/berry).
+        detect::Detected::Node {
+            manifest, lockfile, ..
+        } => {
+            let fname = lockfile.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let parsed = match fname {
+                "pnpm-lock.yaml" => parsers::pnpm::parse(lockfile),
+                "yarn.lock" => parsers::yarn::parse(manifest, lockfile),
+                _ => parsers::node::parse_lockfile(lockfile),
+            };
+            match parsed {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "node",
+                    "parse_failed",
+                    format!("{fname} parse failed: {e:#}"),
+                ),
+            }
+        }
+        detect::Detected::Python {
+            manifest, lockfile, ..
+        } => match parsers::python::parse_any(manifest, lockfile.as_deref()) {
+            Ok(mut d) => deps.append(&mut d),
+            Err(e) => diag(
+                "python",
+                "parse_failed",
+                format!("python parse failed: {e:#}"),
+            ),
+        },
+        detect::Detected::Rust {
+            manifest, lockfile, ..
+        } => match parsers::rust::parse_lockfile(lockfile, Some(manifest)) {
+            Ok(mut d) => deps.append(&mut d),
+            Err(e) => diag(
+                "rust",
+                "parse_failed",
+                format!("Cargo.lock parse failed: {e:#}"),
+            ),
+        },
+        detect::Detected::Ruby {
+            manifest, lockfile, ..
+        } => match parsers::ruby::parse_lockfile(lockfile, manifest.as_deref()) {
+            Ok(mut d) => deps.append(&mut d),
+            Err(e) => diag(
+                "ruby",
+                "parse_failed",
+                format!("Gemfile.lock parse failed: {e:#}"),
+            ),
+        },
+        detect::Detected::Php {
+            manifest, lockfile, ..
+        } => match parsers::php::parse_lockfile(lockfile, manifest.as_deref()) {
+            Ok(mut d) => deps.append(&mut d),
+            Err(e) => diag(
+                "php",
+                "parse_failed",
+                format!("composer.lock parse failed: {e:#}"),
+            ),
+        },
+        detect::Detected::Go {
+            manifest, lockfile, ..
+        } => {
+            match parsers::go::parse(manifest, lockfile.as_deref()) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag("go", "parse_failed", format!("go.mod parse failed: {e:#}")),
+            }
+            // go.mod carries no edge data — the graph is a flat classified list.
+            diag(
+                "go",
+                "flat_graph",
+                "go graph is flat — transitive parent edges are not reconstructed offline (needs `go mod graph`)".into(),
+            );
+            for (from, to) in parsers::go::replaces(manifest) {
+                diag(
+                    "go",
+                    "replace_directive",
+                    format!(
+                        "go.mod replaces {from} => {to} (module redirected — verify the target)"
+                    ),
+                );
+            }
+        }
+        detect::Detected::Java {
+            manifest, lockfile, ..
+        } => {
+            match parsers::java::parse(manifest.as_deref(), lockfile.as_deref()) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "java",
+                    "parse_failed",
+                    format!("JVM manifest/lockfile parse failed: {e:#}"),
+                ),
+            }
+            diag(
+                "java",
+                "flat_graph",
+                "JVM graph is flat — Maven lists direct deps only and Gradle locks carry no edges (no transitive closure offline)".into(),
+            );
+        }
+    }
+    (deps, diags)
 }
 
 /// A resolver configured only to fill in licenses.
@@ -423,7 +454,7 @@ pub(crate) fn open_image(
     let mut files = std::collections::HashMap::new();
     match system::root_manager(&root) {
         Some(manager) => match system::inventory_at(manager, &root, system::Opts::default()) {
-            Ok(inv) => {
+            Ok((inv, file_index)) => {
                 os_phase.done(format!("{manager}: {}", inv.summary));
                 release = osv::Release::detect_in(&root);
                 if release.is_none() {
@@ -436,10 +467,11 @@ pub(crate) fn open_image(
                     });
                 }
                 deps.extend(inv.deps.iter().cloned());
-                // Only worth the directory walk when there are layers to
-                // attribute packages to.
+                // Only kept when there are layers to attribute packages to.
+                // The backend already read it for its own signals, so this is
+                // no second walk of the package database.
                 if layered {
-                    files = system::file_index_at(manager, &root);
+                    files = file_index;
                 }
                 for note in &inv.notes {
                     diags.push(model::Diagnostic {
@@ -546,6 +578,10 @@ pub(crate) fn scan_os_vulns(
     // Arch tracker and the OSV route alike.
     let settings = settings::Settings::load_or_warn();
     let net = &settings.network;
+    // `tree` calls this once per target; the agents (and their TLS setup) are
+    // built on the first call and shared by the rest of the run.
+    static AGENTS: std::sync::OnceLock<crate::settings::Agents> = std::sync::OnceLock::new();
+    let agents = AGENTS.get_or_init(|| vuln::agent(net));
 
     // Arch isn't in OSV — pacman uses its own source (the Arch Security Tracker),
     // no release needed (Arch is rolling).
@@ -557,7 +593,7 @@ pub(crate) fn scan_os_vulns(
             ),
             ui.animating(),
         );
-        match archsec::scan(&vuln::agent(net), &inv.deps, &net.endpoints.arch_security()) {
+        match archsec::scan(agents, &inv.deps, &net.endpoints.arch_security()) {
             Ok(mut v) => {
                 forest.vulnerabilities.append(&mut v);
                 loader.finish(
@@ -631,7 +667,7 @@ pub(crate) fn scan_os_vulns(
         ui.animating(),
     );
     match osv::scan(
-        &vuln::agent(net),
+        agents,
         &cache::Cache::open(),
         token.as_deref(),
         &inv.deps,

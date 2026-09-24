@@ -20,9 +20,16 @@ fn url_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(r#"https?://[A-Za-z0-9.\-_~:/?#@!$&'()*+,;=%]+"#).unwrap())
 }
+// The patterns below use ASCII `(?-u:\b)` and `[0-9]` rather than `\b` / `\d`.
+// A Unicode word boundary makes the regex crate's lazy DFA quit at the first
+// non-ASCII byte and hand the rest of the haystack to the PikeVM, so one `é`
+// early in a bundle made every later match far dearer. The patterns are ASCII
+// anyway. The one place they differ — an ASCII token directly against a
+// non-ASCII letter (`ller.de` out of `müller.de`) — is put back per match by
+// `welded_to_non_ascii`, which only ever sees the few matches, not the text.
 fn ipv4_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").unwrap())
+    R.get_or_init(|| Regex::new(r"(?-u:\b)(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?-u:\b)").unwrap())
 }
 fn ipv6_re() -> &'static Regex {
     // Verbose pattern covering full + every well-formed `::` compression position,
@@ -56,17 +63,19 @@ fn domain_re() -> &'static Regex {
     // TLD allowlist below.
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
-        Regex::new(r"\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?\.){1,}[A-Za-z]{2,24}\b")
-            .unwrap()
+        Regex::new(
+            r"(?-u:\b)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}[A-Za-z0-9])?\.){1,}[A-Za-z]{2,24}(?-u:\b)",
+        )
+        .unwrap()
     })
 }
 fn btc_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"\b[13][a-km-zA-HJ-NP-Z1-9]{25,34}\b").unwrap())
+    R.get_or_init(|| Regex::new(r"(?-u:\b)[13][a-km-zA-HJ-NP-Z1-9]{25,34}(?-u:\b)").unwrap())
 }
 fn eth_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"\b0x[a-fA-F0-9]{40}\b").unwrap())
+    R.get_or_init(|| Regex::new(r"(?-u:\b)0x[a-fA-F0-9]{40}(?-u:\b)").unwrap())
 }
 
 const URL_NOISE_HOSTS: &[&str] = &[
@@ -86,6 +95,10 @@ const URL_NOISE_HOSTS: &[&str] = &[
     "raw.githubusercontent.com",
     "www.w3.org",
     "schema.org",
+    // JSON Schema `$schema` / `$id` identifiers — in every validator and
+    // generated schema. Was only ever suppressed as a substring of the URL
+    // matching `schema.org`; the host check needs it by name.
+    "json-schema.org",
     "nodejs.org",
     "rust-lang.org",
     "python.org",
@@ -217,122 +230,41 @@ const REVERSE_DNS_HEADS: &[&str] = &["com", "org", "net", "edu", "gov", "mil", "
 /// Embedded TLD allowlist — popular gTLDs/ccTLDs plus a handful of TLDs that
 /// frequently host throwaway exfil infrastructure (`tk`, `xyz`, `top`, ...).
 /// Anything outside this list is dropped; the goal is high signal, not a
-/// faithful public-suffix-list implementation.
-const KNOWN_TLDS: &[&str] = &[
-    // Generic
-    "com",
-    "org",
-    "net",
-    "info",
-    "biz",
-    "pro",
-    "name",
-    "io",
-    "dev",
-    "app",
-    "ai",
-    "sh",
-    "co",
-    "tv",
-    "cc",
-    "me",
-    "mobi",
-    "tech",
-    "cloud",
-    "online",
-    "site",
-    "store",
-    "shop",
-    "live",
-    "studio",
-    "host",
-    "page",
-    "ninja",
-    "guru",
-    "today",
-    "world",
-    "press",
-    "blog",
-    "news",
-    "media",
-    "design",
-    "digital",
-    "global",
-    "systems",
-    "solutions",
-    "services",
-    // Governments / academia
-    "gov",
-    "edu",
-    "mil",
-    "int",
-    // Country-codes (top 30 by registrations + a few useful)
-    "uk",
-    "de",
-    "fr",
-    "jp",
-    "cn",
-    "ru",
-    "br",
-    "in",
-    "au",
-    "ca",
-    "us",
-    "eu",
-    "it",
-    "es",
-    "nl",
-    "pl",
-    "se",
-    "no",
-    "fi",
-    "dk",
-    "be",
-    "ch",
-    "at",
-    "ie",
-    "pt",
-    "gr",
-    "cz",
-    "kr",
-    "tw",
-    "hk",
-    "sg",
-    "id",
-    "th",
-    "vn",
-    "ph",
-    "my",
-    "mx",
-    "ar",
-    "cl",
-    "za",
-    "il",
-    "tr",
-    // Free-TLD / throwaway-prone — often abused for C2
-    "tk",
-    "ml",
-    "ga",
-    "cf",
-    "gq",
-    "xyz",
-    "top",
-    "pw",
-    "club",
-    "icu",
-    "link",
-    "click",
-    "lol",
-    "fun",
-    "wtf",
-    "best",
-    "buzz",
-    "monster",
-    "rest",
-    "uno",
-    "cam",
-    "skin",
-];
+/// faithful public-suffix-list implementation. ASCII case-insensitive.
+///
+/// A `match` rather than a slice `contains`: it is asked once per domain-shaped
+/// token, and a bundle has one at every property access.
+fn is_known_tld(tld: &str) -> bool {
+    // The domain pattern caps a TLD at 24 letters; lowercase it on the stack.
+    let mut buf = [0u8; 24];
+    let Some(dst) = buf.get_mut(..tld.len()) else {
+        return false;
+    };
+    dst.copy_from_slice(tld.as_bytes());
+    dst.make_ascii_lowercase();
+    matches!(
+        &*dst,
+        // Generic
+        b"com" | b"org" | b"net" | b"info" | b"biz" | b"pro" | b"name" | b"io" | b"dev"
+            | b"app" | b"ai" | b"sh" | b"co" | b"tv" | b"cc" | b"me" | b"mobi" | b"tech"
+            | b"cloud" | b"online" | b"site" | b"store" | b"shop" | b"live" | b"studio"
+            | b"host" | b"page" | b"ninja" | b"guru" | b"today" | b"world" | b"press"
+            | b"blog" | b"news" | b"media" | b"design" | b"digital" | b"global" | b"systems"
+            | b"solutions" | b"services"
+            // Governments / academia
+            | b"gov" | b"edu" | b"mil" | b"int"
+            // Country-codes (top 30 by registrations + a few useful)
+            | b"uk" | b"de" | b"fr" | b"jp" | b"cn" | b"ru" | b"br" | b"in" | b"au" | b"ca"
+            | b"us" | b"eu" | b"it" | b"es" | b"nl" | b"pl" | b"se" | b"no" | b"fi" | b"dk"
+            | b"be" | b"ch" | b"at" | b"ie" | b"pt" | b"gr" | b"cz" | b"kr" | b"tw" | b"hk"
+            | b"sg" | b"id" | b"th" | b"vn" | b"ph" | b"my" | b"mx" | b"ar" | b"cl" | b"za"
+            | b"il" | b"tr"
+            // Free-TLD / throwaway-prone — often abused for C2
+            | b"tk" | b"ml" | b"ga" | b"cf" | b"gq" | b"xyz" | b"top" | b"pw" | b"club"
+            | b"icu" | b"link" | b"click" | b"lol" | b"fun" | b"wtf" | b"best" | b"buzz"
+            | b"monster" | b"rest" | b"uno" | b"cam" | b"skin"
+    )
+}
 
 /// File extensions that would otherwise look like 2-label domains
 /// (`config.json` parsed as `config.json`).
@@ -346,23 +278,24 @@ const FILE_EXTENSIONS: &[&str] = &[
 ];
 
 pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
-    let dep = util::owner(path, "<project>");
+    // Most files yield no IOC at all, so the owner is only worked out for one
+    // that does.
+    let owner = std::cell::OnceCell::new();
+    let dep = || owner.get_or_init(|| util::owner(path, "<project>")).clone();
 
     // First pass: collect URL match ranges so we can suppress redundant
     // domain/ipv4/ipv6 findings that already live inside a URL we've reported.
     let mut url_ranges: Vec<(usize, usize)> = Vec::new();
+    let (mut lines, mut comments) = (Lines::new(text), Comments::new(text));
     for m in url_re().find_iter(text) {
         let url = m.as_str();
         // A URL in a comment or docstring is a documentation reference, not an
         // exfil endpoint. Record the range so inner domains stay suppressed too.
-        if in_comment(text, m.start()) {
+        if comments.at(m.start()) {
             url_ranges.push((m.start(), m.end()));
             continue;
         }
-        if !url_has_host(url)
-            || URL_NOISE_HOSTS.iter().any(|h| url.contains(h))
-            || url_host_is_private_ip(url)
-        {
+        if !url_has_host(url) || is_noise_host(url_host(url)) || url_host_is_private_ip(url) {
             // Still record the range so domain matches inside don't fire.
             url_ranges.push((m.start(), m.end()));
             continue;
@@ -373,20 +306,30 @@ pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
         }
         url_ranges.push((m.start(), m.end()));
         out.push(Finding {
-            dependency: dep.clone(),
+            dependency: dep(),
             severity: Severity::Medium,
             category: Category::Ioc,
             detail: "embedded URL".to_string(),
-            location: line_loc(path, text, url),
+            location: line_loc(path, lines.at(m.start())),
             evidence: Some(util::snippet(url, 120)),
             enrich_url: None,
         });
     }
 
-    let in_url = |start: usize| url_ranges.iter().any(|(s, e)| start >= *s && start < *e);
+    // The ranges are sorted and disjoint (they come from one `find_iter`), so
+    // the enclosing range is the last one starting at or before `start`. A
+    // linear `any` here was O(URLs) for every candidate in the file.
+    let in_url = |start: usize| {
+        let i = url_ranges.partition_point(|&(s, _)| s <= start);
+        i > 0 && start < url_ranges[i - 1].1
+    };
 
+    let (mut lines, mut comments) = (Lines::new(text), Comments::new(text));
     for m in ipv4_re().find_iter(text) {
-        if in_url(m.start()) || in_comment(text, m.start()) {
+        if in_url(m.start())
+            || comments.at(m.start())
+            || welded_to_non_ascii(text, m.start(), m.end())
+        {
             continue;
         }
         let ip = m.as_str();
@@ -400,18 +343,19 @@ pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
             continue;
         }
         out.push(Finding {
-            dependency: dep.clone(),
+            dependency: dep(),
             severity: Severity::Medium,
             category: Category::Ioc,
             detail: "embedded IPv4 address".to_string(),
-            location: line_loc(path, text, ip),
+            location: line_loc(path, lines.at(m.start())),
             evidence: Some(util::snippet(ip, 60)),
             enrich_url: None,
         });
     }
 
+    let (mut lines, mut comments) = (Lines::new(text), Comments::new(text));
     for m in ipv6_re().find_iter(text) {
-        if in_url(m.start()) || in_comment(text, m.start()) {
+        if in_url(m.start()) || comments.at(m.start()) {
             continue;
         }
         // Scope-resolution paths (`web::get`, `std::vector`) whose trailing hex
@@ -437,107 +381,168 @@ pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
             continue;
         }
         out.push(Finding {
-            dependency: dep.clone(),
+            dependency: dep(),
             severity: Severity::Medium,
             category: Category::Ioc,
             detail: "embedded IPv6 address".to_string(),
-            location: line_loc(path, text, candidate),
+            location: line_loc(path, lines.at(m.start())),
             evidence: Some(util::snippet(candidate, 60)),
             enrich_url: None,
         });
     }
 
-    // Domains — heavily filtered to keep noise down.
+    // Domains — heavily filtered to keep noise down. Every `a.b` property
+    // access in a bundle is a candidate, so the filters (a pure AND) run
+    // cheapest first: the O(1) code-shape and TLD checks reject nearly all of
+    // them before the URL-range and comment lookups.
+    let (mut lines, mut comments) = (Lines::new(text), Comments::new(text));
     for m in domain_re().find_iter(text) {
-        if in_url(m.start()) || in_comment(text, m.start()) {
-            continue;
-        }
         let candidate = m.as_str();
-        if domain_is_code_access(text, m.start(), m.end(), candidate) {
-            continue;
-        }
-        let lower = candidate.to_ascii_lowercase();
-        if !is_interesting_domain(&lower) {
+        if domain_is_code_access(text, m.start(), m.end(), candidate)
+            || welded_to_non_ascii(text, m.start(), m.end())
+            || !is_interesting_domain(candidate)
+            || in_url(m.start())
+            || comments.at(m.start())
+        {
             continue;
         }
         out.push(Finding {
-            dependency: dep.clone(),
+            dependency: dep(),
             severity: Severity::Medium,
             category: Category::Ioc,
             detail: "embedded domain name".to_string(),
-            location: line_loc(path, text, candidate),
+            location: line_loc(path, lines.at(m.start())),
             evidence: Some(util::snippet(candidate, 80)),
             enrich_url: None,
         });
     }
 
+    let mut lines = Lines::new(text);
     for m in btc_re().find_iter(text) {
         let addr = m.as_str();
-        if !looks_like_btc(addr) {
+        if !looks_like_btc(addr) || welded_to_non_ascii(text, m.start(), m.end()) {
             continue;
         }
         out.push(Finding {
-            dependency: dep.clone(),
+            dependency: dep(),
             severity: Severity::High,
             category: Category::Ioc,
             detail: "Bitcoin address, extremely unusual in dependency code".to_string(),
-            location: line_loc(path, text, addr),
+            location: line_loc(path, lines.at(m.start())),
             evidence: Some(addr.to_string()),
             enrich_url: None,
         });
     }
 
+    let mut lines = Lines::new(text);
     for m in eth_re().find_iter(text) {
         let addr = m.as_str();
+        if welded_to_non_ascii(text, m.start(), m.end()) {
+            continue;
+        }
         out.push(Finding {
-            dependency: dep.clone(),
+            dependency: dep(),
             severity: Severity::High,
             category: Category::Ioc,
             detail: "Ethereum address, extremely unusual in dependency code".to_string(),
-            location: line_loc(path, text, addr),
+            location: line_loc(path, lines.at(m.start())),
             evidence: Some(addr.to_string()),
             enrich_url: None,
         });
     }
 }
 
+/// `d` is a domain-regex match, so plain ASCII. No allocation: this runs for
+/// every domain-shaped token in the file.
 fn is_interesting_domain(d: &str) -> bool {
+    let tld = d.rsplit('.').next().unwrap_or(d);
+    // TLD must be in our allowlist — checked first, it rejects most candidates.
+    if !is_known_tld(tld) {
+        return false;
+    }
     // Direct noise allowlist (exact or subdomain match).
-    if URL_NOISE_HOSTS
-        .iter()
-        .any(|h| d == *h || d.ends_with(&format!(".{h}")))
-    {
+    if is_noise_host(d) {
         return false;
     }
-    let labels: Vec<&str> = d.split('.').collect();
-    if labels.len() < 2 {
+    let labels = d.split('.').count();
+    if labels < 2 {
         return false;
     }
-    let tld = *labels.last().unwrap();
     // 2-label "foo.json" → reject (file extension)
-    if labels.len() == 2 && FILE_EXTENSIONS.contains(&tld) {
-        return false;
-    }
-    // TLD must be in our allowlist
-    if !KNOWN_TLDS.contains(&tld) {
+    if labels == 2 && FILE_EXTENSIONS.iter().any(|x| x.eq_ignore_ascii_case(tld)) {
         return false;
     }
     // No purely-numeric labels (catches "1.2.3.4" already matched by ipv4, plus
     // odd version strings).
-    if labels.iter().any(|l| l.chars().all(|c| c.is_ascii_digit())) {
+    if d.split('.').any(|l| l.bytes().all(|c| c.is_ascii_digit())) {
         return false;
     }
     // At least one label other than the TLD must be non-trivially long, to weed
     // out things like "a.io" that are usually method chains or single chars.
-    if labels[..labels.len() - 1].iter().all(|l| l.len() <= 1) {
+    if d.split('.').take(labels - 1).all(|l| l.len() <= 1) {
         return false;
     }
     true
 }
 
-fn line_loc(path: &Path, text: &str, needle: &str) -> Option<String> {
-    let line = util::line_of(text, needle)?;
+/// Is `host` (any case) one of [`URL_NOISE_HOSTS`] or a subdomain of one?
+fn is_noise_host(host: &str) -> bool {
+    let h = host.as_bytes();
+    URL_NOISE_HOSTS.iter().any(|n| {
+        h.len() >= n.len()
+            && h[h.len() - n.len()..].eq_ignore_ascii_case(n.as_bytes())
+            && (h.len() == n.len() || h[h.len() - n.len() - 1] == b'.')
+    })
+}
+
+/// The host of a URL: after the scheme and any userinfo, up to the first byte
+/// a hostname cannot hold — which drops the port and path, and the quote or
+/// paren the URL pattern's wide class drags along (`https://x.org',`). The
+/// noise check used to be `url.contains(host)`, which let
+/// `https://evil.tk/?r=github.com` hide behind a query parameter.
+fn url_host(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or("");
+    let end = host
+        .bytes()
+        .position(|c| !(c.is_ascii_alphanumeric() || matches!(c, b'.' | b'-' | b'_')))
+        .unwrap_or(host.len());
+    &host[..end]
+}
+
+fn line_loc(path: &Path, line: u32) -> Option<String> {
     Some(format!("{}:{}", path.display(), line))
+}
+
+/// The 1-based line of successive match offsets. A regex's matches come in
+/// order, so each lookup counts only the newlines since the previous one. The
+/// line used to be found by searching the file from byte 0 for the matched
+/// text — O(findings × file size), and wrong whenever the same text appeared
+/// earlier (it reported the first occurrence, not the match).
+struct Lines<'t> {
+    text: &'t [u8],
+    pos: usize,
+    line: u32,
+}
+
+impl<'t> Lines<'t> {
+    fn new(text: &'t str) -> Self {
+        Lines {
+            text: text.as_bytes(),
+            pos: 0,
+            line: 1,
+        }
+    }
+
+    fn at(&mut self, offset: usize) -> u32 {
+        if offset < self.pos {
+            (self.pos, self.line) = (0, 1);
+        }
+        self.line += memchr::memchr_iter(b'\n', &self.text[self.pos..offset]).count() as u32;
+        self.pos = offset;
+        self.line
+    }
 }
 
 /// True when the byte just before `start` or just after `end` is an ASCII
@@ -548,6 +553,15 @@ fn touches_identifier(text: &str, start: usize, end: usize) -> bool {
     let left = start.checked_sub(1).is_some_and(|i| is_ident_byte(b[i]));
     let right = b.get(end).copied().is_some_and(is_ident_byte);
     left || right
+}
+
+/// Whether the match is glued to a non-ASCII letter or digit on either side —
+/// where a Unicode `\b` saw no boundary, so the match is a fragment of a
+/// longer word (`müller.de`), not a token.
+fn welded_to_non_ascii(text: &str, start: usize, end: usize) -> bool {
+    let word = |c: char| !c.is_ascii() && c.is_alphanumeric();
+    text[..start].chars().next_back().is_some_and(word)
+        || text[end..].chars().next().is_some_and(word)
 }
 
 fn is_ident_byte(c: u8) -> bool {
@@ -613,7 +627,10 @@ fn domain_is_code_access(text: &str, start: usize, end: usize, candidate: &str) 
     }
     // Reverse-DNS package path (`com.google.gson`, `org.apache.commons`).
     let head = candidate.split('.').next().unwrap_or("");
-    if REVERSE_DNS_HEADS.contains(&head.to_ascii_lowercase().as_str()) {
+    if REVERSE_DNS_HEADS
+        .iter()
+        .any(|h| h.eq_ignore_ascii_case(head))
+    {
         return true;
     }
     let tld = candidate.rsplit('.').next().unwrap_or("");
@@ -623,7 +640,7 @@ fn domain_is_code_access(text: &str, start: usize, end: usize, candidate: &str) 
     }
     // Identifier-ish TLD (`.name`, `.id`, `.top`): treat as data only when the
     // token is quote/URL-delimited, which member access never is.
-    if AMBIGUOUS_TLDS.contains(&tld.to_ascii_lowercase().as_str()) && !quote_adjacent(b, start, end)
+    if AMBIGUOUS_TLDS.iter().any(|t| t.eq_ignore_ascii_case(tld)) && !quote_adjacent(b, start, end)
     {
         return true;
     }
@@ -658,36 +675,83 @@ fn url_host_is_private_ip(url: &str) -> bool {
 /// would have swallowed the rest of the file.
 const MAX_COMMENT_LINE: usize = 4096;
 
-/// Whether the match at `start` sits on a comment or docstring-bullet line.
-/// Language-agnostic across the scanned set: `#` (Python), `//` `///` `//!`
-/// (Rust/JS line + doc comments), and `*` / `/*` (block-comment bodies). Also
-/// catches a trailing `//` line comment that isn't the `//` in `scheme://`.
+/// Whether matches sit on a comment or docstring-bullet line. Language-agnostic
+/// across the scanned set: `#` (Python), `//` `///` `//!` (Rust/JS line + doc
+/// comments), and `*` / `/*` (block-comment bodies). Also catches a trailing
+/// `//` line comment that isn't the `//` in `scheme://`.
 ///
-/// The backward scan is capped at [`MAX_COMMENT_LINE`], so every line up to
-/// that width behaves exactly as before and wider ones answer `false`.
-fn in_comment(text: &str, start: usize) -> bool {
-    let mut floor = start.saturating_sub(MAX_COMMENT_LINE);
-    while floor < start && !text.is_char_boundary(floor) {
-        floor += 1;
+/// Whether the prefix up to a match is a comment only grows along a line (a
+/// marker, once in the prefix, stays there), so each line is examined once for
+/// the offset its comment starts at, and every match on it is then a compare.
+/// It used to re-scan the prefix byte by byte for each match.
+///
+/// A match more than [`MAX_COMMENT_LINE`] bytes into its line is never in a
+/// comment; up to that width the answer is the one the per-match scan gave.
+struct Comments<'t> {
+    text: &'t str,
+    /// The cached line, `[start, end)`; empty until the first lookup.
+    start: usize,
+    end: usize,
+    /// Offset from which a match on this line is in a comment.
+    from: usize,
+}
+
+impl<'t> Comments<'t> {
+    fn new(text: &'t str) -> Self {
+        Comments {
+            text,
+            start: 1,
+            end: 0,
+            from: usize::MAX,
+        }
     }
-    let window = &text[floor..start];
-    match window.rfind('\n') {
-        Some(nl) => line_is_comment(&window[nl + 1..]),
-        // No newline inside the window: either we reached the start of the file
-        // (a genuine short first line) or the line is wider than the cap.
-        None => floor == 0 && line_is_comment(window),
+
+    fn at(&mut self, pos: usize) -> bool {
+        if !(self.start <= pos && pos <= self.end) {
+            let b = self.text.as_bytes();
+            self.start = memchr::memrchr(b'\n', &b[..pos]).map_or(0, |i| i + 1);
+            self.end = memchr::memchr(b'\n', &b[pos..]).map_or(b.len(), |i| pos + i);
+            self.from = comment_from(&self.text[self.start..self.end])
+                .map_or(usize::MAX, |i| self.start + i);
+        }
+        // The old backward scan stopped `MAX_COMMENT_LINE` bytes before the
+        // match: it saw the line's opening newline only up to `MAX - 1` bytes
+        // in, while on the first line (no newline) it reached byte 0 at `MAX`.
+        let reach = if self.start == 0 {
+            MAX_COMMENT_LINE
+        } else {
+            MAX_COMMENT_LINE - 1
+        };
+        pos >= self.from && pos - self.start <= reach
     }
 }
 
-/// Does this line prefix — everything from the line start up to the match —
-/// put the match inside a comment?
-fn line_is_comment(prefix: &str) -> bool {
-    let t = prefix.trim_start();
-    if t.starts_with('#') || t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") {
-        return true;
+/// The shortest prefix of `line` that puts what follows it in a comment: a
+/// leading marker, or a `//` that is not the one in `scheme://`.
+fn comment_from(line: &str) -> Option<usize> {
+    let b = line.as_bytes();
+    // Nothing past the reach is ever asked about.
+    let cap = b.len().min(MAX_COMMENT_LINE + 1);
+    let lead = line
+        .char_indices()
+        .take_while(|&(i, _)| i < cap)
+        .find(|&(_, c)| !c.is_whitespace())
+        .and_then(|(i, c)| match (c, b.get(i + 1)) {
+            ('#' | '*', _) => Some(i + 1),
+            ('/', Some(b'/' | b'*')) => Some(i + 2),
+            _ => None,
+        });
+    let trailing =
+        (1..cap).find(|&i| b[i] == b'/' && b[i - 1] == b'/' && (i < 2 || b[i - 2] != b':'));
+    match (lead, trailing.map(|i| i + 1)) {
+        (Some(a), Some(t)) => Some(a.min(t)),
+        (a, t) => a.or(t),
     }
-    let b = prefix.as_bytes();
-    (1..b.len()).any(|i| b[i] == b'/' && b[i - 1] == b'/' && (i < 2 || b[i - 2] != b':'))
+}
+
+#[cfg(test)]
+fn in_comment(text: &str, start: usize) -> bool {
+    Comments::new(text).at(start)
 }
 
 /// Whether the byte just before `start` or just after `end` is a string quote —
@@ -959,5 +1023,94 @@ mod tests {
             !details(&fs).contains(&"embedded IPv6 address"),
             "should not flag non-IPv6 colon sequences: {fs:#?}"
         );
+    }
+
+    /// The line is the match's own, not that of the first place the same text
+    /// appears (which is what searching the file for it reported).
+    #[test]
+    fn reports_the_line_of_each_match() {
+        let fs = scan("a = 1\nfetch(\"http://evil.tk/x\")\n\nfetch(\"http://evil.tk/x\")\n");
+        let locs: Vec<_> = fs.iter().filter_map(|f| f.location.as_deref()).collect();
+        assert_eq!(locs, ["test.js:2", "test.js:4"], "{fs:#?}");
+    }
+
+    /// A noise host only counts as the URL's host: in a query string it must
+    /// not hide the real destination.
+    #[test]
+    fn noise_host_in_the_query_does_not_hide_the_url() {
+        let fs = scan(r#"fetch("https://evil.tk/?r=github.com");"#);
+        assert!(details(&fs).contains(&"embedded URL"), "{fs:#?}");
+        // The host itself, or a subdomain of it, is still noise.
+        let quiet = scan(r#"a("https://github.com/x"); b("https://api.GitHub.com/y");"#);
+        assert!(!details(&quiet).contains(&"embedded URL"), "{quiet:#?}");
+        assert_eq!(url_host("https://u:p@Evil.tk:8080/p?q#f"), "Evil.tk");
+        // The URL pattern drags trailing punctuation along; it is not the host.
+        assert_eq!(url_host("https://example.com',"), "example.com");
+        assert_eq!(url_host("http://localhost$"), "localhost");
+    }
+
+    /// ASCII word boundaries in the patterns, but a token glued to a non-ASCII
+    /// letter is still a word fragment, as it was under Unicode `\b`.
+    #[test]
+    fn a_fragment_of_a_non_ascii_word_is_not_a_domain() {
+        let fs = scan(r#"name = "müller.de"; host = "é45.77.12.34"; c2 = "évil.tk é evil.tk";"#);
+        let ev: Vec<_> = fs.iter().filter_map(|f| f.evidence.as_deref()).collect();
+        assert_eq!(ev, ["evil.tk"], "{fs:#?}");
+    }
+
+    /// The per-line comment cache answers exactly what the per-match backward
+    /// scan it replaced did, at every offset of every line shape — markers,
+    /// `scheme://`, Unicode whitespace, and lines either side of the cap.
+    #[test]
+    fn comment_cache_matches_the_per_match_scan() {
+        fn reference(text: &str, start: usize) -> bool {
+            let mut floor = start.saturating_sub(MAX_COMMENT_LINE);
+            while floor < start && !text.is_char_boundary(floor) {
+                floor += 1;
+            }
+            let window = &text[floor..start];
+            let is_comment = |prefix: &str| {
+                let t = prefix.trim_start();
+                if t.starts_with('#')
+                    || t.starts_with("//")
+                    || t.starts_with('*')
+                    || t.starts_with("/*")
+                {
+                    return true;
+                }
+                let b = prefix.as_bytes();
+                (1..b.len())
+                    .any(|i| b[i] == b'/' && b[i - 1] == b'/' && (i < 2 || b[i - 2] != b':'))
+            };
+            match window.rfind('\n') {
+                Some(nl) => is_comment(&window[nl + 1..]),
+                None => floor == 0 && is_comment(window),
+            }
+        }
+        let pieces: Vec<&str> = "a| |\u{a0}|é|#|*|/|/*|//|:|://|http://x.tk|\n"
+            .split('|')
+            .collect();
+        let mut texts: Vec<String> = Vec::new();
+        let mut seed = 0x2545_f491_u32;
+        for _ in 0..400 {
+            let mut t = String::new();
+            for _ in 0..(seed % 14) {
+                seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+                t.push_str(pieces[(seed >> 16) as usize % pieces.len()]);
+            }
+            texts.push(t);
+        }
+        for pad in [MAX_COMMENT_LINE - 3, MAX_COMMENT_LINE, MAX_COMMENT_LINE + 2] {
+            let fill = "a".repeat(pad);
+            texts.push(format!("//{fill}x.tk\n// {fill}x.tk"));
+            texts.push(format!("x\n{fill}// y.tk z.tk"));
+            texts.push(format!("{fill}é// y.tk"));
+        }
+        for t in &texts {
+            let mut cache = Comments::new(t);
+            for pos in (0..=t.len()).filter(|&p| t.is_char_boundary(p)) {
+                assert_eq!(cache.at(pos), reference(t, pos), "{t:?} @ {pos}");
+            }
+        }
     }
 }

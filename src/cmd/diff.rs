@@ -164,39 +164,52 @@ fn finish_diff(
             .cloned()
             .collect();
         let mut settings = settings::Settings::load_or_warn();
-        let resolutions = if args.online && !subject.is_empty() {
+        let resolver = if args.online && !subject.is_empty() {
             let tokens = resolve::Tokens {
                 github: settings.resolve_github_token()?,
                 gitlab: settings.gitlab_token(),
                 codeberg: settings.codeberg_token(),
             };
-            resolve::Resolver::with_network(tokens, settings.tree.clone(), &settings.network)
-                .resolve_all(&subject, ui)
+            Some(resolve::Resolver::with_network(
+                tokens,
+                settings.tree.clone(),
+                &settings.network,
+            ))
         } else {
-            Default::default()
+            None
         };
 
         // Advisories are looked up per lockfile, so the new project is scanned
         // whole and the results filtered — `assess` keeps only the introduced
-        // packages, which is what a reviewer is being asked to approve.
-        let mut vulns = Vec::new();
-        if args.vulns {
-            let net = settings.network.clone();
-            let (agent, cache, token) = (
-                vuln::agent(&net),
-                cache::Cache::open(),
-                settings.vuln_token(),
-            );
-            let scan_url = vuln::scan_url(&net);
-            for d in &new_detected {
-                if let Some((lock, fmt)) = mlab_target(d)
-                    && let Ok(mut v) =
-                        vuln::scan(&agent, &cache, token.as_deref(), lock, fmt, &scan_url)
-                {
-                    vulns.append(&mut v);
-                }
-            }
-        }
+        // packages, which is what a reviewer is being asked to approve. The
+        // scans need nothing from the resolution, so they run alongside it.
+        let (resolutions, vulns) = std::thread::scope(|s| {
+            let vulns = args.vulns.then(|| {
+                let net = settings.network.clone();
+                let (agent, cache, token) = (
+                    vuln::agent(&net),
+                    cache::Cache::open(),
+                    settings.vuln_token(),
+                );
+                let scan_url = vuln::scan_url(&net);
+                let targets: Vec<_> = new_detected.iter().filter_map(mlab_target).collect();
+                s.spawn(move || {
+                    vuln::scan_many(&agent, &cache, token.as_deref(), &targets, &scan_url)
+                })
+            });
+            let resolutions = resolver
+                .as_ref()
+                .map(|r| r.resolve_all(&subject, ui))
+                .unwrap_or_default();
+            let vulns: Vec<vuln::VulnPackage> = vulns
+                .map(|h| h.join().expect("vuln scan thread"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .flatten()
+                .collect();
+            (resolutions, vulns)
+        });
         diff::assess(&mut report, &resolutions, &vulns);
     }
 

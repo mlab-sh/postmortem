@@ -31,6 +31,8 @@
 
 use owo_colors::OwoColorize;
 
+use crate::resolve::{NpmPackument, NpmVersion};
+
 /// One thing that changed at a release.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
@@ -158,11 +160,8 @@ const DORMANT_DAYS: i64 = 365;
 ///
 /// `installed` marks one version as the project's. Pure and offline — the
 /// caller fetches the document.
-pub fn build(doc: &serde_json::Value, package: &str, installed: Option<&str>) -> Timeline {
-    let (Some(times), Some(versions)) = (
-        doc.get("time").and_then(|t| t.as_object()),
-        doc.get("versions").and_then(|v| v.as_object()),
-    ) else {
+pub fn build(doc: &NpmPackument, package: &str, installed: Option<&str>) -> Timeline {
+    let (Some(times), Some(versions)) = (&doc.time, &doc.versions) else {
         return Timeline {
             package: package.into(),
             ..Default::default()
@@ -179,7 +178,7 @@ pub fn build(doc: &serde_json::Value, package: &str, installed: Option<&str>) ->
     ordered.sort_by_key(|(_, t)| *t);
 
     let mut releases: Vec<Release> = Vec::new();
-    let mut prev: Option<&serde_json::Value> = None;
+    let mut prev: Option<&NpmVersion> = None;
     let mut prev_ts: Option<i64> = None;
 
     for (version, ts) in ordered {
@@ -194,7 +193,7 @@ pub fn build(doc: &serde_json::Value, package: &str, installed: Option<&str>) ->
         match prev {
             None => events.push(Event::FirstRelease),
             Some(p) => {
-                let (was, now) = (publisher(p), publisher(manifest));
+                let (was, now) = (p.publisher(), manifest.publisher());
                 if let (Some(a), Some(b)) = (was, now)
                     && a != b
                 {
@@ -203,17 +202,17 @@ pub fn build(doc: &serde_json::Value, package: &str, installed: Option<&str>) ->
                         to: b.into(),
                     });
                 }
-                match (has_install_hook(p), has_install_hook(manifest)) {
+                match (p.has_install_hook(), manifest.has_install_hook()) {
                     (false, true) => events.push(Event::InstallScriptAdded),
                     (true, false) => events.push(Event::InstallScriptRemoved),
                     _ => {}
                 }
-                match (has_provenance(p), has_provenance(manifest)) {
+                match (p.has_provenance(), manifest.has_provenance()) {
                     (false, true) => events.push(Event::ProvenanceAdded),
                     (true, false) => events.push(Event::ProvenanceRemoved),
                     _ => {}
                 }
-                if let (Some(a), Some(b)) = (repo_url(p), repo_url(manifest))
+                if let (Some(a), Some(b)) = (p.repo_url(), manifest.repo_url())
                     && !same_repo(&a, &b)
                 {
                     events.push(Event::RepoChanged { from: a, to: b });
@@ -226,14 +225,14 @@ pub fn build(doc: &serde_json::Value, package: &str, installed: Option<&str>) ->
                 }
             }
         }
-        if manifest.get("deprecated").is_some() {
+        if manifest.deprecated {
             events.push(Event::Deprecated);
         }
 
         releases.push(Release {
             version: version.to_string(),
             published: ts,
-            publisher: publisher(manifest).map(str::to_string),
+            publisher: manifest.publisher().map(str::to_string),
             events,
             installed: installed == Some(version),
         });
@@ -260,39 +259,6 @@ fn parse_ts(s: &str) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(s)
         .ok()
         .map(|d| d.timestamp())
-}
-
-fn publisher(manifest: &serde_json::Value) -> Option<&str> {
-    manifest
-        .get("_npmUser")
-        .and_then(|u| u.get("name"))
-        .and_then(|n| n.as_str())
-}
-
-fn has_provenance(manifest: &serde_json::Value) -> bool {
-    manifest
-        .get("dist")
-        .and_then(|d| d.get("attestations"))
-        .is_some()
-}
-
-/// Does a version manifest declare an install lifecycle script?
-///
-/// [`crate::lifecycle::ALWAYS`] and not the longer list: a packument version is
-/// a registry artifact by definition, and a registry tarball's `prepare` ran on
-/// the publisher's machine before packing, never on an installing one.
-fn has_install_hook(manifest: &serde_json::Value) -> bool {
-    manifest
-        .get("scripts")
-        .and_then(|s| s.as_object())
-        .is_some_and(|s| crate::lifecycle::ALWAYS.iter().any(|k| s.contains_key(*k)))
-}
-
-fn repo_url(manifest: &serde_json::Value) -> Option<String> {
-    let r = manifest.get("repository")?;
-    r.as_str()
-        .map(str::to_string)
-        .or_else(|| r.get("url").and_then(|u| u.as_str()).map(str::to_string))
 }
 
 /// Do two repository URLs point at the same place?
@@ -488,6 +454,12 @@ pub fn to_json(t: &Timeline) -> serde_json::Value {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// [`super::build`] over a JSON fixture, parsed the way the fetch parses.
+    fn build(doc: &serde_json::Value, package: &str, installed: Option<&str>) -> Timeline {
+        let doc: NpmPackument = serde_json::from_value(doc.clone()).expect("a packument");
+        super::build(&doc, package, installed)
+    }
 
     /// A packument from `(version, date, publisher, has_hook, repo)` rows.
     fn packument(rows: &[(&str, &str, &str, bool, &str)]) -> serde_json::Value {

@@ -213,6 +213,8 @@ mod tests {
     fn assess_flags_thresholds() {
         let r = Resolver {
             agents: crate::settings::NetworkSettings::default().agents(Duration::from_secs(15)),
+            gates: super::net::Gates::new(false),
+            inflight: Default::default(),
             cache: Cache::open(),
             tokens: Tokens::default(),
             endpoints: crate::settings::Endpoints::default(),

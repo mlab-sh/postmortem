@@ -25,7 +25,7 @@
 //! deleted, such as a credential or a build tool the author removed on purpose,
 //! reappears in the report as if it shipped.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -78,8 +78,9 @@ impl Layer {
 pub struct Stacked {
     pub layers: Vec<Layer>,
     /// Path as the image sees it (`/usr/bin/curl`) → the layer that last wrote
-    /// it. Empty when the image was too large to track.
-    pub owner: HashMap<String, usize>,
+    /// it. Empty when the image was too large to track. Ordered, so everything
+    /// under a directory is one contiguous range (see [`apply_whiteouts`]).
+    pub owner: BTreeMap<String, usize>,
     /// Acquisition facts worth reporting.
     pub notes: Vec<String>,
     /// Credential files a later layer hid or replaced, which therefore still
@@ -146,29 +147,45 @@ pub fn stack_into(
         })
         .collect();
 
-    let mut owner: HashMap<String, usize> = HashMap::new();
+    // Listing a layer is a full read of its blob and depends on nothing below
+    // it, so every layer is listed up front, concurrently. Only extraction has
+    // to happen in stack order.
+    progress(format!("listing {} layer(s)", manifest.layers.len()));
+    let listings =
+        crate::system::par_map(&manifest.layers, 4, |rel| list_entries(&archive.join(rel)));
+    // Whether each layer spells its members `./usr/bin/x` or `usr/bin/x`: a
+    // builder is consistent within a layer, so [`read_member`] asks for that
+    // spelling first instead of trying both.
+    let mut dotted: Vec<bool> = Vec::with_capacity(listings.len());
+    let mut all_entries: Vec<Vec<String>> = Vec::with_capacity(listings.len());
+    for (index, listing) in listings.into_iter().enumerate() {
+        let entries = listing.with_context(|| format!("listing layer {index} of {reference}"))?;
+        dotted.push(entries.first().is_some_and(|e| e.starts_with("./")));
+        all_entries.push(entries);
+    }
+
+    let mut owner: BTreeMap<String, usize> = BTreeMap::new();
     let mut tracking = true;
     let mut removed_secrets: Vec<Removed> = Vec::new();
-    for (index, rel) in manifest.layers.iter().enumerate() {
+    for (index, (rel, entries)) in manifest.layers.iter().zip(&all_entries).enumerate() {
         progress(format!(
             "stacking layer {}/{}",
             index + 1,
             manifest.layers.len()
         ));
         let blob = archive.join(rel);
-        let entries =
-            list_entries(&blob).with_context(|| format!("listing layer {index} of {reference}"))?;
 
         // Whiteouts are resolved against what the layers below actually wrote, so
         // this is the moment — and the only moment — at which "this file was
         // deleted, and here is the layer it is still in" is knowable.
-        let hidden = apply_whiteouts(root, &entries, &owner);
+        let hidden = apply_whiteouts(root, entries, &owner);
         collect_removed(
             &hidden,
             &owner,
             index,
             &layers,
             &manifest.layers,
+            &dotted,
             archive,
             &mut removed_secrets,
         );
@@ -179,8 +196,8 @@ pub fn stack_into(
             // `path → the layer that held it before this one took it over`,
             // captured at the moment of the overwrite because `owner` no longer
             // knows a second later.
-            let mut overwritten: HashMap<String, usize> = HashMap::new();
-            for e in &entries {
+            let mut overwritten: BTreeMap<String, usize> = BTreeMap::new();
+            for e in entries {
                 if e.ends_with('/') || basename(e).starts_with(".wh.") {
                     continue;
                 }
@@ -207,6 +224,7 @@ pub fn stack_into(
                 index,
                 &layers,
                 &manifest.layers,
+                &dotted,
                 archive,
                 &mut removed_secrets,
             );
@@ -229,10 +247,11 @@ pub fn stack_into(
 #[allow(clippy::too_many_arguments)]
 fn collect_removed(
     paths: &[String],
-    owner: &HashMap<String, usize>,
+    owner: &BTreeMap<String, usize>,
     deleted_by: usize,
     layers: &[Layer],
     blobs: &[String],
+    dotted: &[bool],
     archive: &Path,
     out: &mut Vec<Removed>,
 ) {
@@ -246,7 +265,8 @@ fn collect_removed(
         let Some(rel) = blobs.get(written_by) else {
             continue;
         };
-        let Some(content) = read_member(&archive.join(rel), path) else {
+        let dot = dotted.get(written_by).copied().unwrap_or(false);
+        let Some(content) = read_member(&archive.join(rel), path, dot) else {
             continue;
         };
         if !image_secrets::holds_credential(path, &content) {
@@ -268,11 +288,14 @@ fn collect_removed(
 
 /// One member's bytes out of a layer blob, without unpacking the rest.
 ///
-/// Member names come with or without a `./` prefix depending on the builder, so
-/// both spellings are tried.
-fn read_member(blob: &Path, path: &str) -> Option<Vec<u8>> {
+/// Member names come with or without a `./` prefix depending on the builder.
+/// `dotted` is the spelling the layer's listing used, tried first; the other is
+/// kept as a fallback. Each try is a `tar` over the whole blob.
+fn read_member(blob: &Path, path: &str, dotted: bool) -> Option<Vec<u8>> {
     let rel = path.trim_start_matches('/');
-    for member in [rel.to_string(), format!("./{rel}")] {
+    let (plain, dot) = (rel.to_string(), format!("./{rel}"));
+    let order = if dotted { [dot, plain] } else { [plain, dot] };
+    for member in order {
         let out = Command::new("tar")
             .arg("-xOf")
             .arg(blob)
@@ -401,7 +424,15 @@ fn list_entries(blob: &Path) -> Result<Vec<String>> {
 /// Must run *before* the layer is extracted: an opaque marker clears a directory
 /// that this same layer then refills, and clearing it afterwards would delete the
 /// image's own content.
-fn apply_whiteouts(root: &Path, entries: &[String], owner: &HashMap<String, usize>) -> Vec<String> {
+///
+/// Each marker takes the range of `owner` under its prefix rather than scanning
+/// every tracked path: a whiteout-heavy layer over a large base was
+/// O(markers × paths).
+fn apply_whiteouts(
+    root: &Path,
+    entries: &[String],
+    owner: &BTreeMap<String, usize>,
+) -> Vec<String> {
     let mut hidden = Vec::new();
     for e in entries {
         let name = basename(e);
@@ -413,7 +444,7 @@ fn apply_whiteouts(root: &Path, entries: &[String], owner: &HashMap<String, usiz
         if name == ".wh..wh..opq" {
             // Everything the lower layers put in this directory is hidden.
             let prefix = format!("/{rel}");
-            hidden.extend(owner.keys().filter(|k| k.starts_with(&prefix)).cloned());
+            hidden.extend(under(owner, &prefix).cloned());
             if let Ok(dir) = std::fs::read_dir(&parent) {
                 for entry in dir.flatten() {
                     remove_any(&entry.path());
@@ -424,8 +455,7 @@ fn apply_whiteouts(root: &Path, entries: &[String], owner: &HashMap<String, usiz
             let path = format!("/{rel}{target}");
             let below = format!("{path}/");
             hidden.extend(
-                owner
-                    .keys()
+                under(owner, &path)
                     .filter(|k| **k == path || k.starts_with(&below))
                     .cloned(),
             );
@@ -433,6 +463,20 @@ fn apply_whiteouts(root: &Path, entries: &[String], owner: &HashMap<String, usiz
         }
     }
     hidden
+}
+
+/// The tracked paths starting with `prefix`, which sort as one contiguous run.
+fn under<'a>(
+    owner: &'a BTreeMap<String, usize>,
+    prefix: &'a str,
+) -> impl Iterator<Item = &'a String> + 'a {
+    owner
+        .range::<str, _>((
+            std::ops::Bound::Included(prefix),
+            std::ops::Bound::Unbounded,
+        ))
+        .map(|(k, _)| k)
+        .take_while(move |k| k.starts_with(prefix))
 }
 
 /// Extract one layer over the accumulated root, dropping the whiteout markers
@@ -567,8 +611,10 @@ mod tests {
         std::fs::write(root.join("opt/cache/a"), b"x").expect("a");
         std::fs::write(root.join("opt/cache/sub/b"), b"x").expect("b");
 
-        let owner: HashMap<String, usize> = [
+        // `/etc/secretive` shares the whited-out name as a prefix and must survive.
+        let owner: BTreeMap<String, usize> = [
             ("/etc/secret".to_string(), 0),
+            ("/etc/secretive".to_string(), 0),
             ("/etc/keep".to_string(), 0),
             ("/opt/cache/a".to_string(), 0),
             ("/opt/cache/sub/b".to_string(), 0),

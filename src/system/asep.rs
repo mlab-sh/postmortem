@@ -304,13 +304,14 @@ if ($mpr.UserInitMprLogonScript) {
 }
 "#;
 
-/// The Winlogon hooks, read separately so their *default* values can be judged
-/// rather than merely enumerated.
+/// The Winlogon hooks as plain name/value pairs, so their *default* values can
+/// be judged rather than merely enumerated. Appended to [`PS_LOGON`] (it was a
+/// PowerShell process of its own); keyed `WinlogonHook` so the entry parser
+/// reads these lines as command-less, and drops them.
 const PS_WINLOGON: &str = r"
-$ErrorActionPreference = 'SilentlyContinue'
 $wl = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 foreach ($n in @('Userinit','Shell','System')) {
-  [pscustomobject]@{ Name = $n; Value = [string]$wl.$n } | ConvertTo-Json -Compress
+  [pscustomobject]@{ WinlogonHook = $n; Value = [string]$wl.$n } | ConvertTo-Json -Compress
 }
 ";
 
@@ -325,7 +326,13 @@ pub(crate) fn parse_entries(stdout: &str) -> Vec<AsepEntry> {
 }
 
 pub fn asep_inventory(opts: Opts) -> Result<Inventory> {
-    let raw = powershell(&format!("{}{}", super::PS_RESOLVE_IMAGE, PS_LOGON)).context("enumerating logon auto-start points")?;
+    let raw = powershell(&format!(
+        "{}{}{}",
+        super::PS_RESOLVE_IMAGE,
+        PS_LOGON,
+        PS_WINLOGON
+    ))
+    .context("enumerating logon auto-start points")?;
     let entries = parse_entries(&raw);
 
     let mut signals: HashMap<String, Vec<SysSignal>> = HashMap::new();
@@ -385,23 +392,21 @@ pub fn asep_inventory(opts: Opts) -> Result<Inventory> {
     // Winlogon is judged, not just listed: these hooks run before the desktop,
     // and Windows ships exactly one value for each.
     let mut notes = Vec::new();
-    if let Ok(raw) = powershell(PS_WINLOGON) {
-        for line in raw.lines().filter(|l| l.trim().starts_with('{')) {
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
-                continue;
-            };
-            let (Some(name), Some(value)) = (
-                v.get("Name").and_then(|x| x.as_str()),
-                v.get("Value").and_then(|x| x.as_str()),
-            ) else {
-                continue;
-            };
-            if !winlogon_is_default(name, value) {
-                notes.push(format!(
-                    "Winlogon\\{name} is not the value Windows ships [High] — it runs before \
-                     the desktop does: {value}"
-                ));
-            }
+    for line in raw.lines().filter(|l| l.trim().starts_with('{')) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        let (Some(name), Some(value)) = (
+            v.get("WinlogonHook").and_then(|x| x.as_str()),
+            v.get("Value").and_then(|x| x.as_str()),
+        ) else {
+            continue;
+        };
+        if !winlogon_is_default(name, value) {
+            notes.push(format!(
+                "Winlogon\\{name} is not the value Windows ships [High] — it runs before \
+                 the desktop does: {value}"
+            ));
         }
     }
 

@@ -210,7 +210,9 @@ impl Loader {
                     let _ = write!(out, "\r\x1b[2K{} {}{}", face.cyan(), lbl, counter);
                     let _ = out.flush();
                     frame += 1;
-                    std::thread::sleep(Duration::from_millis(90));
+                    // Parked, not slept: `finish` unparks, so it returns at once
+                    // instead of waiting out up to one 90ms frame.
+                    std::thread::park_timeout(Duration::from_millis(90));
                 }
             })
         });
@@ -242,6 +244,7 @@ impl Loader {
     pub fn finish(mut self, mood: Mood, msg: impl AsRef<str>) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(h) = self.handle.take() {
+            h.thread().unpark();
             let _ = h.join();
         }
         if self.enabled {

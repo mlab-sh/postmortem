@@ -345,11 +345,24 @@ impl NetworkSettings {
     }
 
     /// Build the agent pair for these settings.
+    ///
+    /// `timeout` bounds each socket read and write — the wait for a response,
+    /// and any stall mid-body — not the whole exchange. An overall deadline
+    /// counted the body too, so a 20 MB packument or a 50 MiB tarball on a slow
+    /// link timed out while bytes were still arriving.
     pub fn agents(&self, timeout: std::time::Duration) -> Agents {
-        let direct = ureq::AgentBuilder::new().timeout(timeout).build();
-        let proxied = self
-            .apply(ureq::AgentBuilder::new().timeout(timeout))
-            .build();
+        // ureq keeps one idle connection per host by default, so with several
+        // workers on one registry every response but one closed its socket and
+        // the next request paid a fresh TCP + TLS handshake.
+        let builder = || {
+            ureq::AgentBuilder::new()
+                .timeout_connect(timeout.min(std::time::Duration::from_secs(5)))
+                .timeout_read(timeout)
+                .timeout_write(timeout)
+                .max_idle_connections_per_host(16)
+        };
+        let direct = builder().build();
+        let proxied = self.apply(builder()).build();
         Agents {
             proxied,
             direct,

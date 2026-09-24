@@ -40,11 +40,16 @@ const RPM_OFFICIAL_VENDORS: &[&str] = &[
 /// --userinstalled` marks the direct set. Third-party (non-distro-vendor) packages
 /// are the untrusted surface and get their scriptlets analyzed.
 pub fn dnf_inventory(opts: Opts) -> Result<Inventory> {
-    dnf_inventory_at(Path::new("/"), opts)
+    dnf_inventory_at(Path::new("/"), opts).map(|(inv, _)| inv)
 }
 
-/// Read the installed rpm forest under `root`. See [`dnf_inventory`].
-pub fn dnf_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
+/// Read the installed rpm forest under `root`. See [`dnf_inventory`]. The file
+/// index the persistence signals are read from comes back too (see
+/// [`super::inventory_at`]).
+pub fn dnf_inventory_at(
+    root: &Path,
+    opts: Opts,
+) -> Result<(Inventory, HashMap<String, Vec<String>>)> {
     let _ = opts; // dnf reputation comes from the shared `--online` path
     // Only this machine can be asked the questions that need a configured dnf.
     let live = root == Path::new("/");
@@ -55,75 +60,146 @@ pub fn dnf_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
             RPM_DB_DIRS.join(", ")
         );
     }
-    let text = rpm_qa(root, "%{NAME}\t%{VERSION}-%{RELEASE}\t%{URL}\t%{VENDOR}\n")?;
-    struct N {
-        name: String,
-        version: String,
-        url: String,
-        vendor: String,
-    }
-    let nodes: Vec<N> = text
-        .lines()
-        .filter_map(|l| {
-            let f: Vec<&str> = l.split('\t').collect();
-            // Skip `gpg-pubkey` pseudo-packages (imported keys, not real rpms).
-            if f.len() < 4 || f[0].is_empty() || f[0] == "gpg-pubkey" {
-                return None;
+    // Every shell-out below is independent of the others, and together they
+    // were the whole run: seven `rpm -qa` passes, four `dnf` Python startups
+    // (~1 s each) and a `find` over the filesystem, end to end. `rpm -Va` hashes
+    // every installed file and is by far the longest, so it starts first and
+    // the rest run beside it.
+    let (
+        scalar,
+        userinstalled,
+        from_repo,
+        orphans,
+        outdated,
+        provides,
+        requires,
+        file_index,
+        setuid,
+        native,
+        modified,
+    ) = std::thread::scope(|s| {
+        let modified = s.spawn(|| {
+            if opts.skip_integrity {
+                0
+            } else {
+                dnf_modified_files(root)
             }
-            Some(N {
-                name: f[0].into(),
-                version: f[1].into(),
-                url: f[2].into(),
-                vendor: f[3].into(),
-            })
+        });
+        let userinstalled = s.spawn(|| {
+            if live {
+                dnf_userinstalled()
+            } else {
+                Default::default()
+            }
+        });
+        let from_repo = s.spawn(|| {
+            if live {
+                dnf_from_repo()
+            } else {
+                HashMap::new()
+            }
+        });
+        // Orphans (installed, offered by no enabled repo). Needs repo
+        // metadata; when it can't be computed it reports everything, so it is
+        // guarded below as with `unsigned`.
+        let orphans = s.spawn(|| {
+            if live {
+                dnf_orphans()
+            } else {
+                Default::default()
+            }
+        });
+        let outdated = s.spawn(|| if live { dnf_outdated() } else { HashMap::new() });
+        let provides = s.spawn(|| rpm_qa(root, "%{NAME}\t[%{PROVIDENAME},]\n").ok());
+        let requires = s.spawn(|| rpm_qa(root, "%{NAME}\t[%{REQUIRENAME},]\n").ok());
+        let file_index = s.spawn(|| rpm_file_index(root));
+        let setuid = s.spawn(|| find_setuid_files_at(root));
+        let native = s.spawn(|| rpm_native_arch(root));
+        let scalar = rpm_qa(root, RPM_SCALAR_QF);
+        (
+            scalar,
+            userinstalled.join().unwrap_or_default(),
+            from_repo.join().unwrap_or_default(),
+            orphans.join().unwrap_or_default(),
+            outdated.join().unwrap_or_default(),
+            provides.join().ok().flatten(),
+            requires.join().ok().flatten(),
+            file_index.join().unwrap_or_default(),
+            setuid.join().unwrap_or_default(),
+            native.join().unwrap_or_default(),
+            modified.join().unwrap_or(0),
+        )
+    });
+    let scalar = scalar?;
+    let rows = parse_rpm_scalar(&scalar);
+    struct N<'a> {
+        name: &'a str,
+        version: &'a str,
+        url: &'a str,
+        vendor: &'a str,
+    }
+    let nodes: Vec<N> = rows
+        .iter()
+        // Skip `gpg-pubkey` pseudo-packages (imported keys, not real rpms).
+        .filter(|r| !r.name.is_empty() && r.name != "gpg-pubkey")
+        .map(|r| N {
+            name: r.name,
+            version: r.version,
+            url: r.url,
+            vendor: r.vendor,
         })
         .collect();
 
-    let names: std::collections::HashSet<&str> = nodes.iter().map(|n| n.name.as_str()).collect();
-    let version_of: HashMap<&str, &str> = nodes
-        .iter()
-        .map(|n| (n.name.as_str(), n.version.as_str()))
-        .collect();
-    let userinstalled = if live {
-        dnf_userinstalled()
-    } else {
-        Default::default()
-    };
-    let mut parents = dnf_edges(root, &names, &version_of);
-    let scripted = dnf_scripted(root);
-    let unsigned = dnf_unsigned(root);
+    let names: std::collections::HashSet<&str> = nodes.iter().map(|n| n.name).collect();
+    let version_of: HashMap<&str, &str> = nodes.iter().map(|n| (n.name, n.version)).collect();
+    let mut parents = dnf_edges(
+        provides.as_deref(),
+        requires.as_deref(),
+        &names,
+        &version_of,
+    );
+    // Packages that ship any rpm scriptlet (`%pre`/`%post`/`%preun`/`%postun`).
+    let scripted: std::collections::HashSet<&str> =
+        rows.iter().filter(|r| r.scripted).map(|r| r.name).collect();
+    // Packages with no header signature (every signature tag fell through).
+    let unsigned: std::collections::HashSet<&str> =
+        rows.iter().filter(|r| r.unsigned).map(|r| r.name).collect();
     // A rpm image built with `--nogpgcheck` reports everything unsigned, which is
     // noise; only surface `unsigned` when it's the exception, not the rule.
     let mostly_unsigned = !nodes.is_empty() && unsigned.len() * 10 >= nodes.len() * 9;
-    let from_repo = if live {
-        dnf_from_repo()
-    } else {
-        HashMap::new()
-    };
-    let file_index = rpm_file_index(root);
-    let setuid = find_setuid_files_at(root);
     let held = dnf_held_at(root);
-    let foreign = dnf_foreign_arch(root);
-    // Orphans (installed, offered by no enabled repo). Needs repo metadata; when it
-    // can't be computed it reports everything, so guard as with `unsigned`.
-    let orphans = if live {
-        dnf_orphans()
-    } else {
-        Default::default()
-    };
+    let foreign = dnf_foreign_arch(&rows, native);
     let mostly_orphan = !nodes.is_empty() && orphans.len() * 10 >= nodes.len() * 9;
+
+    // Scriptlet bodies for the packages whose scriptlets get analyzed, fetched in
+    // one `rpm -q` over all of them instead of two rpm spawns per package.
+    let wanted: Vec<&str> = {
+        let mut seen = std::collections::HashSet::new();
+        nodes
+            .iter()
+            .filter(|n| scripted.contains(n.name))
+            .filter(|n| {
+                !live
+                    || dnf_provenance_label(from_repo.get(n.name).map(String::as_str), n.vendor)
+                        .is_some()
+            })
+            .map(|n| n.name)
+            .filter(|n| seen.insert(*n))
+            .collect()
+    };
+    let scripts = dnf_scripts_all(root, &wanted);
 
     let mut signals: HashMap<String, Vec<SysSignal>> = HashMap::new();
     let mut deps = Vec::with_capacity(nodes.len());
     for n in &nodes {
         // Provenance: the origin repo is authoritative when known (catches copr /
         // rpmfusion even though they keep a distribution vendor), else the vendor.
-        let repo = from_repo.get(&n.name).map(String::as_str);
-        let third_party = match dnf_provenance_label(repo, &n.vendor) {
+        let repo = from_repo.get(n.name).map(String::as_str);
+        let third_party = match dnf_provenance_label(repo, n.vendor) {
             Some(label) => {
                 push_signal(
                     &mut signals,
-                    &n.name,
+                    n.name,
                     SysSignal::new(label, Category::ThirdPartySource, Severity::Medium, 30),
                 );
                 true
@@ -132,19 +208,19 @@ pub fn dnf_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
         };
         // Unsigned = no header signature (tampered / untrusted origin), unless the
         // whole image is unsigned.
-        if !mostly_unsigned && unsigned.contains(&n.name) {
+        if !mostly_unsigned && unsigned.contains(n.name) {
             push_signal(
                 &mut signals,
-                &n.name,
+                n.name,
                 SysSignal::new("unsigned", Category::Unsigned, Severity::High, 40),
             );
         }
         // Scriptlets run code at install/upgrade/erase. Surfaced for all; analyzed
         // for the untrusted (third-party) ones, whose recipes aren't review-gated.
-        if scripted.contains(&n.name) {
+        if scripted.contains(n.name) {
             push_signal(
                 &mut signals,
-                &n.name,
+                n.name,
                 SysSignal::new("install-script (runs code at install)", Category::InstallHook, Severity::Info, 0),
             );
             // In an image nothing can be shown to be third-party (the origin repo
@@ -154,15 +230,15 @@ pub fn dnf_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
             if third_party || !live {
                 // rpm scriptlets are usually shell but may be Lua (`-p <lua>`);
                 // analyze with the matching language.
-                let ext = if dnf_script_is_lua(root, &n.name) {
-                    "lua"
-                } else {
-                    "sh"
-                };
-                for sig in analyze_recipe(&n.name, &dnf_scripts(root, &n.name), ext) {
+                let (body, lua) = scripts
+                    .get(n.name)
+                    .map(|(b, l)| (b.as_str(), *l))
+                    .unwrap_or_default();
+                let ext = if lua { "lua" } else { "sh" };
+                for sig in analyze_recipe(n.name, body, ext) {
                     push_signal(
                         &mut signals,
-                        &n.name,
+                        n.name,
                         if third_party { sig } else { sig.unscored() },
                     );
                 }
@@ -170,51 +246,51 @@ pub fn dnf_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
         }
         // Execution & privilege: the boot/scheduled/auth/setuid surface a package
         // sets up through the files it ships (shared with the apt backend).
-        if let Some(files) = file_index.get(&n.name) {
+        if let Some(files) = file_index.get(n.name) {
             for sig in persistence_signals(files, &setuid) {
-                push_signal(&mut signals, &n.name, sig);
+                push_signal(&mut signals, n.name, sig);
             }
         }
         // Held (version-locked): excluded from upgrades, so stuck on its version.
-        if held.contains(&n.name) {
+        if held.contains(n.name) {
             push_signal(
                 &mut signals,
-                &n.name,
+                n.name,
                 SysSignal::new("held (version locked)", Category::Policy, Severity::Low, 10),
             );
         }
         // Installed only for a non-native architecture (pure multilib package).
-        if let Some(arch) = foreign.get(&n.name) {
+        if let Some(arch) = foreign.get(n.name) {
             push_signal(
                 &mut signals,
-                &n.name,
+                n.name,
                 SysSignal::new(format!("foreign-arch ({arch})"), Category::Policy, Severity::Low, 5),
             );
         }
         // Installed but offered by no enabled repo (removed upstream / local build).
-        if !mostly_orphan && orphans.contains(&n.name) {
+        if !mostly_orphan && orphans.contains(n.name) {
             push_signal(
                 &mut signals,
-                &n.name,
+                n.name,
                 SysSignal::new("orphan (not in any repo)", Category::ThirdPartySource, Severity::Low, 10),
             );
         }
         deps.push(Dependency {
-            direct: userinstalled.is_empty() || userinstalled.contains(&n.name),
+            direct: userinstalled.is_empty() || userinstalled.contains(n.name),
             scope: Scope::Prod,
             licenses: Vec::new(),
             license_source: LicenseSource::Unknown,
-            resolved_url: (!n.url.is_empty()).then(|| n.url.clone()),
-            parents: parents.remove(&n.name).unwrap_or_default(),
-            name: n.name.clone(),
-            version: n.version.clone(),
+            resolved_url: (!n.url.is_empty()).then(|| n.url.to_string()),
+            parents: parents.remove(n.name).unwrap_or_default(),
+            name: n.name.to_string(),
+            version: n.version.to_string(),
             ecosystem: Ecosystem::Dnf,
             integrity: None,
         });
     }
 
     if live {
-        for (name, (old, new)) in dnf_outdated() {
+        for (name, (old, new)) in outdated {
             signals
                 .entry(name)
                 .or_default()
@@ -224,7 +300,6 @@ pub fn dnf_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
 
     // Trust & integrity caveats (repo signature/transport posture + tampered files).
     let mut warnings = dnf_trust_warnings_at(root);
-    let modified = dnf_modified_files(root);
     if modified > 0 {
         warnings.push(format!(
             "{modified} installed file(s) modified since install (rpm -Va)"
@@ -250,7 +325,7 @@ pub fn dnf_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
 
     let direct = deps.iter().filter(|d| d.direct).count();
     let summary = format!("{} package(s) ({direct} user-installed)", deps.len());
-    Ok(Inventory {
+    let inv = Inventory {
         manager: "dnf",
         deps,
         repos: dnf_repos_at(root),
@@ -258,7 +333,8 @@ pub fn dnf_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
         claims: Vec::new(),
         summary,
         notes: warnings,
-    })
+    };
+    Ok((inv, file_index))
 }
 
 /// Installed packages' origin repo, `name → repo id`, via `dnf repoquery
@@ -325,7 +401,7 @@ fn dnf_provenance_label(repo: Option<&str>, vendor: &str) -> Option<String> {
 
 /// `name → installed files`, from one `rpm -qa` over `FILENAMES`. Multiarch copies
 /// of a package are unioned under the bare name.
-pub(super) fn rpm_file_index(root: &Path) -> HashMap<String, Vec<String>> {
+fn rpm_file_index(root: &Path) -> HashMap<String, Vec<String>> {
     let Ok(text) = rpm_qa(root, "%{NAME}\t[%{FILENAMES},]\n") else {
         return HashMap::new();
     };
@@ -490,15 +566,17 @@ fn dnf_userinstalled() -> std::collections::HashSet<String> {
 /// Build the dependency edges from the rpm capability graph: every package's
 /// `REQUIRENAME` entries resolved through a `capability → providing package` map
 /// (built from `PROVIDENAME`, which includes package names, sonames, and files).
+/// Takes the two `rpm -qa` outputs, which the caller runs concurrently.
 /// `rpmlib(...)` build-time pseudo-capabilities and self-edges are dropped.
 fn dnf_edges(
-    root: &Path,
+    provides: Option<&str>,
+    requires: Option<&str>,
     names: &std::collections::HashSet<&str>,
     version_of: &HashMap<&str, &str>,
 ) -> HashMap<String, Vec<DepRef>> {
     // capability → a providing package (first wins; only installed packages).
     let mut provider: HashMap<String, String> = HashMap::new();
-    if let Ok(text) = rpm_qa(root, "%{NAME}\t[%{PROVIDENAME},]\n") {
+    if let Some(text) = provides {
         for line in text.lines() {
             let Some((name, caps)) = line.split_once('\t') else {
                 continue;
@@ -511,7 +589,7 @@ fn dnf_edges(
         }
     }
     let mut parents: HashMap<String, Vec<DepRef>> = HashMap::new();
-    if let Ok(text) = rpm_qa(root, "%{NAME}\t[%{REQUIRENAME},]\n") {
+    if let Some(text) = requires {
         for line in text.lines() {
             let Some((name, caps)) = line.split_once('\t') else {
                 continue;
@@ -542,51 +620,113 @@ fn dnf_edges(
     parents
 }
 
-/// Packages that ship any rpm scriptlet (`%pre`/`%post`/`%preun`/`%postun`). The
-/// `%|TAG?{1}:{0}|` conditional avoids pulling the (multi-line) script bodies.
-fn dnf_scripted(root: &Path) -> std::collections::HashSet<String> {
-    let fmt = "%{NAME}\t%|PREIN?{1}:{0}|%|POSTIN?{1}:{0}|%|PREUN?{1}:{0}|%|POSTUN?{1}:{0}|\n";
-    let Ok(text) = rpm_qa(root, fmt) else {
-        return Default::default();
-    };
-    text.lines()
-        .filter_map(|l| {
-            let (name, bits) = l.split_once('\t')?;
-            (bits.contains('1')).then(|| name.to_string())
+/// Every per-package scalar the inventory needs, in one `rpm -qa` (it was four:
+/// identity, scriptlet presence, signature, architecture — each a full pass over
+/// the database). Fields are split by `\x1f` and records by `\x1e`, which no
+/// header value contains, where a tab or newline could appear in a URL or vendor.
+///
+/// The `%|TAG?{1}:{0}|` conditionals flag scriptlets without pulling their
+/// (multi-line) bodies; the signature chain falls through the modern (header)
+/// and legacy (payload) signature tags, so only a fully-unsigned package ends
+/// up `U`.
+const RPM_SCALAR_QF: &str = "%{NAME}\x1f%{VERSION}-%{RELEASE}\x1f%{URL}\x1f%{VENDOR}\x1f%{ARCH}\x1f\
+%|PREIN?{1}:{0}|%|POSTIN?{1}:{0}|%|PREUN?{1}:{0}|%|POSTUN?{1}:{0}|\x1f\
+%|DSAHEADER?{s}:{%|RSAHEADER?{s}:{%|SIGGPG?{s}:{%|SIGPGP?{s}:{U}|}|}|}|\x1e";
+
+/// One record of [`RPM_SCALAR_QF`]. Every record is kept, `gpg-pubkey`
+/// pseudo-packages included: the unsigned ratio and the native-architecture
+/// tally have always counted them.
+struct RpmRow<'a> {
+    name: &'a str,
+    version: &'a str,
+    url: &'a str,
+    vendor: &'a str,
+    arch: &'a str,
+    /// Ships a `%pre`/`%post`/`%preun`/`%postun` scriptlet.
+    scripted: bool,
+    /// No header signature at all.
+    unsigned: bool,
+}
+
+fn parse_rpm_scalar(text: &str) -> Vec<RpmRow<'_>> {
+    text.split('\x1e')
+        .filter_map(|rec| {
+            let f: Vec<&str> = rec.split('\x1f').collect();
+            if f.len() < 7 {
+                return None;
+            }
+            Some(RpmRow {
+                name: f[0],
+                version: f[1],
+                url: f[2],
+                vendor: f[3],
+                arch: f[4],
+                scripted: f[5].contains('1'),
+                unsigned: f[6] == "U",
+            })
         })
         .collect()
 }
 
-/// The concatenated scriptlet bodies of one package (for static analysis).
-fn dnf_scripts(root: &Path, name: &str) -> String {
-    rpm_at(root)
-        .args([
-            "-q",
-            "--qf",
-            "%{PREIN}\n%{POSTIN}\n%{PREUN}\n%{POSTUN}\n",
-            name,
-        ])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).replace("(none)", ""))
-        .unwrap_or_default()
-}
+/// The scriptlet tags `rpm -q --scripts` lists, in its order. The last two
+/// arrived in rpm 4.19; an older rpm (an EL9 host reading `--image`) rejects the
+/// whole query format over an unknown tag, so they are dropped on a retry.
+const RPM_SCRIPT_TAGS: &[&str] = &[
+    "PRETRANS",
+    "PREIN",
+    "POSTIN",
+    "PREUN",
+    "POSTUN",
+    "POSTTRANS",
+    "VERIFYSCRIPT",
+    "PREUNTRANS",
+    "POSTUNTRANS",
+];
 
-/// Packages with no header signature. `%|RSAHEADER?...|` falls through the modern
-/// (header) and legacy (payload) signature tags; only a fully-unsigned package
-/// ends up in the set.
-fn dnf_unsigned(root: &Path) -> std::collections::HashSet<String> {
-    let fmt = "%{NAME}\t%|DSAHEADER?{s}:{%|RSAHEADER?{s}:{%|SIGGPG?{s}:{%|SIGPGP?{s}:{U}|}|}|}|\n";
-    let Ok(text) = rpm_qa(root, fmt) else {
-        return Default::default();
+/// `name → (concatenated scriptlet bodies, runs under Lua)` for `names`, from a
+/// single `rpm -q` over all of them. It was two rpm spawns per package (`--qf`
+/// for the bodies, `--scripts` to spot Lua), ~30 ms each.
+///
+/// Lua is decided as `--scripts` did: a scriptlet whose interpreter (the first
+/// element of its `…PROG` tag) is `<lua>`, across every scriptlet type. Bodies
+/// are the four install/erase scriptlets, concatenated per installed copy, with
+/// rpm's `(none)` placeholder dropped.
+fn dnf_scripts_all(root: &Path, names: &[&str]) -> HashMap<String, (String, bool)> {
+    let mut out: HashMap<String, (String, bool)> = HashMap::new();
+    if names.is_empty() {
+        return out;
+    }
+    let query = |tags: &[&str]| -> Option<String> {
+        let mut fmt = String::from("%{NAME}\x1f%{PREIN}\n%{POSTIN}\n%{PREUN}\n%{POSTUN}\n\x1f");
+        for t in tags {
+            // `%|T?{%|TPROG?{%{TPROG}}|}|` → the interpreter, when the scriptlet exists.
+            fmt.push_str(&["%|", t, "?{%|", t, "PROG?{%{", t, "PROG}}|}|\x1d"].concat());
+        }
+        fmt.push('\x1e');
+        let o = rpm_at(root)
+            .args(["-q", "--qf", &fmt])
+            .args(names)
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&o.stdout).into_owned();
+        (!text.is_empty()).then_some(text)
     };
-    text.lines()
-        .filter_map(|l| {
-            let (name, sig) = l.split_once('\t')?;
-            (sig == "U").then(|| name.to_string())
-        })
-        .collect()
+    let Some(text) = query(RPM_SCRIPT_TAGS).or_else(|| query(&RPM_SCRIPT_TAGS[..7])) else {
+        return out;
+    };
+    for rec in text.split('\x1e') {
+        let mut f = rec.splitn(3, '\x1f');
+        let (Some(name), Some(body), Some(progs)) = (f.next(), f.next(), f.next()) else {
+            continue;
+        };
+        // rpm reports a name it cannot find on a line of its own, which would
+        // otherwise prefix the next record's name.
+        let name = name.rsplit('\n').next().unwrap_or(name);
+        let e = out.entry(name.to_string()).or_default();
+        e.0.push_str(&body.replace("(none)", ""));
+        e.1 |= progs.split('\x1d').any(|p| p == "<lua>");
+    }
+    out
 }
 
 /// `dnf check-update` → `name → (installed?, current)`. rpm doesn't record the
@@ -647,17 +787,6 @@ fn dnf_repos_at(root: &Path) -> Vec<Repo> {
     repos
 }
 
-/// Does a package's scriptlets use the embedded Lua interpreter (`rpm -q --scripts`
-/// labels them `(using <lua>)`) rather than shell?
-fn dnf_script_is_lua(root: &Path, name: &str) -> bool {
-    rpm_at(root)
-        .args(["-q", "--scripts", name])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .is_some_and(|o| String::from_utf8_lossy(&o.stdout).contains("using <lua>"))
-}
-
 /// Version-locked packages from the dnf versionlock plugin
 /// (`/etc/dnf/plugins/versionlock.list`): pinned, so excluded from upgrades.
 fn dnf_held_at(root: &Path) -> std::collections::HashSet<String> {
@@ -690,33 +819,15 @@ fn dnf_held_at(root: &Path) -> std::collections::HashSet<String> {
 
 /// Packages installed *only* for a non-native architecture (a pure multilib
 /// package). Maps `name → foreign arch`; ordinary packages with a native or
-/// `noarch` copy are excluded.
-fn dnf_foreign_arch(root: &Path) -> HashMap<String, String> {
-    // `%{_arch}` is rpm's *own* build architecture, which describes the machine
-    // running postmortem rather than the image being read. For an image the
-    // native architecture is instead the concrete one most packages carry.
-    let native = if root == Path::new("/") {
-        Command::new("rpm")
-            .args(["--eval", "%{_arch}"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default()
-    } else {
-        String::new()
-    };
-    let Ok(text) = rpm_qa(root, "%{NAME}\t%{ARCH}\n") else {
-        return HashMap::new();
-    };
+/// `noarch` copy are excluded. `native` is [`rpm_native_arch`], empty for an
+/// image.
+fn dnf_foreign_arch(rows: &[RpmRow], native: String) -> HashMap<String, String> {
     let mut arches: HashMap<String, Vec<String>> = HashMap::new();
-    for line in text.lines() {
-        if let Some((name, arch)) = line.split_once('\t') {
-            arches
-                .entry(name.to_string())
-                .or_default()
-                .push(arch.to_string());
-        }
+    for r in rows {
+        arches
+            .entry(r.name.to_string())
+            .or_default()
+            .push(r.arch.to_string());
     }
     let native = if native.is_empty() {
         let mut tally: HashMap<&str, usize> = HashMap::new();
@@ -739,6 +850,25 @@ fn dnf_foreign_arch(root: &Path) -> HashMap<String, String> {
                 .then(|| (name, a[0].clone()))
         })
         .collect()
+}
+
+/// This machine's architecture, or empty for an image.
+///
+/// `%{_arch}` is rpm's *own* build architecture, which describes the machine
+/// running postmortem rather than the image being read. For an image the native
+/// architecture is instead the concrete one most packages carry, which
+/// [`dnf_foreign_arch`] tallies when this is empty.
+fn rpm_native_arch(root: &Path) -> String {
+    if root != Path::new("/") {
+        return String::new();
+    }
+    Command::new("rpm")
+        .args(["--eval", "%{_arch}"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
 }
 
 /// Installed packages offered by no enabled repo (`dnf repoquery --extras`), the

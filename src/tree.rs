@@ -10,6 +10,7 @@
 //! stays behind the explicit `--online` opt-in.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io::Write;
 
 use owo_colors::OwoColorize;
 use serde::Serialize;
@@ -105,10 +106,10 @@ pub fn build(root: &str, ecosystems: &[String], deps: &[Dependency], depth: Opti
     // silently understates what is installed. Real data produces this: Alpine's
     // `ssl_client` is in the database with no reverse dependency, and a package
     // sitting in an image with no manifest naming it has no parent either.
-    let mut roots: Vec<DepRef> = deps
+    let mut roots: Vec<Key> = deps
         .iter()
         .filter(|d| d.direct || d.parents.is_empty())
-        .map(|d| (d.name.clone(), d.version.clone()))
+        .map(|d| (d.name.as_str(), d.version.as_str()))
         .collect();
     roots.sort();
     roots.dedup();
@@ -124,13 +125,18 @@ pub fn build_focused(
     depth: Option<usize>,
     name: &str,
 ) -> Tree {
-    let roots: Vec<DepRef> = deps
+    let roots: Vec<Key> = deps
         .iter()
         .filter(|d| d.name == name)
-        .map(|d| (d.name.clone(), d.version.clone()))
+        .map(|d| (d.name.as_str(), d.version.as_str()))
         .collect();
     build_with_roots(root, ecosystems, deps, depth, roots)
 }
+
+/// A `(name, version)` borrowed from the dependency list. Orders exactly like
+/// the owned [`DepRef`], so sorted child lists come out the same — without the
+/// two `String` clones per node and per edge the owned keys cost.
+type Key<'a> = (&'a str, &'a str);
 
 /// Shared forest builder given an explicit set of roots.
 fn build_with_roots(
@@ -138,22 +144,24 @@ fn build_with_roots(
     ecosystems: &[String],
     deps: &[Dependency],
     depth: Option<usize>,
-    mut roots: Vec<DepRef>,
+    mut roots: Vec<Key>,
 ) -> Tree {
-    let index: BTreeMap<DepRef, &Dependency> = deps
+    // Only ever looked up, never iterated: a hash map is enough. A duplicate
+    // key keeps the last entry, as the collected `BTreeMap` did.
+    let index: HashMap<Key, &Dependency> = deps
         .iter()
-        .map(|d| ((d.name.clone(), d.version.clone()), d))
+        .map(|d| ((d.name.as_str(), d.version.as_str()), d))
         .collect();
 
     // Invert the parent edges into a child adjacency map (sorted for stable output).
-    let mut children: BTreeMap<DepRef, Vec<DepRef>> = BTreeMap::new();
+    let mut children: HashMap<Key, Vec<Key>> = HashMap::new();
     for d in deps {
-        let child = (d.name.clone(), d.version.clone());
-        for parent in &d.parents {
+        let child = (d.name.as_str(), d.version.as_str());
+        for (pn, pv) in &d.parents {
             children
-                .entry(parent.clone())
+                .entry((pn.as_str(), pv.as_str()))
                 .or_default()
-                .push(child.clone());
+                .push(child);
         }
     }
     for kids in children.values_mut() {
@@ -164,7 +172,7 @@ fn build_with_roots(
     roots.sort();
     roots.dedup();
 
-    let mut expanded: HashSet<DepRef> = HashSet::new();
+    let mut expanded: HashSet<Key> = HashSet::new();
     let mut stats = Stats {
         total: deps.len(),
         direct: deps.iter().filter(|d| d.direct).count(),
@@ -175,7 +183,7 @@ fn build_with_roots(
 
     let root_nodes = roots
         .iter()
-        .map(|k| build_node(k, &index, &children, &mut expanded, &mut stats, depth, 1))
+        .map(|k| build_node(*k, &index, &children, &mut expanded, &mut stats, depth, 1))
         .collect();
 
     Tree {
@@ -189,31 +197,32 @@ fn build_with_roots(
     }
 }
 
-fn build_node(
-    key: &DepRef,
-    index: &BTreeMap<DepRef, &Dependency>,
-    children: &BTreeMap<DepRef, Vec<DepRef>>,
-    expanded: &mut HashSet<DepRef>,
+fn build_node<'a>(
+    key: Key<'a>,
+    index: &HashMap<Key<'a>, &Dependency>,
+    children: &HashMap<Key<'a>, Vec<Key<'a>>>,
+    expanded: &mut HashSet<Key<'a>>,
     stats: &mut Stats,
     depth: Option<usize>,
     level: usize,
 ) -> Node {
     stats.max_depth = stats.max_depth.max(level);
     let (name, version) = key;
-    let ecosystem = index
-        .get(key)
+    let found = index.get(&key);
+    let ecosystem = found
         .map(|d| d.ecosystem.as_str().to_string())
         .unwrap_or_default();
-    let direct = index.get(key).map(|d| d.direct).unwrap_or(false);
-    let has_children = children.get(key).is_some_and(|c| !c.is_empty());
+    let direct = found.map(|d| d.direct).unwrap_or(false);
+    let kids = children.get(&key);
+    let has_children = kids.is_some_and(|c| !c.is_empty());
 
     // Collapse a node we've already fully expanded (diamond deps / cycles):
     // marking on first visit also breaks cycles, since the back-edge sees it here.
-    if has_children && !expanded.insert(key.clone()) {
+    if has_children && !expanded.insert(key) {
         stats.deduped += 1;
         return Node {
-            name: name.clone(),
-            version: version.clone(),
+            name: name.to_string(),
+            version: version.to_string(),
             ecosystem,
             direct,
             deduped: true,
@@ -233,8 +242,8 @@ fn build_node(
     // Depth gate: stop descending but flag that children were hidden.
     if depth.is_some_and(|max| level >= max) && has_children {
         return Node {
-            name: name.clone(),
-            version: version.clone(),
+            name: name.to_string(),
+            version: version.to_string(),
             ecosystem,
             direct,
             deduped: false,
@@ -251,18 +260,17 @@ fn build_node(
         };
     }
 
-    let child_nodes = children
-        .get(key)
+    let child_nodes = kids
         .map(|kids| {
             kids.iter()
-                .map(|k| build_node(k, index, children, expanded, stats, depth, level + 1))
+                .map(|k| build_node(*k, index, children, expanded, stats, depth, level + 1))
                 .collect()
         })
         .unwrap_or_default();
 
     Node {
-        name: name.clone(),
-        version: version.clone(),
+        name: name.to_string(),
+        version: version.to_string(),
         ecosystem,
         direct,
         deduped: false,
@@ -283,8 +291,14 @@ fn build_node(
 /// Keyed by `(name, version)`, so every occurrence of a package in the forest
 /// — including deduped copies — carries the same annotation.
 pub fn enrich(tree: &mut Tree, resolutions: &HashMap<DepRef, Resolution>) {
-    fn walk(node: &mut Node, resolutions: &HashMap<DepRef, Resolution>) {
-        if let Some(r) = resolutions.get(&(node.name.clone(), node.version.clone())) {
+    // Re-keyed by borrowed pairs once, so the per-node lookup allocates nothing
+    // (it built an owned `(String, String)` per node before).
+    let resolutions: HashMap<Key, &Resolution> = resolutions
+        .iter()
+        .map(|((n, v), r)| ((n.as_str(), v.as_str()), r))
+        .collect();
+    fn walk(node: &mut Node, resolutions: &HashMap<Key, &Resolution>) {
+        if let Some(r) = resolutions.get(&(node.name.as_str(), node.version.as_str())) {
             node.repo = r.repo.as_ref().map(|x| x.slug());
             node.stars = r.stats.as_ref().map(|s| s.stars);
             node.signals = r.signals.clone();
@@ -298,7 +312,7 @@ pub fn enrich(tree: &mut Tree, resolutions: &HashMap<DepRef, Resolution>) {
         }
     }
     for root in &mut tree.roots {
-        walk(root, resolutions);
+        walk(root, &resolutions);
     }
 }
 
@@ -318,26 +332,55 @@ const BLUE_DEP_THRESHOLD: u8 = 50;
 /// Compute the `risk`/`dep` scores for every node (online mode only). Own `risk`
 /// is already set by [`enrich`]; here we fill `dep` from each node's subtree.
 pub fn score(tree: &mut Tree) {
+    // Two passes: a read-only post-order one computes every node's `dep` (in
+    // pre-order slots), then a mutable one writes them back in the same order.
+    // Each node used to re-walk its whole subtree — O(N·depth) visits; merging
+    // the children's flagged sets bottom-up only touches flagged entries.
+    let mut deps = Vec::new();
+    for root in &tree.roots {
+        flagged_below(root, &mut deps);
+    }
+    fn assign(node: &mut Node, deps: &mut std::vec::IntoIter<u8>) {
+        node.dep = deps.next();
+        node.risk.get_or_insert(0);
+        for child in &mut node.children {
+            assign(child, deps);
+        }
+    }
+    let mut it = deps.into_iter();
     for root in &mut tree.roots {
-        score_node(root);
+        assign(root, &mut it);
     }
     tree.scored = true;
 }
 
-fn score_node(node: &mut Node) {
-    for child in &mut node.children {
-        score_node(child);
-    }
-    let dep = {
-        let mut seen = HashSet::new();
-        let mut sevs = Vec::new();
-        for child in &node.children {
-            collect_flagged(child, node, &mut seen, &mut sevs);
+/// The distinct, external flagged deps anywhere below `node` (see
+/// [`collect_flagged`] for which count), recording `node`'s own `dep` score in
+/// its pre-order slot of `out`. Whether a flagged child counts depends only on
+/// the edge to its own parent, so a subtree's set is the union of its children's
+/// plus each child that counts; the larger set is kept and the smaller merged in.
+/// A key maps to one severity (enrichment is by name@version), so the union
+/// scores exactly as the old first-seen walk did.
+fn flagged_below<'a>(node: &'a Node, out: &mut Vec<u8>) -> HashMap<Key<'a>, Severity> {
+    let slot = out.len();
+    out.push(0);
+    let mut acc: HashMap<Key<'a>, Severity> = HashMap::new();
+    for child in &node.children {
+        let mut sub = flagged_below(child, out);
+        if !is_family(node, child)
+            && let Some(sev) = child.severity
+        {
+            sub.entry((&child.name, &child.version)).or_insert(sev);
         }
-        dep_score(&sevs)
-    };
-    node.dep = Some(dep);
-    node.risk.get_or_insert(0);
+        if sub.len() > acc.len() {
+            std::mem::swap(&mut acc, &mut sub);
+        }
+        for (k, s) in sub {
+            acc.entry(k).or_insert(s);
+        }
+    }
+    out[slot] = dep_score(&acc.values().copied().collect::<Vec<_>>());
+    acc
 }
 
 /// Walk a subtree gathering the severities of *distinct, external* flagged deps.
@@ -345,15 +388,15 @@ fn score_node(node: &mut Node) {
 /// that is a family member of its parent isn't a real added dependency, so it
 /// doesn't inflate the score — though we still recurse past it to reach any
 /// genuine deps underneath.
-fn collect_flagged(
-    node: &Node,
+fn collect_flagged<'a>(
+    node: &'a Node,
     parent: &Node,
-    seen: &mut HashSet<DepRef>,
+    seen: &mut HashSet<Key<'a>>,
     out: &mut Vec<Severity>,
 ) {
     if !is_family(parent, node)
         && let Some(sev) = node.severity
-        && seen.insert((node.name.clone(), node.version.clone()))
+        && seen.insert((&node.name, &node.version))
     {
         out.push(sev);
     }
@@ -366,8 +409,12 @@ fn collect_flagged(
 /// distinct dependency? True when the name is prefixed (`@napi-rs/nice` →
 /// `@napi-rs/nice-*`) or both resolve to the same repository.
 fn is_family(parent: &Node, child: &Node) -> bool {
-    child.name.starts_with(&format!("{}-", parent.name))
-        || child.name.starts_with(&format!("{}/", parent.name))
+    // `strip_prefix` + one char test: the same check as `starts_with("{p}-")` /
+    // `starts_with("{p}/")` without formatting two strings per call.
+    child
+        .name
+        .strip_prefix(parent.name.as_str())
+        .is_some_and(|rest| rest.starts_with(['-', '/']))
         || matches!((&parent.repo, &child.repo), (Some(a), Some(b)) if a == b)
 }
 
@@ -429,15 +476,21 @@ pub fn render(tree: &Tree) {
     } else {
         format!(" ({})", tree.ecosystems.join(", "))
     };
-    println!("{}{}", tree.root.bold(), eco.dimmed());
+    // One line per node: through a locked, buffered stdout rather than a
+    // `println!` each (a lock and a `write` syscall per line — ~2 000 of them for
+    // a mid-size npm tree). Dropped — so flushed — before the sections below,
+    // which still print directly.
+    let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+    let _ = writeln!(out, "{}{}", tree.root.bold(), eco.dimmed());
 
     let last = tree.roots.len().saturating_sub(1);
     for (i, node) in tree.roots.iter().enumerate() {
-        render_node(node, "", i == last, tree.scored);
+        render_node(&mut out, node, "", i == last, tree.scored);
     }
 
     let s = &tree.stats;
-    println!(
+    let _ = writeln!(
+        out,
         "\n{}",
         format!(
             "{} nodes · {} direct · {} transitive · depth {}{}",
@@ -453,6 +506,7 @@ pub fn render(tree: &Tree) {
         )
         .dimmed()
     );
+    drop(out);
 
     render_diagnostics(&tree.diagnostics);
     render_vulns(&tree.vulnerabilities);
@@ -564,8 +618,8 @@ struct Counts {
 fn recap_counts(tree: &Tree) -> Counts {
     let mut seen = HashSet::new();
     let mut c = Counts::default();
-    fn walk(node: &Node, seen: &mut HashSet<DepRef>, c: &mut Counts) {
-        if node.severity.is_some() && seen.insert((node.name.clone(), node.version.clone())) {
+    fn walk<'a>(node: &'a Node, seen: &mut HashSet<Key<'a>>, c: &mut Counts) {
+        if node.severity.is_some() && seen.insert((&node.name, &node.version)) {
             // Counted on its own axis, not as a bucket: a package the manager
             // does not govern can also be outdated, or suspicious. Removing it
             // from those tallies would understate them.
@@ -857,7 +911,7 @@ fn language_tag(node: &Node) -> Option<String> {
     }
 }
 
-fn render_node(node: &Node, prefix: &str, is_last: bool, scored: bool) {
+fn render_node(out: &mut impl Write, node: &Node, prefix: &str, is_last: bool, scored: bool) {
     let connector = if is_last { "└── " } else { "├── " };
     // The name takes the node's color: red/orange if it's itself risky, blue if
     // it's clean but drags in a bad tree — so problem nodes pop out.
@@ -892,12 +946,12 @@ fn render_node(node: &Node, prefix: &str, is_last: bool, scored: bool) {
             label.push_str(&format!(" {}", tag.dimmed()));
         }
     }
-    println!("{prefix}{connector}{label}");
+    let _ = writeln!(out, "{prefix}{connector}{label}");
 
     let child_prefix = format!("{prefix}{}", if is_last { "    " } else { "│   " });
     let last = node.children.len().saturating_sub(1);
     for (i, child) in node.children.iter().enumerate() {
-        render_node(child, &child_prefix, i == last, scored);
+        render_node(out, child, &child_prefix, i == last, scored);
     }
 }
 
@@ -964,12 +1018,18 @@ fn render_flagged(tree: &Tree) {
     // stock Windows machine has eighteen scheduled tasks sharing a single
     // finding, and as eighteen lines it buries everything else.
     const FOLD_AT: usize = 3;
+    // Groups keep first-seen order; the index makes finding one O(1) instead
+    // of a scan of every group per row.
     let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    let mut group_of: HashMap<String, usize> = HashMap::new();
     for (i, (_, flag)) in rows.iter().enumerate() {
         let sig = flag.signals.join(", ");
-        match groups.iter_mut().find(|(s, _)| *s == sig) {
-            Some((_, members)) => members.push(i),
-            None => groups.push((sig, vec![i])),
+        match group_of.get(&sig) {
+            Some(&g) => groups[g].1.push(i),
+            None => {
+                group_of.insert(sig.clone(), groups.len());
+                groups.push((sig, vec![i]));
+            }
         }
     }
 

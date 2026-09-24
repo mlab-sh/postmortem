@@ -16,6 +16,7 @@
 //! looks like a known minifier output (`/*! ... */` banner, sourceMappingURL footer),
 //! we downgrade severity by one level.
 
+use aho_corasick::AhoCorasick;
 use regex::Regex;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -35,14 +36,137 @@ fn unicode_run_re() -> &'static Regex {
     R.get_or_init(|| Regex::new(r"(?:\\u[0-9a-fA-F]{4}){6,}").unwrap())
 }
 /// A backtick between two word characters — PowerShell's escape character
-/// applied where it changes nothing but a literal string search.
+/// applied where it changes nothing but a literal string search. ASCII `\w`:
+/// the Unicode class sends the regex engine to its slow path on the first
+/// non-ASCII byte, and cmdlet names are ASCII.
 fn backtick_split_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"\w`\w").unwrap())
+    R.get_or_init(|| Regex::new(r"(?-u:\w)`(?-u:\w)").unwrap())
 }
-fn base64_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r#"["'][A-Za-z0-9+/]{200,}={0,2}["']"#).unwrap())
+
+/// A quoted base64 literal of 200+ characters: exactly what the regex
+/// `["'][A-Za-z0-9+/]{200,}={0,2}["']` matched, as one linear byte scan. The
+/// quote, alphabet and `=` sets are disjoint, so a match is a whole maximal
+/// alphabet run with a quote right before it and at most two `=` then a quote
+/// right after it.
+fn has_base64_blob(b: &[u8]) -> bool {
+    let is_quote = |c: u8| c == b'"' || c == b'\'';
+    let is_b64 = |c: u8| c.is_ascii_alphanumeric() || c == b'+' || c == b'/';
+    let mut i = 0;
+    while i < b.len() {
+        if !is_b64(b[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < b.len() && is_b64(b[i]) {
+            i += 1;
+        }
+        if i - start >= 200 && start > 0 && is_quote(b[start - 1]) {
+            let pad = b[i..].iter().take(2).take_while(|&&c| c == b'=').count();
+            if b.get(i + pad).copied().is_some_and(is_quote) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Every substring a language's checks below ask about, searched for together
+/// in one pass (see [`util::needle_counts`]).
+fn needles(lang: Lang) -> &'static [&'static str] {
+    match lang {
+        Lang::JavaScript => &[
+            "eval(",
+            "new Function(",
+            "Function(\"return",
+            "String.fromCharCode",
+            ".charCodeAt",
+            "atob(",
+        ],
+        Lang::PowerShell => &[
+            "-EncodedCommand",
+            " -enc ",
+            "FromBase64String",
+            "Invoke-Expression",
+            "iex ",
+            "[char[]]",
+            "[char]",
+            "-join",
+        ],
+        Lang::Python => &[
+            "exec(",
+            "compile(",
+            "marshal.loads",
+            "base64.b64decode",
+            "codecs.decode",
+            "__import__(",
+        ],
+        Lang::Ruby => &[
+            "eval(",
+            "instance_eval",
+            "class_eval",
+            "Marshal.load",
+            "Base64.decode64",
+            ".unpack(",
+            "Zlib::Inflate",
+        ],
+        Lang::Php => &[
+            "eval(",
+            "base64_decode(",
+            "gzinflate(",
+            "gzuncompress(",
+            "str_rot13(",
+            "create_function(",
+        ],
+        Lang::Go => &[
+            "base64.StdEncoding.DecodeString",
+            "base64.RawStdEncoding.DecodeString",
+            "base64.URLEncoding.DecodeString",
+            "hex.DecodeString",
+        ],
+        Lang::Java => &[
+            "Base64.getDecoder",
+            "DatatypeConverter.parseBase64Binary",
+            "ScriptEngine",
+            ".eval(",
+            "defineClass(",
+        ],
+        Lang::Rust => &[
+            "include_bytes!",
+            "transmute",
+            "asm!(",
+            "global_asm!(",
+            "base64::decode",
+            "from_base64",
+        ],
+        Lang::Cpp => &["__asm", "VirtualProtect", "VirtualAllocEx", "mprotect"],
+        Lang::Perl => &[
+            "eval \"",
+            "eval '",
+            "eval $",
+            "pack(",
+            "unpack(",
+            "decode_base64",
+            "MIME::Base64",
+        ],
+        Lang::Shell => &[
+            "eval ",
+            "eval \"",
+            "base64 -d",
+            "base64 --decode",
+            "${IFS}",
+            "xxd -r",
+            "od -c",
+        ],
+        Lang::Lua => &["loadstring", "load(", "string.dump", "string.char"],
+    }
+}
+
+fn automaton(lang: Lang) -> &'static AhoCorasick {
+    static AC: [OnceLock<AhoCorasick>; Lang::ALL.len()] =
+        [const { OnceLock::new() }; Lang::ALL.len()];
+    AC[lang as usize].get_or_init(|| util::automaton(needles(lang)))
 }
 
 pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
@@ -61,96 +185,100 @@ pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
         signals.push("high-entropy");
     }
 
-    let lower = text; // keep case for now; markers are case-sensitive
+    // Markers are case-sensitive. `count` panics on a needle missing from
+    // `needles(lang)` — a typo there must not silently disable a check.
+    let counts = util::needle_counts(automaton(lang), text);
+    let count = |n: &str| {
+        let i = needles(lang).iter().position(|x| *x == n);
+        counts[i.expect("needle listed in needles(lang)")]
+    };
+    let has = |n: &str| count(n) > 0;
     match lang {
         Lang::JavaScript => {
-            if lower.contains("eval(") {
+            if has("eval(") {
                 signals.push("eval()");
             }
-            if lower.contains("new Function(") || lower.contains("Function(\"return") {
+            if has("new Function(") || has("Function(\"return") {
                 signals.push("Function() constructor");
             }
-            if lower.contains("String.fromCharCode") {
+            if has("String.fromCharCode") {
                 signals.push("String.fromCharCode");
             }
-            if lower.matches(".charCodeAt").count() >= 3 {
+            if count(".charCodeAt") >= 3 {
                 signals.push("charCodeAt chain");
             }
-            if lower.contains("atob(") {
+            if has("atob(") {
                 signals.push("atob() base64 decode");
             }
         }
         Lang::PowerShell => {
             // `-EncodedCommand` takes base64 UTF-16LE. Legitimate in tooling,
             // but in a package's install script it is a payload carrier.
-            if lower.contains("-EncodedCommand") || lower.contains(" -enc ") {
+            if has("-EncodedCommand") || has(" -enc ") {
                 signals.push("-EncodedCommand");
             }
-            if lower.contains("FromBase64String") {
+            if has("FromBase64String") {
                 signals.push("base64/codecs decode");
             }
-            if lower.contains("Invoke-Expression") || lower.contains("iex ") {
+            if has("Invoke-Expression") || has("iex ") {
                 signals.push("Invoke-Expression");
             }
             // A backtick between two word characters: PowerShell's escape is a
             // no-op there, so `I`E`X` still runs as IEX while defeating a
             // literal search. Nothing legitimate writes cmdlet names that way.
-            if backtick_split_re().is_match(lower) {
+            if backtick_split_re().is_match(text) {
                 signals.push("backtick-split identifier");
             }
             // Rebuilding a string from character codes to keep it out of the file.
-            if lower.contains("[char[]]") || (lower.contains("[char]") && lower.contains("-join")) {
+            if has("[char[]]") || (has("[char]") && has("-join")) {
                 signals.push("char array join");
             }
         }
         Lang::Python => {
-            if lower.contains("exec(") {
+            if has("exec(") {
                 signals.push("exec()");
             }
-            if lower.contains("compile(") {
+            if has("compile(") {
                 signals.push("compile()");
             }
-            if lower.contains("marshal.loads") {
+            if has("marshal.loads") {
                 signals.push("marshal.loads");
             }
-            if lower.contains("base64.b64decode") || lower.contains("codecs.decode") {
+            if has("base64.b64decode") || has("codecs.decode") {
                 signals.push("base64/codecs decode");
             }
-            if lower.contains("__import__(") {
+            if has("__import__(") {
                 signals.push("__import__()");
             }
         }
         Lang::Ruby => {
-            if lower.contains("eval(")
-                || lower.contains("instance_eval")
-                || lower.contains("class_eval")
-            {
+            if has("eval(") || has("instance_eval") || has("class_eval") {
                 signals.push("eval()");
             }
-            if lower.contains("Marshal.load") {
+            if has("Marshal.load") {
                 signals.push("marshal.loads");
             }
-            if lower.contains("Base64.decode64") || lower.contains(".unpack(") {
+            if has("Base64.decode64") || has(".unpack(") {
                 signals.push("base64/codecs decode");
             }
-            if lower.contains("Zlib::Inflate") {
+            if has("Zlib::Inflate") {
                 signals.push("zlib inflate");
             }
         }
         Lang::Php => {
-            if lower.contains("eval(") {
+            if has("eval(") {
                 signals.push("eval()");
             }
-            if lower.contains("base64_decode(") {
+            if has("base64_decode(") {
                 signals.push("base64/codecs decode");
             }
-            if lower.contains("gzinflate(") || lower.contains("gzuncompress(") {
+            if has("gzinflate(") || has("gzuncompress(") {
                 signals.push("gzinflate");
             }
-            if lower.contains("str_rot13(") {
+            if has("str_rot13(") {
                 signals.push("str_rot13");
             }
-            if lower.contains("create_function(") {
+            if has("create_function(") {
                 signals.push("create_function");
             }
         }
@@ -158,26 +286,24 @@ pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
             // Go has no eval; obfuscated payloads lean on encoded blobs decoded
             // at runtime. The generic entropy / \xNN / base64-blob signals cover
             // the rest.
-            if lower.contains("base64.StdEncoding.DecodeString")
-                || lower.contains("base64.RawStdEncoding.DecodeString")
-                || lower.contains("base64.URLEncoding.DecodeString")
+            if has("base64.StdEncoding.DecodeString")
+                || has("base64.RawStdEncoding.DecodeString")
+                || has("base64.URLEncoding.DecodeString")
             {
                 signals.push("base64/codecs decode");
             }
-            if lower.contains("hex.DecodeString") {
+            if has("hex.DecodeString") {
                 signals.push("hex decode");
             }
         }
         Lang::Java => {
-            if lower.contains("Base64.getDecoder")
-                || lower.contains("DatatypeConverter.parseBase64Binary")
-            {
+            if has("Base64.getDecoder") || has("DatatypeConverter.parseBase64Binary") {
                 signals.push("base64/codecs decode");
             }
-            if lower.contains("ScriptEngine") || lower.contains(".eval(") {
+            if has("ScriptEngine") || has(".eval(") {
                 signals.push("eval()");
             }
-            if lower.contains("defineClass(") {
+            if has("defineClass(") {
                 signals.push("defineClass");
             }
         }
@@ -185,66 +311,63 @@ pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
             // No eval; obfuscation leans on embedded blobs, type-punning, and asm.
             // All weak on their own — corroborated by the generic entropy/blob
             // signals below.
-            if lower.contains("include_bytes!") {
+            if has("include_bytes!") {
                 signals.push("include_bytes! blob");
             }
-            if lower.contains("transmute") {
+            if has("transmute") {
                 signals.push("transmute");
             }
-            if lower.contains("asm!(") || lower.contains("global_asm!(") {
+            if has("asm!(") || has("global_asm!(") {
                 signals.push("inline asm");
             }
-            if lower.contains("base64::decode") || lower.contains("from_base64") {
+            if has("base64::decode") || has("from_base64") {
                 signals.push("base64/codecs decode");
             }
         }
         Lang::Cpp => {
             // Shellcode loaders lean on inline asm + RWX memory; embedded blobs
             // are caught by the generic \xNN-run / base64 signals below.
-            if lower.contains("__asm") {
+            if has("__asm") {
                 signals.push("inline asm");
             }
-            if lower.contains("VirtualProtect")
-                || lower.contains("VirtualAllocEx")
-                || lower.contains("mprotect")
-            {
+            if has("VirtualProtect") || has("VirtualAllocEx") || has("mprotect") {
                 signals.push("rwx memory");
             }
         }
         Lang::Perl => {
-            if lower.contains("eval \"") || lower.contains("eval '") || lower.contains("eval $") {
+            if has("eval \"") || has("eval '") || has("eval $") {
                 signals.push("eval()");
             }
-            if lower.contains("pack(") || lower.contains("unpack(") {
+            if has("pack(") || has("unpack(") {
                 signals.push("pack/unpack");
             }
-            if lower.contains("decode_base64") || lower.contains("MIME::Base64") {
+            if has("decode_base64") || has("MIME::Base64") {
                 signals.push("base64/codecs decode");
             }
         }
         Lang::Shell => {
-            if lower.contains("eval ") || lower.contains("eval \"") {
+            if has("eval ") || has("eval \"") {
                 signals.push("eval()");
             }
-            if lower.contains("base64 -d") || lower.contains("base64 --decode") {
+            if has("base64 -d") || has("base64 --decode") {
                 signals.push("base64/codecs decode");
             }
             // Classic space/word hiding via the field separator.
-            if lower.contains("${IFS}") {
+            if has("${IFS}") {
                 signals.push("IFS obfuscation");
             }
-            if lower.contains("xxd -r") || lower.contains("od -c") {
+            if has("xxd -r") || has("od -c") {
                 signals.push("hex decode");
             }
         }
         Lang::Lua => {
-            if lower.contains("loadstring") || lower.contains("load(") {
+            if has("loadstring") || has("load(") {
                 signals.push("eval()");
             }
-            if lower.contains("string.dump") {
+            if has("string.dump") {
                 signals.push("bytecode dump");
             }
-            if lower.contains("string.char") {
+            if has("string.char") {
                 signals.push("string.char");
             }
         }
@@ -256,7 +379,7 @@ pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>, lang: Lang) {
     if unicode_run_re().is_match(text) {
         signals.push(r"long \uNNNN run");
     }
-    if base64_re().is_match(text) {
+    if has_base64_blob(text.as_bytes()) {
         signals.push("base64 blob");
     }
 
@@ -327,10 +450,11 @@ fn is_weak_signal(s: &str) -> bool {
     )
 }
 
+/// The banner is one substring search; the line scan only runs when it hits,
+/// and stops at the first wide line.
 fn looks_minified(text: &str) -> bool {
-    let max_line = text.lines().map(|l| l.len()).max().unwrap_or(0);
     let banner = text.starts_with("/*!") || text.contains("//# sourceMappingURL=");
-    max_line > 2000 && banner
+    banner && text.lines().any(|l| l.len() > 2000)
 }
 
 #[cfg(test)]
@@ -376,5 +500,43 @@ mod ps_tests {
              Install-ChocolateyPackage @packageArgs\n",
         );
         assert!(f.is_empty(), "got {f:?}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The byte scan says what the regex it replaced said, on the edges that
+    /// matter: run length, padding count, either quote, quotes mid-run.
+    #[test]
+    fn base64_scan_matches_the_regex() {
+        let re = Regex::new(r#"["'][A-Za-z0-9+/]{200,}={0,2}["']"#).unwrap();
+        let run = |n: usize| "Ab+/9".repeat(n / 5 + 1)[..n].to_string();
+        let quotes = [("\"", "\""), ("'", "\""), ("", "'"), ("\"", ""), ("x", "'")];
+        let mut cases = Vec::new();
+        for n in [0, 199, 200, 201, 450] {
+            for pad in ["", "=", "==", "==="] {
+                for (open, close) in quotes {
+                    cases.push(format!("a {open}{}{pad}{close} b", run(n)));
+                }
+            }
+        }
+        cases.push(format!("'{}é{}'", run(150), run(150)));
+        cases.push(format!("\"{}\"{}'", run(10), run(250)));
+        cases.push(format!("'{}'", run(300)).replace('+', "-"));
+        for c in &cases {
+            assert_eq!(has_base64_blob(c.as_bytes()), re.is_match(c), "{c:?}");
+        }
+    }
+
+    /// Every check's needle is in its language's list: `count` would panic on
+    /// the first file of a language with one missing.
+    #[test]
+    fn every_language_scans_without_a_missing_needle() {
+        let text = "x".repeat(80);
+        for &lang in Lang::ALL {
+            scan_text(Path::new("f"), &text, &mut Vec::new(), lang);
+        }
     }
 }

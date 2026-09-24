@@ -30,11 +30,17 @@ pub fn nix_inventory(opts: Opts) -> Result<Inventory> {
     if roots.is_empty() {
         anyhow::bail!("no nix profiles found under /nix/var/nix/profiles");
     }
-    let closure = nix_closure(&roots);
+    // The closure's *order* comes from `nix-store -qR` (the forest is built in
+    // that order, and a name shared by two outputs keeps its first); the info
+    // for every path of it comes from one recursive `path-info`. The two run
+    // side by side.
+    let (closure, info) = std::thread::scope(|s| {
+        let info = s.spawn(|| nix_closure_info(&roots));
+        (nix_closure(&roots), info.join().unwrap_or_default())
+    });
     if closure.is_empty() {
         anyhow::bail!("`nix-store -qR` returned no paths");
     }
-    let info = nix_path_info(&closure);
     let trusted = nix_trusted_keys();
     let root_set: std::collections::HashSet<&str> = roots.iter().map(String::as_str).collect();
     let in_closure: std::collections::HashSet<&str> = closure.iter().map(String::as_str).collect();
@@ -156,22 +162,34 @@ fn nix_profile_roots() -> Vec<String> {
             }
         }
     }
-    let mut roots = std::collections::HashSet::new();
-    for prof in profiles {
-        let Ok(store) = std::fs::canonicalize(&prof) else {
-            continue;
-        };
-        for r in nix_references(&store.to_string_lossy()) {
-            roots.insert(r);
-        }
-    }
+    let stores: Vec<String> = profiles
+        .iter()
+        .filter_map(|p| std::fs::canonicalize(p).ok())
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
+    // One `nix-store` for every profile. It fails as a whole when any one path
+    // is invalid, and then each profile is asked on its own so the valid ones
+    // still count.
+    let refs = match nix_references(&stores) {
+        Some(refs) => refs,
+        None => stores
+            .iter()
+            .flat_map(|s| nix_references(std::slice::from_ref(s)).unwrap_or_default())
+            .collect(),
+    };
+    let roots: std::collections::HashSet<String> = refs.into_iter().collect();
     roots.into_iter().collect()
 }
 
-/// `nix-store -q --references <path>` — a path's direct store references.
-fn nix_references(path: &str) -> Vec<String> {
+/// `nix-store -q --references <paths…>` — the paths' direct store references.
+/// `None` when the query fails.
+fn nix_references(paths: &[String]) -> Option<Vec<String>> {
+    if paths.is_empty() {
+        return Some(Vec::new());
+    }
     Command::new("nix-store")
-        .args(["-q", "--references", path])
+        .args(["-q", "--references"])
+        .args(paths)
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -181,7 +199,6 @@ fn nix_references(path: &str) -> Vec<String> {
                 .map(str::to_string)
                 .collect()
         })
-        .unwrap_or_default()
 }
 
 /// `nix-store -qR <roots…>` — the full closure (requisites) of the roots.
@@ -198,31 +215,30 @@ fn nix_closure(roots: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// `nix path-info --json` over the closure → `path → info` (references, signatures,
-/// ca, ultimate). Chunked; needs the `nix-command` experimental feature enabled
-/// for the invocation.
-fn nix_path_info(paths: &[String]) -> HashMap<String, NixPathInfo> {
-    let mut out = HashMap::new();
-    for chunk in paths.chunks(256) {
-        let res = Command::new("nix")
-            .args([
-                "--extra-experimental-features",
-                "nix-command",
-                "path-info",
-                "--json",
-                "--sigs",
-            ])
-            .args(chunk)
-            .output();
-        let Ok(res) = res else { continue };
-        if !res.status.success() {
-            continue;
-        }
-        if let Ok(map) = serde_json::from_slice::<HashMap<String, NixPathInfo>>(&res.stdout) {
-            out.extend(map);
-        }
+/// `nix path-info --json --sigs --recursive <roots…>` → every path of the
+/// roots' closure with its info (references, signatures, ca, ultimate), in one
+/// call; it was `path-info` over the closure in 256-path chunks, one after
+/// another. Empty when `nix` can't answer; needs the `nix-command`
+/// experimental feature enabled for the invocation.
+fn nix_closure_info(roots: &[String]) -> HashMap<String, NixPathInfo> {
+    let res = Command::new("nix")
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "path-info",
+            "--json",
+            "--sigs",
+            "--recursive",
+        ])
+        .args(roots)
+        .output();
+    let Ok(res) = res else {
+        return HashMap::new();
+    };
+    if !res.status.success() {
+        return HashMap::new();
     }
-    out
+    serde_json::from_slice(&res.stdout).unwrap_or_default()
 }
 
 /// Trusted binary-cache key names from `nix.conf` (`trusted-public-keys`), always

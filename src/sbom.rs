@@ -89,15 +89,17 @@ fn licenses_field(licenses: &[License]) -> Option<Value> {
 /// named `root`. `timestamp` is an RFC-3339 string (passed in so this stays a
 /// pure, testable function).
 pub fn cyclonedx(root: &str, deps: &[Dependency], timestamp: &str) -> Value {
-    // Stable purl per (name, version) so edges reference the same ref as components.
-    let ref_of = |d: &Dependency| purl(d);
+    // Stable purl per (name, version) so edges reference the same ref as
+    // components. Computed once per dependency and borrowed from here on — it
+    // was built three times per dependency, plus a clone per edge.
+    let refs: Vec<String> = deps.iter().map(purl).collect();
 
     // components: one per unique purl.
     let mut seen = std::collections::HashSet::new();
     let mut components = Vec::new();
-    for d in deps {
-        let r = ref_of(d);
-        if !seen.insert(r.clone()) {
+    for (d, r) in deps.iter().zip(&refs) {
+        let r = r.as_str();
+        if !seen.insert(r) {
             continue;
         }
         let mut component = json!({
@@ -114,24 +116,22 @@ pub fn cyclonedx(root: &str, deps: &[Dependency], timestamp: &str) -> Value {
     }
 
     // dependency edges: rebuild parent → child adjacency from the `parents` field.
-    let purl_by_key: std::collections::HashMap<(&str, &str), String> = deps
+    let purl_by_key: std::collections::HashMap<(&str, &str), &str> = deps
         .iter()
-        .map(|d| ((d.name.as_str(), d.version.as_str()), ref_of(d)))
+        .zip(&refs)
+        .map(|(d, r)| ((d.name.as_str(), d.version.as_str()), r.as_str()))
         .collect();
-    let mut depends_on: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+    let mut depends_on: std::collections::BTreeMap<&str, std::collections::BTreeSet<&str>> =
         std::collections::BTreeMap::new();
-    let mut direct: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for d in deps {
-        let child = ref_of(d);
+    let mut direct: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for (d, child) in deps.iter().zip(&refs) {
+        let child = child.as_str();
         if d.direct {
-            direct.insert(child.clone());
+            direct.insert(child);
         }
         for (pn, pv) in &d.parents {
             if let Some(parent) = purl_by_key.get(&(pn.as_str(), pv.as_str())) {
-                depends_on
-                    .entry(parent.clone())
-                    .or_default()
-                    .insert(child.clone());
+                depends_on.entry(parent).or_default().insert(child);
             }
         }
     }
@@ -142,9 +142,9 @@ pub fn cyclonedx(root: &str, deps: &[Dependency], timestamp: &str) -> Value {
         "dependsOn": direct.into_iter().collect::<Vec<_>>(),
     })];
     for comp_ref in seen.iter() {
-        let kids: Vec<String> = depends_on
+        let kids: Vec<&str> = depends_on
             .get(comp_ref)
-            .map(|s| s.iter().cloned().collect())
+            .map(|s| s.iter().copied().collect())
             .unwrap_or_default();
         dependencies.push(json!({ "ref": comp_ref, "dependsOn": kids }));
     }

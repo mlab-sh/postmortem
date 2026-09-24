@@ -334,10 +334,19 @@ impl Config {
             })
             .collect();
 
+        // Only rules still in force, each with its path glob compiled once —
+        // compiling per finding × rule was thousands of `Regex::new` per scan.
+        let rules: Vec<(&IgnoreRule, Option<regex::Regex>)> = self
+            .ignores
+            .iter()
+            .filter(|r| expiry_status(r.expires.as_deref(), today).is_effective())
+            .map(|r| (r, r.path.as_deref().and_then(glob_regex)))
+            .collect();
+
         let before = findings.len();
         let findings: Vec<Finding> = findings
             .into_iter()
-            .filter(|f| !self.should_drop(f, today))
+            .filter(|f| !self.should_drop(f, &rules))
             .collect();
         let suppressed = before - findings.len();
         Applied {
@@ -347,7 +356,7 @@ impl Config {
         }
     }
 
-    fn should_drop(&self, f: &Finding, today: NaiveDate) -> bool {
+    fn should_drop(&self, f: &Finding, rules: &[(&IgnoreRule, Option<regex::Regex>)]) -> bool {
         if self.skip_categories.contains(&f.category) {
             return true;
         }
@@ -363,16 +372,10 @@ impl Config {
         {
             return true;
         }
-        for rule in &self.ignores {
-            // A lapsed rule is inert — it no longer hides anything.
-            if !expiry_status(rule.expires.as_deref(), today).is_effective() {
-                continue;
-            }
-            if rule_matches(rule, f) {
-                return true;
-            }
-        }
-        false
+        // A lapsed rule is inert — `apply` already left it out of `rules`.
+        rules
+            .iter()
+            .any(|(rule, path)| rule_matches(rule, path.as_ref(), f))
     }
 }
 
@@ -398,7 +401,9 @@ fn dep_matches(pattern: &str, dep: &str) -> bool {
     false
 }
 
-fn rule_matches(rule: &IgnoreRule, f: &Finding) -> bool {
+/// `path` is `rule.path` compiled by [`glob_regex`]; `None` for a rule with a
+/// path means the glob did not compile, and such a rule matches nothing.
+fn rule_matches(rule: &IgnoreRule, path: Option<&regex::Regex>, f: &Finding) -> bool {
     if rule.category.is_none() && rule.dependency.is_none() && rule.path.is_none() {
         return false; // empty rule never matches — guards against accidentally muting everything
     }
@@ -412,9 +417,9 @@ fn rule_matches(rule: &IgnoreRule, f: &Finding) -> bool {
     {
         return false;
     }
-    if let Some(g) = &rule.path {
+    if rule.path.is_some() {
         let loc = f.location.as_deref().unwrap_or("");
-        if !glob_match(g, loc) {
+        if !path.is_some_and(|re| re.is_match(loc)) {
             return false;
         }
     }
@@ -424,7 +429,7 @@ fn rule_matches(rule: &IgnoreRule, f: &Finding) -> bool {
 /// Minimal glob: `*` matches anything except `/`, `**` matches anything including `/`,
 /// `?` matches one non-slash char. Anchored at neither end — pattern is matched as
 /// a substring inside the location string, which is convenient for path filters.
-fn glob_match(pattern: &str, text: &str) -> bool {
+fn glob_regex(pattern: &str) -> Option<regex::Regex> {
     // Compile to a regex
     let mut re = String::with_capacity(pattern.len() * 2);
     let mut chars = pattern.chars().peekable();
@@ -446,9 +451,7 @@ fn glob_match(pattern: &str, text: &str) -> bool {
             _ => re.push(c),
         }
     }
-    regex::Regex::new(&re)
-        .map(|r| r.is_match(text))
-        .unwrap_or(false)
+    regex::Regex::new(&re).ok()
 }
 
 #[cfg(test)]

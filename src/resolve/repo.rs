@@ -55,7 +55,12 @@ impl RepoRef {
 /// Pull a repository URL out of an npm version manifest's `repository` field,
 /// which is either a string or an object `{ "type": "git", "url": "…" }`.
 pub(super) fn extract_repo_url(manifest: &serde_json::Value) -> Option<String> {
-    match manifest.get("repository")? {
+    repo_url_of(manifest.get("repository")?)
+}
+
+/// A `repository` value: a bare string or `{type, url}`.
+pub(super) fn repo_url_of(repository: &serde_json::Value) -> Option<String> {
+    match repository {
         serde_json::Value::String(s) => Some(s.clone()),
         serde_json::Value::Object(o) => o.get("url").and_then(|u| u.as_str()).map(String::from),
         _ => None,

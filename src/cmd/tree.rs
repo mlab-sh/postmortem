@@ -254,8 +254,28 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
                 tree::score(&mut forest);
             }
         }
-        if let Some(resolver) = &resolver {
-            let resolutions = resolver.resolve_all(&deps, &ui);
+        // The advisory lookups read only the lockfiles, never the resolution, so
+        // they run alongside it instead of after it — each is a server-side
+        // resolve of its own, seconds apiece. Not for the maintainer graph,
+        // which never shows them (and the anonymous quota is 8/h).
+        let (resolutions, vulns) = std::thread::scope(|s| {
+            let vulns = vuln_ctx
+                .as_ref()
+                .filter(|_| !(resolver.is_some() && args.human))
+                .map(|ctx| s.spawn(|| scan_lockfiles(&detected, ctx)));
+            let resolutions = resolver.as_ref().map(|r| r.resolve_all(&deps, &ui));
+            // The spinner starts once the resolve's own progress line is done,
+            // for whatever of the scans is still outstanding.
+            let vulns = vulns.map(|h| {
+                let loader = gochi::Loader::spinner(
+                    "gochi querying vuln.mlab.sh for advisories",
+                    ui.animating(),
+                );
+                (h.join().expect("vuln scan thread"), loader)
+            });
+            (resolutions, vulns)
+        });
+        if let Some(resolutions) = resolutions {
             resolve::apply_licenses(&mut deps, &resolutions);
 
             // The maintainer graph replaces the tree view rather than adding to
@@ -285,24 +305,15 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
             tree::score(&mut forest);
         }
 
-        if let Some((agent, cache, token, scan_url)) = &vuln_ctx {
-            let loader = gochi::Loader::spinner(
-                "gochi querying vuln.mlab.sh for advisories",
-                ui.animating(),
-            );
-            for d in &detected {
-                loader.step(format!("gochi checking {} advisories", d.name()));
-                match mlab_target(d) {
-                    Some((lock, fmt)) => {
-                        match vuln::scan(agent, cache, token.as_deref(), lock, fmt, scan_url) {
-                            Ok(mut v) => forest.vulnerabilities.append(&mut v),
-                            Err(e) => forest.diagnostics.push(model::Diagnostic {
-                                ecosystem: d.name().into(),
-                                kind: "vuln_scan_failed".into(),
-                                message: format!("vuln scan failed: {e:#}"),
-                            }),
-                        }
-                    }
+        if let Some((results, loader)) = vulns {
+            for (d, result) in detected.iter().zip(results) {
+                match result {
+                    Some(Ok(mut v)) => forest.vulnerabilities.append(&mut v),
+                    Some(Err(e)) => forest.diagnostics.push(model::Diagnostic {
+                        ecosystem: d.name().into(),
+                        kind: "vuln_scan_failed".into(),
+                        message: format!("vuln scan failed: {e:#}"),
+                    }),
                     None => forest.diagnostics.push(model::Diagnostic {
                         ecosystem: d.name().into(),
                         kind: "vuln_unsupported".into(),
@@ -452,6 +463,20 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
 /// Render the image's layer stack, and attribute its packages to the build step
 /// that introduced them.
 ///
+/// Every detected lockfile's advisory scan, run concurrently, in `detected`'s
+/// order: `None` where mlab reads no lockfile of that format.
+fn scan_lockfiles(
+    detected: &[detect::Detected],
+    (agent, cache, token, scan_url): &(settings::Agents, cache::Cache, Option<String>, String),
+) -> Vec<Option<Result<Vec<vuln::VulnPackage>>>> {
+    let targets: Vec<_> = detected.iter().filter_map(mlab_target).collect();
+    let mut scans = vuln::scan_many(agent, cache, token.as_deref(), &targets, scan_url).into_iter();
+    detected
+        .iter()
+        .map(|d| mlab_target(d).and_then(|_| scans.next()))
+        .collect()
+}
+
 /// The point of the table is the last column. "This image contains a vulnerable
 /// openssl" sends you looking; "openssl entered at `RUN apt-get install -y
 /// curl`" tells you which line to change.

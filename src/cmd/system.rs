@@ -68,10 +68,11 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
         force_aur: args.force_aur,
         signatures: !args.no_signatures,
         deep: args.deep,
+        skip_integrity: false,
     };
     let mut read = Vec::new();
     let mut unread = Vec::new();
-    for backend in &backends {
+    if let [backend] = backends[..] {
         let loader = gochi::Loader::spinner(
             &format!("gochi reading {backend} packages"),
             ui.animating(),
@@ -82,18 +83,40 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
                 read.push(inv);
             }
             // With one backend asked for, its failure is the command's failure.
-            // With several, one unreadable layer must not abort the others —
-            // but it must not vanish either, or a partial scan reads as a
-            // complete one.
-            Err(e) if backends.len() == 1 => {
+            Err(e) => {
                 loader.finish(gochi::Mood::Bad, "couldn't read packages");
                 return Err(e);
             }
-            Err(e) => {
-                loader.finish(gochi::Mood::Bad, format!("couldn't read {backend}"));
-                unread.push(format!("{backend} could not be read: {e}"));
+        }
+    } else {
+        // Windows: up to eleven layers, each one or more PowerShell spawns of
+        // 300-500 ms that mostly wait — one after another they were most of
+        // the run. They are read on a small pool (enough to overlap the waits
+        // without starving the machine being audited) and collected in
+        // `backends` order, so the merge below sees exactly the serial order.
+        let loader = gochi::Loader::spinner(
+            format!("gochi reading {} layers", backends.len()),
+            ui.animating(),
+        );
+        let results = system::par_map(&backends, 4, |backend| system::inventory(backend, opts));
+        let mut ok = 0;
+        for (backend, res) in backends.iter().zip(results) {
+            match res {
+                Ok(inv) => {
+                    ok += 1;
+                    read.push(inv);
+                }
+                // One unreadable layer must not abort the others — but it must
+                // not vanish either, or a partial scan reads as a complete one.
+                Err(e) => unread.push(format!("{backend} could not be read: {e}")),
             }
         }
+        let mood = if unread.is_empty() {
+            gochi::Mood::Happy
+        } else {
+            gochi::Mood::Bad
+        };
+        loader.finish(mood, format!("read {ok}/{} layers", backends.len()));
     }
     if read.is_empty() {
         anyhow::bail!("none of the detected managers could be read: {}", unread.join("; "));

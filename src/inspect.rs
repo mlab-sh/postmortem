@@ -34,7 +34,14 @@ pub fn run(args: &crate::cli::InspectArgs) -> Result<()> {
         bail!("no supported system package manager found");
     };
     let loader = gochi::Loader::spinner("gochi reading installed packages", ui.animating());
-    let inv = match system::inventory(backend, system::Opts::default()) {
+    // The whole-machine integrity sweeps only feed `inv.notes`, which neither
+    // the focused tree nor `--deep` renders — and `rpm -Va` / `dpkg --verify`
+    // hash every installed file to produce them.
+    let opts = system::Opts {
+        skip_integrity: true,
+        ..system::Opts::default()
+    };
+    let inv = match system::inventory(backend, opts) {
         Ok(inv) => {
             loader.finish(gochi::Mood::Happy, format!("read {}", inv.summary));
             inv
@@ -135,29 +142,33 @@ fn deep(args: &crate::cli::InspectArgs, sub: &[Dependency], ui: &ui::Ui) -> Resu
 
     let bar = gochi::Loader::start(targets.len() as u64, ui.animating());
     bar.step("cloning + analyzing sources");
-    let mut analyzed: Vec<RepoAudit> = Vec::new();
     let vuln_ctx = (
         crate::vuln::agent(&settings.network),
         crate::cache::Cache::open(),
         settings.vuln_token(),
         crate::vuln::scan_url(&settings.network),
     );
-    for (name, repo) in &targets {
+    // Each repo is a network-bound clone then a scan, and one at a time they
+    // added up to minutes on a large tree. A small pool overlaps the clones
+    // with each other's scans; results come back in `targets` order, so the
+    // report reads exactly as the serial run's did. Each clone is deleted as
+    // soon as it has been audited, which also bounds the disk in use to the
+    // pool's width rather than the whole tree.
+    let indexed: Vec<(usize, &(String, RepoRef))> = targets.iter().enumerate().collect();
+    let analyzed: Vec<RepoAudit> = system::par_map(&indexed, 4, |(i, (name, repo))| {
         bar.step(format!("git clone {}", repo.slug()));
-        let dest = work.join(sanitize(&repo.slug()));
-        if git_clone(&clone_url(repo), &dest) {
-            analyzed.push(audit_clone(
-                name,
-                repo,
-                &dest,
-                &vuln_ctx,
-                args.allow_test_files,
-            ));
+        // Indexed so two slugs that sanitize alike can't share a directory
+        // while both are in flight.
+        let dest = work.join(format!("{i}-{}", sanitize(&repo.slug())));
+        let audit = if git_clone(&clone_url(repo), &dest) {
+            audit_clone(name, repo, &dest, &vuln_ctx, args.allow_test_files)
         } else {
-            analyzed.push(RepoAudit::clone_failed(name, repo));
-        }
+            RepoAudit::clone_failed(name, repo)
+        };
+        let _ = std::fs::remove_dir_all(&dest);
         bar.inc();
-    }
+        audit
+    });
     let findings_total: usize = analyzed.iter().map(|a| a.findings.len()).sum();
     bar.finish(
         if findings_total > 0 {
@@ -548,7 +559,7 @@ fn git_available() -> bool {
 
 fn git_clone(url: &str, dest: &Path) -> bool {
     Command::new("git")
-        .args(["clone", "--depth", "1", "--quiet", url])
+        .args(["clone", "--depth", "1", "--no-tags", "--quiet", url])
         .arg(dest)
         .status()
         .map(|s| s.success())

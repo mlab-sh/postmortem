@@ -10,9 +10,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use serde::Deserialize;
 use serde_yaml::Value;
 
-use crate::model::{DepRef, Dependency, Ecosystem, LicenseSource, Scope};
+use super::YamlMap;
+
+use crate::model::{Dependency, Ecosystem, LicenseSource, Scope};
 
 pub fn parse(manifest: &Path, lockfile: &Path) -> Result<Vec<Dependency>> {
     let text = std::fs::read_to_string(lockfile)
@@ -43,18 +46,22 @@ struct Entry {
 }
 
 fn assemble(entries: Vec<Entry>, manifest: &Path) -> Vec<Dependency> {
-    // descriptor "name@range" -> (name, version)
-    let mut by_descriptor: HashMap<String, DepRef> = HashMap::new();
+    // descriptor (name, range) -> (name, version). Keyed by the borrowed pair
+    // rather than a `format!("{n}@{r}")` string: that was one allocation per
+    // descriptor here and another per declared edge at lookup time.
+    let mut by_descriptor: HashMap<(&str, &str), (&str, &str)> = HashMap::new();
     for e in &entries {
         for (n, r) in &e.descriptors {
-            by_descriptor.insert(format!("{n}@{r}"), (e.name.clone(), e.version.clone()));
+            by_descriptor.insert((n, r), (&e.name, &e.version));
         }
     }
 
-    // Pass 1: create every node with its metadata (before any edge can).
-    let mut acc: BTreeMap<DepRef, Dependency> = BTreeMap::new();
+    // Pass 1: create every node with its metadata (before any edge can). Keyed
+    // by borrowed `(name, version)` — it orders exactly like the owned tuple —
+    // so the per-edge lookups below allocate nothing.
+    let mut acc: BTreeMap<(&str, &str), Dependency> = BTreeMap::new();
     for e in &entries {
-        acc.entry((e.name.clone(), e.version.clone()))
+        acc.entry((&e.name, &e.version))
             .or_insert_with(|| Dependency {
                 name: e.name.clone(),
                 version: e.version.clone(),
@@ -70,12 +77,11 @@ fn assemble(entries: Vec<Entry>, manifest: &Path) -> Vec<Dependency> {
     }
     // Pass 2: add parent edges (nodes already exist, so metadata is preserved).
     for e in &entries {
-        let parent = (e.name.clone(), e.version.clone());
         for (dn, dr) in &e.deps {
-            if let Some(child) = by_descriptor.get(&format!("{dn}@{dr}"))
-                && let Some(dep) = acc.get_mut(child)
+            if let Some(&(cn, cv)) = by_descriptor.get(&(dn.as_str(), dr.as_str()))
+                && let Some(dep) = acc.get_mut(&(cn, cv))
             {
-                dep.parents.push(parent.clone());
+                dep.parents.push((e.name.clone(), e.version.clone()));
             }
         }
     }
@@ -91,13 +97,13 @@ fn assemble(entries: Vec<Entry>, manifest: &Path) -> Vec<Dependency> {
     // Precedence is resolved across the root declarations *first*, then assigned:
     // nodes were created as `Prod`, so folding a `Dev` seed into the node with
     // `max` would always lose and no dev root would ever be marked.
-    let mut seeds: HashMap<DepRef, Scope> = HashMap::new();
+    let mut seeds: HashMap<(&str, &str), Scope> = HashMap::new();
     for (name, range, scope) in root_deps(manifest) {
         let resolved = by_descriptor
-            .get(&format!("{name}@{range}"))
-            .cloned()
+            .get(&(name.as_str(), range.as_str()))
+            .copied()
             // Fall back to marking every version of a root dep name direct.
-            .or_else(|| acc.keys().find(|(n, _)| n == &name).cloned());
+            .or_else(|| acc.keys().find(|(n, _)| *n == name).copied());
         if let Some(k) = resolved {
             let e = seeds.entry(k).or_insert(scope);
             *e = (*e).max(scope);
@@ -143,20 +149,22 @@ fn root_deps(manifest: &Path) -> Vec<(String, String, Scope)> {
 
 fn parse_v1(text: &str) -> Vec<Entry> {
     // Group into (header line, body lines) by column-0 headers.
-    let mut blocks: Vec<(String, Vec<String>)> = Vec::new();
-    let mut header: Option<String> = None;
-    let mut body: Vec<String> = Vec::new();
+    // Lines are borrowed from `text`: copying each into its own `String` was
+    // one allocation per lockfile line, ~10 per package.
+    let mut blocks: Vec<(&str, Vec<&str>)> = Vec::new();
+    let mut header: Option<&str> = None;
+    let mut body: Vec<&str> = Vec::new();
     for line in text.lines() {
         if line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
         }
         if line.starts_with([' ', '\t']) {
-            body.push(line.to_string());
+            body.push(line);
         } else {
             if let Some(h) = header.take() {
                 blocks.push((h, std::mem::take(&mut body)));
             }
-            header = Some(line.to_string());
+            header = Some(line);
         }
     }
     if let Some(h) = header.take() {
@@ -165,11 +173,11 @@ fn parse_v1(text: &str) -> Vec<Entry> {
 
     blocks
         .into_iter()
-        .filter_map(|(h, body)| entry_from_v1(&h, &body))
+        .filter_map(|(h, body)| entry_from_v1(h, &body))
         .collect()
 }
 
-fn entry_from_v1(header: &str, body: &[String]) -> Option<Entry> {
+fn entry_from_v1(header: &str, body: &[&str]) -> Option<Entry> {
     let descriptors: Vec<(String, String)> = header
         .trim_end_matches(':')
         .split(',')
@@ -218,27 +226,43 @@ fn entry_from_v1(header: &str, body: &[String]) -> Option<Entry> {
 
 // --- Berry v2+ (YAML) -------------------------------------------------------
 
+/// The fields of a Berry entry the parser reads; the rest (`languageName`,
+/// `linkType`, `bin`, `peerDependenciesMeta`, …) is skipped rather than built
+/// into a `Value` tree. Leaves stay `Value` so a non-string scalar is skipped
+/// exactly as `Value::as_str` skipped it before.
+#[derive(Deserialize)]
+struct BerryEntry {
+    #[serde(default)]
+    version: Option<Value>,
+    #[serde(default)]
+    dependencies: Option<YamlMap<Value>>,
+    #[serde(default)]
+    resolution: Option<Value>,
+    #[serde(default)]
+    checksum: Option<Value>,
+}
+
 fn parse_berry(text: &str) -> Result<Vec<Entry>> {
-    let doc: Value = serde_yaml::from_str(text)?;
-    let Some(map) = doc.as_mapping() else {
-        return Ok(Vec::new());
-    };
+    // Document order is kept (`YamlMap`): a descriptor claimed by two entries
+    // resolves to the later one, as it did through `serde_yaml::Mapping`.
+    let map: YamlMap<Option<BerryEntry>> = serde_yaml::from_str(text)?;
     let mut entries = Vec::new();
-    for (k, v) in map {
+    for (k, v) in &map.0 {
         let Some(key) = k.as_str() else { continue };
         if key == "__metadata" {
             continue;
         }
+        let Some(v) = v else { continue };
         let descriptors: Vec<(String, String)> =
             key.split(',').map(|d| split_descriptor(d.trim())).collect();
-        let Some(version) = v.get("version").and_then(Value::as_str) else {
+        let Some(version) = v.version.as_ref().and_then(Value::as_str) else {
             continue;
         };
         let deps = v
-            .get("dependencies")
-            .and_then(Value::as_mapping)
+            .dependencies
+            .as_ref()
             .map(|m| {
-                m.iter()
+                m.0.iter()
                     .filter_map(|(dn, dr)| {
                         Some((dn.as_str()?.to_string(), dr.as_str()?.to_string()))
                     })
@@ -254,10 +278,15 @@ fn parse_berry(text: &str) -> Result<Vec<Entry>> {
             name,
             version: version.to_string(),
             resolved: v
-                .get("resolution")
+                .resolution
+                .as_ref()
                 .and_then(Value::as_str)
                 .map(String::from),
-            integrity: v.get("checksum").and_then(Value::as_str).map(String::from),
+            integrity: v
+                .checksum
+                .as_ref()
+                .and_then(Value::as_str)
+                .map(String::from),
             deps,
         });
     }

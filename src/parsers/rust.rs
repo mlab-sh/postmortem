@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use crate::model::{Dependency, Ecosystem, LicenseSource, Scope};
@@ -43,18 +43,33 @@ pub fn parse_lockfile(path: &Path, manifest: Option<&Path>) -> Result<Vec<Depend
     // Skip them (the scan target itself is not its own dependency).
     let externals: Vec<&CargoPkg> = lock.package.iter().filter(|p| p.source.is_some()).collect();
 
+    // Reverse index: dependency name → (declaring package index, version it
+    // pinned), in lock order. Only packages with a `source` are indexed — local
+    // workspace members are never parents. Every package used to scan every
+    // other package's dependency list: O(P²·d), ~6 M splits for 800 crates.
+    let mut dependents: HashMap<&str, Vec<(usize, Option<&str>)>> = HashMap::new();
+    for (i, other) in lock.package.iter().enumerate() {
+        if other.source.is_none() {
+            continue;
+        }
+        for dep_str in &other.dependencies {
+            // entries are either "name" or "name VERSION" or "name VERSION (registry+...)"
+            let mut parts = dep_str.split_whitespace();
+            let dname = parts.next().unwrap_or("");
+            dependents.entry(dname).or_default().push((i, parts.next()));
+        }
+    }
+
     let mut out = Vec::with_capacity(externals.len());
     for pkg in &externals {
         let mut parents = Vec::new();
-        for other in &lock.package {
-            if other.dependencies.iter().any(|dep_str| {
-                // entries are either "name" or "name VERSION" or "name VERSION (registry+...)"
-                let mut parts = dep_str.split_whitespace();
-                let dname = parts.next().unwrap_or("");
-                let dver = parts.next();
-                dname == pkg.name && dver.map(|v| v == pkg.version).unwrap_or(true)
-            }) && other.source.is_some()
-            {
+        let mut last = None;
+        for &(i, dver) in dependents.get(pkg.name.as_str()).into_iter().flatten() {
+            // No version means "any version": the name alone is unambiguous.
+            // One push per declaring package, however many entries match.
+            if dver.is_none_or(|v| v == pkg.version) && last != Some(i) {
+                last = Some(i);
+                let other = &lock.package[i];
                 parents.push((other.name.clone(), other.version.clone()));
             }
         }

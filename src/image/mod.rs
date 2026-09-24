@@ -21,7 +21,7 @@ mod layers;
 
 pub use layers::Layer;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -134,7 +134,7 @@ pub struct Image {
     /// the layer-by-layer path.
     pub removed_secrets: Vec<image_secrets::Removed>,
     /// Path as the image sees it (`/usr/bin/curl`) → the layer that last wrote it.
-    owner: HashMap<String, usize>,
+    owner: BTreeMap<String, usize>,
     root: PathBuf,
     /// Scratch directory holding the saved archive, when there was one. As large
     /// as the image, so it is deleted with the extraction.
@@ -194,14 +194,14 @@ pub fn acquire(reference: &str, layered: bool, ui: &Ui) -> Result<Image> {
             return Err(e);
         }
     };
-    let platform = match inspect_platform(rt, reference) {
+    let (platform, config) = match inspect_image(rt, reference) {
         Ok(p) => p,
         Err(e) => {
             phase.abandon();
             return Err(e);
         }
     };
-    let config = inspect_config(rt, reference).unwrap_or_default();
+    let config = config.unwrap_or_default();
     let root = temp_root();
     let mut notes = vec![format!("platform {platform} (resolved by {rt})")];
 
@@ -279,26 +279,28 @@ pub fn acquire(reference: &str, layered: bool, ui: &Ui) -> Result<Image> {
         config,
         layers: Vec::new(),
         removed_secrets: Vec::new(),
-        owner: HashMap::new(),
+        owner: BTreeMap::new(),
         root,
         archive: None,
     })
 }
 
-/// The image's declared runtime configuration.
+/// `image inspect` asks for the platform and the declared runtime configuration
+/// at once — two lines, one runtime call (it was one each).
+const INSPECT_FORMAT: &str = "{{.Os}}/{{.Architecture}}\n{{json .Config}}";
+
+/// Split [`INSPECT_FORMAT`]'s output into the platform and the configuration.
 ///
-/// Best-effort: a runtime that reports an unfamiliar shape costs the config
-/// checks, not the scan. Every runtime in [`RUNTIMES`] exposes it under the same
-/// `Config` key, so in practice this is one small call that always answers.
-fn inspect_config(rt: &str, reference: &str) -> Option<image_config::Config> {
-    let out = Command::new(rt)
-        .args(["image", "inspect", "--format", "{{json .Config}}", reference])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    serde_json::from_slice(&out.stdout).ok()
+/// The configuration is best-effort: a runtime that reports an unfamiliar shape
+/// costs the config checks, not the scan. Every runtime in [`RUNTIMES`] exposes
+/// it under the same `Config` key, so in practice it always answers.
+fn parse_inspect(stdout: &[u8]) -> (String, Option<image_config::Config>) {
+    let text = String::from_utf8_lossy(stdout);
+    let (platform, config) = text.split_once('\n').unwrap_or((&text, ""));
+    (
+        platform.trim().to_string(),
+        serde_json::from_str(config.trim()).ok(),
+    )
 }
 
 /// Every project root inside an extracted image.
@@ -349,25 +351,20 @@ fn has_marker(dir: &Path) -> bool {
     MARKERS.iter().any(|m| dir.join(m).is_file())
 }
 
-/// `os/arch` the reference resolves to on this daemon. Doubles as the check that
-/// the daemon is reachable and the reference exists — `docker image inspect`
-/// does not pull, so a missing image is reported here rather than halfway
-/// through an export.
-fn inspect_platform(rt: &str, reference: &str) -> Result<String> {
+/// `os/arch` the reference resolves to on this daemon, and its declared runtime
+/// configuration (see [`parse_inspect`]). Doubles as the check that the daemon
+/// is reachable and the reference exists — `docker image inspect` does not
+/// pull, so a missing image is reported here rather than halfway through an
+/// export.
+fn inspect_image(rt: &str, reference: &str) -> Result<(String, Option<image_config::Config>)> {
     let out = Command::new(rt)
-        .args([
-            "image",
-            "inspect",
-            "--format",
-            "{{.Os}}/{{.Architecture}}",
-            reference,
-        ])
+        .args(["image", "inspect", "--format", INSPECT_FORMAT, reference])
         .output()
         .with_context(|| format!("running `{rt} image inspect` — is the daemon running?"))?;
     if out.status.success() {
-        let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        let (p, config) = parse_inspect(&out.stdout);
         if !p.is_empty() {
-            return Ok(p);
+            return Ok((p, config));
         }
     }
     // Not present locally: pull it, then ask again. Pulling is the one network
@@ -385,13 +382,7 @@ fn inspect_platform(rt: &str, reference: &str) -> Result<String> {
         );
     }
     let out = Command::new(rt)
-        .args([
-            "image",
-            "inspect",
-            "--format",
-            "{{.Os}}/{{.Architecture}}",
-            reference,
-        ])
+        .args(["image", "inspect", "--format", INSPECT_FORMAT, reference])
         .output()
         .with_context(|| format!("running `{rt} image inspect`"))?;
     if !out.status.success() {
@@ -400,7 +391,7 @@ fn inspect_platform(rt: &str, reference: &str) -> Result<String> {
             String::from_utf8_lossy(&out.stderr).trim()
         );
     }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    Ok(parse_inspect(&out.stdout))
 }
 
 /// Create a container from `reference` without starting it, returning its id.
@@ -581,6 +572,18 @@ fn purge(root: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One `image inspect` answers both questions; an unreadable config costs
+    /// only the config.
+    #[test]
+    fn inspect_output_splits_into_platform_and_config() {
+        let (p, c) = parse_inspect(b"linux/arm64\n{\"User\":\"app\",\"Env\":[\"A=1\"]}\n");
+        assert_eq!(p, "linux/arm64");
+        assert_eq!(c.map(|c| c.user), Some("app".to_string()));
+        let (p, c) = parse_inspect(b"linux/amd64\nnull\n");
+        assert_eq!(p, "linux/amd64");
+        assert!(c.is_none());
+    }
 
     /// A scratch tree that cleans itself up, so the walk tests touch no fixture.
     struct Tmp(PathBuf);

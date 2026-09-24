@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use crate::model::{Dependency, Ecosystem, LicenseSource, Scope};
@@ -90,28 +90,43 @@ fn parse_poetry(path: &Path) -> Result<Vec<Dependency>> {
     let lock: PoetryLock = toml::from_str(&text)
         .with_context(|| format!("parsing {} as poetry.lock", path.display()))?;
 
-    let by_name: BTreeMap<String, &PoetryPkg> =
-        lock.package.iter().map(|p| (norm(&p.name), p)).collect();
-
-    let mut out = Vec::with_capacity(lock.package.len());
-    for pkg in &lock.package {
-        let mut parents = Vec::new();
-        for other in &lock.package {
-            if other.name == pkg.name {
-                continue;
-            }
-            if other
-                .dependencies
-                .keys()
-                .any(|k| norm(k) == norm(&pkg.name))
-            {
-                parents.push((other.name.clone(), other.version.clone()));
+    // Reverse index: normalised dependency name → indices of the packages that
+    // declare it, ascending and deduplicated. Every package used to scan every
+    // other package's dependency keys with two `norm` allocations per compare —
+    // O(P²·d), ~40 M allocations for a 1 000-package lock.
+    let names: Vec<String> = lock.package.iter().map(|p| norm(&p.name)).collect();
+    let mut dependents: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, p) in lock.package.iter().enumerate() {
+        for k in p.dependencies.keys() {
+            let v = dependents.entry(norm(k)).or_default();
+            if v.last() != Some(&i) {
+                v.push(i);
             }
         }
+    }
+    // `referenced` only ever looked at the *last* package of each normalised
+    // name (a name-keyed map kept the last one); `is_last` keeps that exactly.
+    let mut last_of: HashMap<&str, usize> = HashMap::new();
+    for (i, n) in names.iter().enumerate() {
+        last_of.insert(n, i);
+    }
+    let is_last: Vec<bool> = names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| last_of[n.as_str()] == i)
+        .collect();
+
+    let mut out = Vec::with_capacity(lock.package.len());
+    for (pkg, n) in lock.package.iter().zip(&names) {
+        let declarers = dependents.get(n).map(Vec::as_slice).unwrap_or_default();
+        let parents = declarers
+            .iter()
+            .map(|&i| &lock.package[i])
+            .filter(|other| other.name != pkg.name)
+            .map(|other| (other.name.clone(), other.version.clone()))
+            .collect();
         // direct = nobody depends on it AND it's listed under main category (best-effort)
-        let referenced = by_name
-            .values()
-            .any(|p| p.dependencies.keys().any(|k| norm(k) == norm(&pkg.name)));
+        let referenced = declarers.iter().any(|&i| is_last[i]);
         let direct = !referenced
             && pkg
                 .category

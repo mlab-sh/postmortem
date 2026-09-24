@@ -32,6 +32,7 @@ mod net;
 mod registry;
 mod repo;
 mod signal;
+pub use history::{NpmPackument, NpmVersion};
 pub use registry::apply_licenses;
 pub use repo::{Host, RepoRef};
 pub use signal::RiskSignal;
@@ -48,8 +49,10 @@ use crate::cache::Cache;
 use crate::model::{DepRef, Dependency, Ecosystem, Severity};
 use crate::settings::TreeSettings;
 use crate::ui::Ui;
-use history::{fresh_age_hours, maintainer_names, newborn_age_days};
-use registry::{raw_licenses_from, registry_url, registry_url_fallback, repo_candidates};
+use history::{HistoryDoc, fresh_age_hours, maintainer_names, newborn_age_days};
+use registry::{
+    npm_licenses, raw_licenses_from, registry_url, registry_url_fallback, repo_candidates,
+};
 use repo::{parse_repo, urlencode};
 
 /// The source repo an npm version manifest points at, on a known host.
@@ -132,8 +135,26 @@ struct CachedRepo {
     maintainers: Vec<String>,
 }
 
+/// npm's registry record for `version`, read from its packument entry — the
+/// same fields, and so the same record, the version manifest used to give. The
+/// maintainer set stays `version_meta`'s, as before.
+fn npm_record(p: &NpmPackument, version: &str) -> CachedRepo {
+    let ver = p.versions.as_ref().and_then(|v| v.get(version));
+    CachedRepo {
+        repo: ver
+            .and_then(NpmVersion::repo_url)
+            .and_then(|u| parse_repo(&u)),
+        licenses: ver
+            .map(|v| npm_licenses(v.license.as_ref(), v.licenses.as_ref()))
+            .unwrap_or_default(),
+        maintainers: Vec::new(),
+    }
+}
+
 pub struct Resolver {
     agents: crate::settings::Agents,
+    gates: net::Gates,
+    inflight: net::InFlight,
     cache: Cache,
     tokens: Tokens,
     /// Base URLs, overridable for internal mirrors / GitHub Enterprise.
@@ -158,6 +179,8 @@ impl Resolver {
     ) -> Self {
         Resolver {
             agents: net.agents(Duration::from_secs(15)),
+            gates: net::Gates::new(tokens.github.is_some()),
+            inflight: Default::default(),
             cache: Cache::open(),
             tokens,
             endpoints: net.endpoints.clone(),
@@ -186,13 +209,12 @@ impl Resolver {
         self
     }
 
-    /// How many packages to resolve concurrently. Each unit is a blocking
-    /// registry+host round-trip (I/O-bound), so we oversubscribe cores. GitHub's
-    /// anonymous 60/h (plus secondary abuse limits) is the tightest budget, so
-    /// without a GitHub token we stay gentle; with one we fan out wide.
-    fn concurrency(&self) -> usize {
-        if self.tokens.github.is_some() { 8 } else { 2 }
-    }
+    /// How many packages to resolve concurrently. Each unit is mostly blocking
+    /// I/O (cache reads, registry and host round-trips), so we oversubscribe
+    /// cores. The hosts' budgets are enforced per request by [`net::Gates`],
+    /// not here: capping *packages* at GitHub's gentle 2 used to hold npm,
+    /// PyPI and every cache hit to 2 at a time as well.
+    const WORKERS: usize = 16;
 
     /// Resolve every unique dependency to its repo + stats, keyed by
     /// `(name, version)`, across a small pool of worker threads. Best-effort: a
@@ -202,6 +224,18 @@ impl Resolver {
         let mut unique: Vec<&Dependency> = deps.iter().collect();
         unique.sort_by(|a, b| (&a.name, &a.version).cmp(&(&b.name, &b.version)));
         unique.dedup_by(|a, b| a.name == b.name && a.version == b.version);
+
+        // All versions of a name go to one worker, one after another: their
+        // release history is one document per name, so the worker fetches it
+        // once for the lot instead of once per version.
+        let mut groups: Vec<&[&Dependency]> = Vec::new();
+        let mut rest = unique.as_slice();
+        while let Some(first) = rest.first() {
+            let n = rest.iter().take_while(|d| d.name == first.name).count();
+            let (group, tail) = rest.split_at(n);
+            groups.push(group);
+            rest = tail;
+        }
 
         let total = unique.len();
         // gochi rides the loading line, eyes darting while data streams in.
@@ -214,28 +248,32 @@ impl Resolver {
         let cursor = AtomicUsize::new(0);
         let flagged = AtomicUsize::new(0);
         let out: Mutex<HashMap<DepRef, Resolution>> = Mutex::new(HashMap::with_capacity(total));
-        let workers = self.concurrency().min(total);
+        let workers = Self::WORKERS.min(groups.len());
 
         std::thread::scope(|scope| {
             for _ in 0..workers {
                 scope.spawn(|| {
                     loop {
                         let i = cursor.fetch_add(1, Ordering::Relaxed);
-                        if i >= total {
+                        let Some(group) = groups.get(i) else {
                             break;
+                        };
+                        // Dropped with the group, so a worker holds at most one
+                        // (possibly multi-MB) history document at a time.
+                        let mut history = None;
+                        for &dep in *group {
+                            let res = self.resolve_one(dep, &mut history);
+                            if res
+                                .worst
+                                .is_some_and(|s| s >= crate::model::Severity::Medium)
+                            {
+                                flagged.fetch_add(1, Ordering::Relaxed);
+                            }
+                            out.lock()
+                                .unwrap()
+                                .insert((dep.name.clone(), dep.version.clone()), res);
+                            bar.inc();
                         }
-                        let dep = unique[i];
-                        let res = self.resolve_one(dep);
-                        if res
-                            .worst
-                            .is_some_and(|s| s >= crate::model::Severity::Medium)
-                        {
-                            flagged.fetch_add(1, Ordering::Relaxed);
-                        }
-                        out.lock()
-                            .unwrap()
-                            .insert((dep.name.clone(), dep.version.clone()), res);
-                        bar.inc();
                     }
                 });
             }
@@ -251,9 +289,9 @@ impl Resolver {
         out
     }
 
-    fn resolve_one(&self, dep: &Dependency) -> Resolution {
+    fn resolve_one(&self, dep: &Dependency, history: &mut history::Fetched) -> Resolution {
         let mut res = Resolution::default();
-        let record = self.registry_record(dep);
+        let record = self.registry_record(dep, history);
         if let Ok(r) = &record {
             // Normalized here, never in the cache — see `CachedRepo`.
             res.licenses = crate::license::resolve_raw(&r.licenses);
@@ -295,7 +333,7 @@ impl Resolver {
         // release history rather than a current view. Which of these a given
         // ecosystem can actually answer is `VersionMeta`'s table — a signal it
         // cannot evaluate is absent, never a clean `false`.
-        if let Ok(Some(meta)) = self.version_meta(dep) {
+        if let Ok(Some(meta)) = self.version_meta(dep, history) {
             if !meta.maintainers.is_empty() {
                 res.maintainers = meta.maintainers.clone();
             }
@@ -359,7 +397,15 @@ impl Resolver {
     /// The registry-derived facts for a dependency: its source repo and its
     /// declared license. Both come from the *same* document, so adding licenses
     /// costs no extra request — and both are cached together under one key.
-    fn registry_record(&self, dep: &Dependency) -> Result<CachedRepo> {
+    ///
+    /// `history` is the worker's history-document slot (see
+    /// [`Self::version_meta`]): where the registry record and the release
+    /// history live in one document, it is fetched once for both.
+    fn registry_record(
+        &self,
+        dep: &Dependency,
+        history: &mut history::Fetched,
+    ) -> Result<CachedRepo> {
         // Go's module path *is* its repo, so the repo needs no request at all.
         // The license does: it is the one ecosystem where postmortem makes a
         // call it would not otherwise make, so it is skipped unless the caller
@@ -409,47 +455,87 @@ impl Resolver {
         if let Some(hit) = self.cache.get::<CachedRepo>("registry", &key) {
             return Ok(hit);
         }
+        // npm: the version's entry in the packument, which `version_meta` reads
+        // the release history from. The version-manifest endpoint serves that
+        // same entry, so reading it here makes a package one request per name
+        // instead of one per version plus the packument.
+        if dep.ecosystem == Ecosystem::Node
+            && let Some((_, url)) = self.history_source(dep)
+        {
+            let record = match self.history_doc(&url, true, history)? {
+                Some(HistoryDoc::Npm(p)) => npm_record(p, &dep.version),
+                _ => CachedRepo::default(), // 404 — unpublished/private/unknown package
+            };
+            self.cache.put("registry", &key, &record);
+            return Ok(record);
+        }
         let Some(url) = registry_url(dep, &self.endpoints) else {
             return Ok(CachedRepo::default());
         };
-        let doc = match self.get_json(&url, &[])? {
-            Some(v) => Some(v),
-            // Some registries only expose the *pinned* version through a second
-            // endpoint, and that one 404s for versions they never served (yanked
-            // releases, platform-suffixed gems). Fall back to the name-only
-            // document rather than lose the repo entirely — the license it
-            // carries is then the latest version's, which `licenses_from` knows.
-            None => match registry_url_fallback(dep, &self.endpoints) {
-                Some(fb) => self.get_json(&fb, &[])?,
-                None => None,
-            },
+        // PyPI's name-only document — fetched for the release history anyway —
+        // describes the latest release. When that is the pinned version, it is
+        // the pinned document already, and the version-pinned request is moot.
+        let latest_is_pinned = dep.ecosystem == Ecosystem::Python
+            && self.history_source(dep).is_some_and(|(_, u)| {
+                matches!(
+                    self.history_doc(&u, false, history),
+                    Ok(Some(HistoryDoc::Json(v)))
+                        if v.pointer("/info/version").and_then(|x| x.as_str())
+                            == Some(dep.version.as_str())
+                )
+            });
+        let pinned = if latest_is_pinned {
+            None
+        } else {
+            self.get_json(&url, &[])?
+        };
+        // Some registries only expose the *pinned* version through a second
+        // endpoint, and that one 404s for versions they never served (yanked
+        // releases, platform-suffixed gems). Fall back to the name-only document
+        // rather than lose the repo entirely — the license it carries is then
+        // the latest version's, which `licenses_from` knows. PyPI's is the
+        // history document, so it comes out of the slot.
+        let fallback;
+        let fb_url = registry_url_fallback(dep, &self.endpoints);
+        let doc: Option<&serde_json::Value> = match (&pinned, fb_url) {
+            (Some(v), _) => Some(v),
+            (None, None) => None,
+            (None, Some(fb)) if dep.ecosystem == Ecosystem::Python => {
+                match self.history_doc(&fb, false, history)? {
+                    Some(HistoryDoc::Json(v)) => Some(v),
+                    _ => None,
+                }
+            }
+            (None, Some(fb)) => {
+                fallback = self.get_json(&fb, &[])?;
+                fallback.as_ref()
+            }
         };
         // crates.io answers both "where is the repo" and "what did the release
         // history look like" out of the one document just fetched, so derive the
         // history here and file it under `version_meta`'s namespace: the Rust
-        // path then costs no second request. npm and PyPI keep their history in
-        // a *different* document, so they stay `version_meta`'s business.
+        // path then costs no second request.
         if dep.ecosystem == Ecosystem::Rust
-            && let Some(v) = &doc
-            && let Some((ns, _, read)) = self.history_source(dep)
+            && let Some(v) = doc
+            && let Some((ns, _)) = self.history_source(dep)
         {
             let meta_key = format!("{}@{}", dep.name, dep.version);
-            self.cache.put(ns, &meta_key, &read(v, &dep.version));
+            self.cache.put(
+                ns,
+                &meta_key,
+                &history::compute_version_meta_crates(v, &dep.version),
+            );
         }
-        let licenses = doc
-            .as_ref()
-            .map(|v| raw_licenses_from(dep, v))
-            .unwrap_or_default();
+        let licenses = doc.map(|v| raw_licenses_from(dep, v)).unwrap_or_default();
         // Packagist publishes the maintainer set in the same document; npm's
         // comes from the packument, and the other registries need a call we do
         // not make — those stay empty, meaning *unknown*, never "nobody".
         let maintainers = doc
-            .as_ref()
             .filter(|_| dep.ecosystem == Ecosystem::Php)
             .and_then(|v| v.get("package"))
             .map(|p| maintainer_names(p.get("maintainers")))
             .unwrap_or_default();
-        let mut repo = match &doc {
+        let mut repo = match doc {
             Some(v) => repo_candidates(dep.ecosystem, v)
                 .iter()
                 .find_map(|u| parse_repo(u)),
@@ -480,5 +566,65 @@ impl Resolver {
         };
         self.cache.put("registry", &key, &record);
         Ok(record)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The npm record read from the packument must be the record the version
+    /// manifest gave — same repo, same raw licenses, same cached JSON — or every
+    /// cache entry written from now on would differ from the ones before it.
+    #[test]
+    fn npm_record_from_the_packument_matches_the_version_manifest() {
+        let doc = serde_json::json!({
+            "name": "p",
+            "maintainers": [{ "name": "alice" }],
+            "readme": "a long readme the typed parse skips",
+            "time": { "1.0.0": "2020-01-01T00:00:00.000Z" },
+            "versions": {
+                "1.0.0": { "name": "p", "version": "1.0.0", "license": "MIT",
+                           "repository": { "type": "git", "url": "git+https://github.com/o/r.git" },
+                           "dependencies": { "x": "^1" }, "_npmUser": { "name": "alice" } },
+                "2.0.0": { "license": { "type": "ISC" }, "repository": "github:o/r2" },
+                "3.0.0": { "license": null, "repository": null,
+                           "licenses": [{ "type": "MIT" }, { "type": "Apache-2.0" }] },
+                "4.0.0": { "license": ["BSD-2-Clause", { "type": "0BSD" }],
+                           "repository": "https://example.com/not-a-known-host" },
+                "5.0.0": {},
+            }
+        });
+        let packument: NpmPackument = serde_json::from_value(doc.clone()).unwrap();
+        for v in ["1.0.0", "2.0.0", "3.0.0", "4.0.0", "5.0.0", "9.9.9"] {
+            let dep = Dependency {
+                name: "p".into(),
+                version: v.into(),
+                ecosystem: Ecosystem::Node,
+                direct: true,
+                scope: Default::default(),
+                licenses: Vec::new(),
+                license_source: Default::default(),
+                resolved_url: None,
+                integrity: None,
+                parents: Vec::new(),
+            };
+            // What `/{name}/{version}` served: that entry, or a 404.
+            let old = match doc["versions"].get(v) {
+                Some(manifest) => CachedRepo {
+                    repo: repo_candidates(Ecosystem::Node, manifest)
+                        .iter()
+                        .find_map(|u| parse_repo(u)),
+                    licenses: raw_licenses_from(&dep, manifest),
+                    maintainers: Vec::new(),
+                },
+                None => CachedRepo::default(),
+            };
+            assert_eq!(
+                serde_json::to_value(npm_record(&packument, v)).unwrap(),
+                serde_json::to_value(&old).unwrap(),
+                "{v}"
+            );
+        }
     }
 }

@@ -14,8 +14,6 @@
 //! dependency** (`node_modules/…`) is abnormal on its face — dependencies have no
 //! business shipping editor/agent autostart — so it's flagged outright.
 
-use std::path::Path;
-
 use crate::analyze::util;
 use crate::model::{Category, Finding, Severity};
 
@@ -31,13 +29,13 @@ const DEP_DIRS: &[&str] = &[
     "bower_components",
 ];
 
-pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
-    for path in util::walk_files(root, &["json", "mjs", "pth"]) {
+pub fn scan_dir(list: &util::Listing, out: &mut Vec<Finding>) {
+    for path in list.files(list.root(), &["json", "mjs", "pth"]) {
         // Python `.pth` files: `site.py` executes any line beginning `import` at
         // every interpreter startup — a stealth autostart surface (LiteLLM's
         // `litellm_init.pth`). Not confined to a config dir, so handled first.
         if path.extension().and_then(|e| e.to_str()) == Some("pth") {
-            if let Ok(text) = std::fs::read_to_string(&path)
+            if let Some(text) = super::read_lossy(&path)
                 && text.lines().any(|l| {
                     let l = l.trim_start();
                     l.starts_with("import ") || l.contains("exec(") || l.contains("os.system")
@@ -60,26 +58,25 @@ pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
             }
             continue;
         }
-        let comps: Vec<String> = path
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().to_lowercase())
-            .collect();
-        // Only files living under an editor/agent config directory are of interest.
-        if !comps.iter().any(|c| IDE_DIRS.contains(&c.as_str())) {
+        // Components are matched in place, ASCII case-insensitively: this runs
+        // on every JSON file in the tree, and collecting them as lowercased
+        // `String`s first was an allocation per component per file.
+        let is_one_of = |c: std::path::Component, set: &[&'static str]| {
+            set.iter()
+                .copied()
+                .find(|d| c.as_os_str().eq_ignore_ascii_case(d))
+        };
+        // Only files living under an editor/agent config directory are of
+        // interest; `ide` is the innermost one, as `IDE_DIRS` spells it.
+        let Some(ide) = path.components().rev().find_map(|c| is_one_of(c, IDE_DIRS)) else {
             continue;
-        }
-        let in_dependency = comps.iter().any(|c| DEP_DIRS.contains(&c.as_str()));
+        };
+        let in_dependency = path.components().any(|c| is_one_of(c, DEP_DIRS).is_some());
         let fname = path
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_lowercase();
-        let ide = comps
-            .iter()
-            .rev()
-            .find(|c| IDE_DIRS.contains(&c.as_str()))
-            .cloned()
-            .unwrap_or_default();
 
         let hit: Option<(Severity, String)> = if fname.ends_with(".mjs")
             || fname.ends_with("_init.js")
@@ -93,7 +90,7 @@ pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
                 ),
             ))
         } else if fname == "tasks.json" {
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let Some(text) = super::read_lossy(&path) else {
                 continue;
             };
             text.contains("folderOpen").then(|| {
@@ -101,7 +98,7 @@ pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
                 (sev, format!("`{ide}/tasks.json` auto-runs a task on folder-open (runOn: folderOpen) — code executes just by opening the repo"))
             })
         } else if fname == "settings.json" {
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let Some(text) = super::read_lossy(&path) else {
                 continue;
             };
             let has_hook = text.contains("SessionStart")
@@ -159,6 +156,7 @@ pub fn scan_dir(root: &Path, out: &mut Vec<Finding>) {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
 
     fn write(dir: &Path, rel: &str, body: &str) {
         let p = dir.join(rel);
@@ -185,7 +183,7 @@ mod tests {
         );
 
         let mut out = Vec::new();
-        scan_dir(&tmp, &mut out);
+        scan_dir(&util::Listing::walk(&tmp), &mut out);
         let details: Vec<&str> = out.iter().map(|f| f.detail.as_str()).collect();
 
         assert!(
@@ -218,7 +216,7 @@ mod tests {
             r#"{"hooks":{"SessionStart":[{"command":"node .claude/setup.mjs"}]}}"#,
         );
         let mut out = Vec::new();
-        scan_dir(&tmp, &mut out);
+        scan_dir(&util::Listing::walk(&tmp), &mut out);
         assert!(
             out.iter()
                 .any(|f| f.detail.contains("SessionStart") && f.severity == Severity::High),
@@ -238,7 +236,7 @@ mod tests {
         );
         write(&tmp, "site-packages/normal.pth", "../src"); // a benign path-only .pth
         let mut out = Vec::new();
-        scan_dir(&tmp, &mut out);
+        scan_dir(&util::Listing::walk(&tmp), &mut out);
         let pth: Vec<_> = out.iter().filter(|f| f.detail.contains(".pth")).collect();
         assert_eq!(pth.len(), 1, "only the executable .pth is flagged");
         assert_eq!(pth[0].severity, Severity::High);

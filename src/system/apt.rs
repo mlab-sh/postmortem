@@ -26,14 +26,18 @@ use super::*;
 
 /// Read this machine's installed dpkg forest. See [`apt_inventory_at`].
 pub fn apt_inventory(opts: Opts) -> Result<Inventory> {
-    apt_inventory_at(Path::new("/"), opts)
+    apt_inventory_at(Path::new("/"), opts).map(|(inv, _)| inv)
 }
 
 /// Read the installed dpkg forest under `root` into an [`Inventory`].
 ///
 /// `root` is `/` for this machine and an extracted image root for `--image`.
-/// Everything below resolves against it.
-pub fn apt_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
+/// Everything below resolves against it. The file index the persistence signals
+/// are read from comes back too (see [`super::inventory_at`]).
+pub fn apt_inventory_at(
+    root: &Path,
+    opts: Opts,
+) -> Result<(Inventory, HashMap<String, Vec<String>>)> {
     // Only this machine can be asked questions that need a running apt.
     let live = root == Path::new("/");
 
@@ -51,17 +55,48 @@ pub fn apt_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
     // `.deb`: apt-cache policy shows only /var/lib/dpkg/status for both, so it is
     // already reported as `third-party-source (manual)` rather than mislabeling
     // every sideloaded vendor `.deb` as obsolete.)
-    let prov = if live {
-        apt_provenance(&names)
-    } else {
-        HashMap::new()
-    };
+    //
+    // The shell-outs are independent and used to run end to end. `dpkg --verify`
+    // re-hashes every installed file and dominates, so it starts first; the
+    // policy lookup, the upgrade list, the setuid `find` and the keyring probes
+    // run beside it, and the file reads below overlap them too.
+    let (prov, setuid, outdated, expired, modified) = std::thread::scope(|s| {
+        let modified = s.spawn(|| {
+            if live && !opts.skip_integrity {
+                apt_modified_files()
+            } else {
+                0
+            }
+        });
+        let prov = s.spawn(|| {
+            if live {
+                apt_provenance(&names)
+            } else {
+                HashMap::new()
+            }
+        });
+        let outdated = s.spawn(|| if live { apt_outdated() } else { HashMap::new() });
+        let expired = s.spawn(|| {
+            if opts.skip_integrity {
+                0
+            } else {
+                apt_expired_keys_at(root)
+            }
+        });
+        let setuid = find_setuid_files_at(root);
+        (
+            prov.join().unwrap_or_default(),
+            setuid,
+            outdated.join().unwrap_or_default(),
+            expired.join().unwrap_or(0),
+            modified.join().unwrap_or(0),
+        )
+    });
     let held = apt_held_at(&stanzas);
     let foreign = apt_foreign_arch_at(&stanzas);
     // Execution & privilege surface: what each package's installed files set up
     // (services, timers, auth config, setuid bins) + file-hijacking diversions.
-    let list_index = apt_list_index_at(root);
-    let setuid = find_setuid_files_at(root);
+    let file_index = apt_file_index_at(root);
     let diversions = apt_diversions_at(root);
     let mut signals: HashMap<String, Vec<SysSignal>> = HashMap::new();
     for d in &deps {
@@ -128,9 +163,8 @@ pub fn apt_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
         }
         // Execution & privilege: the boot/login/scheduled/auth/setuid surface a
         // package sets up through the files it ships.
-        if let Some(paths) = list_index.get(&d.name) {
-            let files = read_pkg_files(paths);
-            for sig in persistence_signals(&files, &setuid) {
+        if let Some(files) = file_index.get(&d.name) {
+            for sig in persistence_signals(files, &setuid) {
                 push_signal(&mut signals, &d.name, sig);
             }
         }
@@ -150,7 +184,7 @@ pub fn apt_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
     }
 
     if live {
-        for (name, (old, new)) in apt_outdated() {
+        for (name, (old, new)) in outdated {
             signals
                 .entry(name)
                 .or_default()
@@ -158,7 +192,6 @@ pub fn apt_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
         }
     }
 
-    let _ = opts; // apt reputation comes from the shared `--online` path
     let direct = deps.iter().filter(|d| d.direct).count();
     let summary = format!("{} package(s) ({direct} manually installed)", deps.len());
 
@@ -206,14 +239,12 @@ pub fn apt_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
             "legacy monolithic keyring /etc/apt/trusted.gpg in use (trusts every source)".into(),
         );
     }
-    let expired = apt_expired_keys_at(root);
     if expired > 0 {
         warnings.push(format!(
             "{expired} expired signing key(s) in the apt keyring"
         ));
     }
     if live {
-        let modified = apt_modified_files();
         if modified > 0 {
             warnings.push(format!(
                 "{modified} installed file(s) modified since install (md5 mismatch)"
@@ -230,7 +261,7 @@ pub fn apt_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
         );
     }
 
-    Ok(Inventory {
+    let inv = Inventory {
         manager: "apt",
         deps,
         repos,
@@ -238,7 +269,8 @@ pub fn apt_inventory_at(root: &Path, opts: Opts) -> Result<Inventory> {
         claims: Vec::new(),
         summary,
         notes: warnings,
-    })
+    };
+    Ok((inv, file_index))
 }
 
 /// Count apt sources that disable signature verification (`[trusted=yes]` in a
@@ -317,31 +349,34 @@ fn apt_expired_keys_at(root: &Path) -> usize {
     if now == 0 {
         return 0;
     }
-    apt_keyring_files_at(root)
-        .iter()
-        .map(|f| {
-            let Ok(out) = Command::new("gpg")
-                .args(["--show-keys", "--with-colons"])
-                .arg(f)
-                .output()
-            else {
-                return 0;
-            };
-            if !out.status.success() {
-                return 0;
-            }
-            String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .filter(|l| l.starts_with("pub:"))
-                .filter(|l| {
-                    l.split(':')
-                        .nth(6)
-                        .and_then(|e| e.parse::<u64>().ok())
-                        .is_some_and(|exp| exp != 0 && exp < now)
-                })
-                .count()
-        })
-        .sum()
+    // One `gpg` per file, concurrently: a single `gpg --show-keys` over every
+    // file can't say which file an unreadable key came from, and a file gpg
+    // rejects must count as zero on its own without zeroing the others.
+    let files = apt_keyring_files_at(root);
+    par_map(&files, files.len(), |f| {
+        let Ok(out) = Command::new("gpg")
+            .args(["--show-keys", "--with-colons"])
+            .arg(f)
+            .output()
+        else {
+            return 0;
+        };
+        if !out.status.success() {
+            return 0;
+        }
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.starts_with("pub:"))
+            .filter(|l| {
+                l.split(':')
+                    .nth(6)
+                    .and_then(|e| e.parse::<u64>().ok())
+                    .is_some_and(|exp| exp != 0 && exp < now)
+            })
+            .count()
+    })
+    .into_iter()
+    .sum()
 }
 
 /// Count installed files whose content was modified since install (`dpkg --verify`
@@ -601,52 +636,63 @@ struct AptProv {
 /// (source host + archive component). Maps `name → AptProv`. Best-effort; a name
 /// missing from the map just has no policy data.
 fn apt_provenance(names: &[String]) -> HashMap<String, AptProv> {
+    // Each chunk is its own `apt-cache` process; they run concurrently and are
+    // merged in chunk order, so a name repeated across chunks (a multiarch
+    // package) resolves exactly as it did serially.
+    let chunks: Vec<&[String]> = names.chunks(400).collect();
     let mut out = HashMap::new();
-    for chunk in names.chunks(400) {
-        let Ok(res) = Command::new("apt-cache").arg("policy").args(chunk).output() else {
-            continue;
-        };
-        if !res.status.success() {
-            continue;
-        }
-        let text = String::from_utf8_lossy(&res.stdout);
-        let mut cur: Option<String> = None;
-        let mut in_installed = false;
-        for line in text.lines() {
-            if !line.starts_with(' ') && line.ends_with(':') {
-                cur = Some(line.trim_end_matches(':').to_string());
-                in_installed = false;
-            } else if line.starts_with(" *** ") {
-                in_installed = true; // the installed version's source lines follow
-            } else if in_installed && line.trim_start().starts_with(|c: char| c.is_ascii_digit()) {
-                // e.g. "  500 http://.../ubuntu jammy/universe amd64 Packages" or
-                // "  100 /var/lib/dpkg/status"
-                let toks: Vec<&str> = line.split_whitespace().collect();
-                let src = toks.get(1).copied().unwrap_or("");
-                // The suite/component token ("jammy/universe") → its component half.
-                let component = toks
-                    .get(2)
-                    .and_then(|s| s.split('/').nth(1))
-                    .map(str::to_string);
-                if let Some(host) = host_domain(src) {
-                    if let Some(name) = cur.take() {
-                        let source = (!apt_official_host(&host)).then_some(host);
-                        out.insert(name, AptProv { source, component });
-                    }
-                    in_installed = false;
-                } else if src.starts_with("/var/lib/dpkg") {
-                    // Only the local status file backs this version → manual .deb.
-                    if let Some(name) = cur.take() {
-                        out.insert(
-                            name,
-                            AptProv {
-                                source: Some("manual".into()),
-                                component: None,
-                            },
-                        );
-                    }
-                    in_installed = false;
+    for part in par_map(&chunks, 4, |chunk| apt_policy_chunk(chunk)) {
+        out.extend(part);
+    }
+    out
+}
+
+/// One `apt-cache policy` call over `chunk`, parsed. See [`apt_provenance`].
+fn apt_policy_chunk(chunk: &[String]) -> HashMap<String, AptProv> {
+    let mut out = HashMap::new();
+    let Ok(res) = Command::new("apt-cache").arg("policy").args(chunk).output() else {
+        return out;
+    };
+    if !res.status.success() {
+        return out;
+    }
+    let text = String::from_utf8_lossy(&res.stdout);
+    let mut cur: Option<String> = None;
+    let mut in_installed = false;
+    for line in text.lines() {
+        if !line.starts_with(' ') && line.ends_with(':') {
+            cur = Some(line.trim_end_matches(':').to_string());
+            in_installed = false;
+        } else if line.starts_with(" *** ") {
+            in_installed = true; // the installed version's source lines follow
+        } else if in_installed && line.trim_start().starts_with(|c: char| c.is_ascii_digit()) {
+            // e.g. "  500 http://.../ubuntu jammy/universe amd64 Packages" or
+            // "  100 /var/lib/dpkg/status"
+            let toks: Vec<&str> = line.split_whitespace().collect();
+            let src = toks.get(1).copied().unwrap_or("");
+            // The suite/component token ("jammy/universe") → its component half.
+            let component = toks
+                .get(2)
+                .and_then(|s| s.split('/').nth(1))
+                .map(str::to_string);
+            if let Some(host) = host_domain(src) {
+                if let Some(name) = cur.take() {
+                    let source = (!apt_official_host(&host)).then_some(host);
+                    out.insert(name, AptProv { source, component });
                 }
+                in_installed = false;
+            } else if src.starts_with("/var/lib/dpkg") {
+                // Only the local status file backs this version → manual .deb.
+                if let Some(name) = cur.take() {
+                    out.insert(
+                        name,
+                        AptProv {
+                            source: Some("manual".into()),
+                            component: None,
+                        },
+                    );
+                }
+                in_installed = false;
             }
         }
     }
@@ -774,11 +820,10 @@ fn apt_list_index_at(root: &Path) -> HashMap<String, Vec<PathBuf>> {
     idx
 }
 
-/// `package name → the file paths it installed`, for layer attribution.
-///
-/// Separate from [`Inventory`] because only the image path needs it: the
-/// machine's own scan has no layers to attribute anything to.
-pub(super) fn apt_file_index_at(root: &Path) -> HashMap<String, Vec<String>> {
+/// `package name → the file paths it installed`, read from every `.list`
+/// manifest: the persistence signals' input, and the image path's layer
+/// attribution.
+fn apt_file_index_at(root: &Path) -> HashMap<String, Vec<String>> {
     apt_list_index_at(root)
         .into_iter()
         .map(|(name, paths)| (name, read_pkg_files(&paths)))

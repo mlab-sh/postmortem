@@ -33,22 +33,42 @@ use crate::model::{DepRef, Dependency, Scope};
 /// Idempotent, and a no-op for a graph whose parsers never seeded anything (all
 /// `Prod` in, all `Prod` out).
 pub fn propagate(deps: &mut [Dependency]) {
-    // Children by parent: `parents` points up, and we need to walk down.
-    let mut children: HashMap<DepRef, Vec<DepRef>> = HashMap::new();
-    for d in deps.iter() {
-        let me = (d.name.clone(), d.version.clone());
-        for p in &d.parents {
-            children.entry(p.clone()).or_default().push(me.clone());
+    // Every (name, version) gets a dense id; the walk then runs on ids. Keying
+    // the maps by owned `DepRef`s cost two clones per edge to build, a clone of
+    // each children `Vec` per dequeue and a tuple allocation per lookup. A
+    // duplicate (name, version) — the same package from two ecosystems — shares
+    // one id, as it shared one map key before.
+    let mut ids: HashMap<(&str, &str), u32> = HashMap::with_capacity(deps.len());
+    let id_of: Vec<u32> = deps
+        .iter()
+        .map(|d| {
+            let next = ids.len() as u32;
+            *ids.entry((d.name.as_str(), d.version.as_str()))
+                .or_insert(next)
+        })
+        .collect();
+
+    // Children by parent: `parents` points up, and we need to walk down. A
+    // parent that is not itself a node can never be queued, so it is dropped.
+    let mut children: Vec<Vec<u32>> = vec![Vec::new(); ids.len()];
+    for (d, &me) in deps.iter().zip(&id_of) {
+        for (pn, pv) in &d.parents {
+            if let Some(&p) = ids.get(&(pn.as_str(), pv.as_str())) {
+                children[p as usize].push(me);
+            }
         }
     }
+    drop(ids);
 
     // Seed from the direct dependencies — the only ones a manifest classified.
     // A non-direct package starts unassigned so it can inherit purely from above.
-    let mut best: HashMap<DepRef, Scope> = HashMap::new();
-    let mut queue: VecDeque<DepRef> = VecDeque::new();
-    for d in deps.iter().filter(|d| d.direct) {
-        let me = (d.name.clone(), d.version.clone());
-        let entry = best.entry(me.clone()).or_insert(d.scope);
+    let mut best: Vec<Option<Scope>> = vec![None; children.len()];
+    let mut queue: VecDeque<u32> = VecDeque::new();
+    for (d, &me) in deps.iter().zip(&id_of) {
+        if !d.direct {
+            continue;
+        }
+        let entry = best[me as usize].get_or_insert(d.scope);
         *entry = (*entry).max(d.scope);
         queue.push_back(me);
     }
@@ -57,17 +77,14 @@ pub fn propagate(deps: &mut [Dependency]) {
     // scope actually rises, so each node is processed at most three times (once
     // per scope level) — cycles in the graph terminate on their own.
     while let Some(node) = queue.pop_front() {
-        let Some(scope) = best.get(&node).copied() else {
+        let Some(scope) = best[node as usize] else {
             continue;
         };
-        let Some(kids) = children.get(&node) else {
-            continue;
-        };
-        for kid in kids.clone() {
-            let improved = match best.get(&kid) {
-                Some(cur) if *cur >= scope => false,
+        for &kid in &children[node as usize] {
+            let improved = match best[kid as usize] {
+                Some(cur) if cur >= scope => false,
                 _ => {
-                    best.insert(kid.clone(), scope);
+                    best[kid as usize] = Some(scope);
                     true
                 }
             };
@@ -77,9 +94,9 @@ pub fn propagate(deps: &mut [Dependency]) {
         }
     }
 
-    for d in deps.iter_mut() {
-        if let Some(s) = best.get(&(d.name.clone(), d.version.clone())) {
-            d.scope = *s;
+    for (d, &me) in deps.iter_mut().zip(&id_of) {
+        if let Some(s) = best[me as usize] {
+            d.scope = s;
         }
     }
 }

@@ -156,10 +156,11 @@ const NULL_VALUES: &[&str] = &[
 /// Strip everything that varies between spellings: case, spaces, punctuation.
 /// `Apache License 2.0` → `apachelicense20`.
 fn squash(s: &str) -> String {
+    // One pass, one allocation: filter and lowercase together.
     s.chars()
         .filter(|c| c.is_ascii_alphanumeric())
-        .collect::<String>()
-        .to_ascii_lowercase()
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
 }
 
 /// The canonical SPDX identifier for a single token, preserving official casing
@@ -171,15 +172,16 @@ fn canonical_id(token: &str) -> Option<String> {
     }
     // An exact SPDX id (case-insensitive) — the common, clean path. The table
     // already holds the official casing, so the hit is returned verbatim.
-    let lower = t.to_ascii_lowercase();
-    if let Some(hit) = SPDX_IDS.iter().find(|id| id.to_ascii_lowercase() == lower) {
+    // Compared in place: lowercasing each table entry per probe was ~80
+    // allocations per call, once per dependency per license.
+    if let Some(hit) = SPDX_IDS.iter().find(|id| id.eq_ignore_ascii_case(t)) {
         return Some((*hit).to_string());
     }
     // A `+` suffix is SPDX's deprecated "or later" (`GPL-2.0+`), valid on a known
     // id. `GPL-2.0` is itself deprecated in favour of the explicit forms, so map
     // straight to the `-or-later` spelling when it exists.
-    if let Some(base) = lower.strip_suffix('+')
-        && let Some(hit) = SPDX_IDS.iter().find(|id| id.to_ascii_lowercase() == base)
+    if let Some(base) = t.strip_suffix('+')
+        && let Some(hit) = SPDX_IDS.iter().find(|id| id.eq_ignore_ascii_case(base))
     {
         let or_later = format!("{hit}-or-later");
         if SPDX_IDS.contains(&or_later.as_str()) {
@@ -251,8 +253,11 @@ pub fn normalize(raw: &str) -> Option<License> {
 
 /// Does this look like an SPDX compound expression rather than a bare id?
 fn is_expression(raw: &str) -> bool {
-    raw.split_whitespace()
-        .any(|w| matches!(w.to_ascii_uppercase().as_str(), "OR" | "AND" | "WITH"))
+    raw.split_whitespace().any(|w| {
+        w.eq_ignore_ascii_case("OR")
+            || w.eq_ignore_ascii_case("AND")
+            || w.eq_ignore_ascii_case("WITH")
+    })
 }
 
 /// Normalize every operand of an expression, keeping the operators. Returns
