@@ -1,13 +1,13 @@
 {
-    "version": "2.6.0",
+    "version": "2.7.0",
     "description": "Supply-chain scanner. Flags malicious install code, typosquats, and shady provenance across your dependencies and your OS packages. Repo-reputation scoring, known-CVE intel, no telemetry.",
     "homepage": "https://github.com/mlab-sh/postmortem",
     "license": "Apache-2.0",
     "architecture": {
         "64bit": {
-  "url": "https://github.com/mlab-sh/postmortem/releases/download/v2.6.0/postmortem-2.6.0-x86_64-pc-windows-msvc.zip",
-  "hash": "d9ae7e469ffd7a1178e640d767ba924cbe39f1bb97a4f0a35acef4ac6c743cda",
-  "extract_dir": "postmortem-2.6.0-x86_64-pc-windows-msvc"
+  "url": "https://github.com/mlab-sh/postmortem/releases/download/v2.7.0/postmortem-2.7.0-x86_64-pc-windows-msvc.zip",
+  "hash": "f08e816a7a430658295520ba39098ef2bec5a9ea5765755755621343fb9b55e6",
+  "extract_dir": "postmortem-2.7.0-x86_64-pc-windows-msvc"
         }
     },
     "bin": "postmortem.exe",
