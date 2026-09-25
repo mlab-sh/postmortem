@@ -14,6 +14,7 @@
 </p>
 
 ---
+[![Postmortem vulnerabilities](https://vuln.mlab.sh/badge/sbom/647d1b7df648c9390b1507a892607df7.svg?style=detailed)](https://vuln.mlab.sh/badge/sbom/647d1b7df648c9390b1507a892607df7)
 
 Modern software is mostly other people's code. postmortem inspects that code the
 way an attacker's payload actually reaches you: through install hooks, typosquats,
