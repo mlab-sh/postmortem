@@ -179,15 +179,16 @@ impl WebhookSettings {
 
 /// How postmortem reaches the network.
 ///
-/// Lives in the config file rather than in flags or environment variables on
-/// purpose: this is a property of the *machine*, not of a run. A build agent
-/// behind a proxy needs it on every invocation of every command, and expressing
-/// that as flags means every CI step repeats them and drifts.
+/// Lives in the config file first: this is a property of the *machine*, not of
+/// a run, and a build agent behind a proxy needs it on every invocation. The
+/// global `--proxy` / `--no-proxy` / `--ca-cert` flags override it for one run
+/// (see [`set_cli_overrides`]).
 ///
 /// ```yaml
 /// network:
 ///   proxy: "http://proxy.corp:3128"
 ///   no_proxy: ["nexus.corp", "github.corp"]
+///   ca_cert: "/etc/ssl/corp-root.pem"
 ///   endpoints:
 ///     npm: "https://nexus.corp/repository/npm-proxy"
 ///     github: "https://github.corp/api/v3"
@@ -204,6 +205,11 @@ pub struct NetworkSettings {
     /// `corp.example` also covers `nexus.corp.example`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub no_proxy: Vec<String>,
+    /// PEM file of extra root CAs (a TLS-inspecting proxy's, an internal
+    /// mirror's). **Added to** the public roots, not a replacement for them, so
+    /// public hosts reached via `no_proxy` keep working.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ca_cert: Option<PathBuf>,
     /// Base-URL overrides per service. Absent entries keep the public default.
     pub endpoints: Endpoints,
 }
@@ -319,14 +325,119 @@ impl Endpoints {
     }
 }
 
+/// One run's `--proxy` / `--no-proxy` / `--ca-cert`, layered over the config
+/// file by [`Settings::load`].
+#[derive(Debug, Default)]
+pub struct NetworkOverrides {
+    pub proxy: Option<String>,
+    pub no_proxy: Vec<String>,
+    pub ca_cert: Option<PathBuf>,
+}
+
+static CLI_NETWORK: std::sync::OnceLock<NetworkOverrides> = std::sync::OnceLock::new();
+
+/// Record the command line's network flags, once, before any command runs.
+///
+/// A CA file given on the command line is checked here and is fatal when
+/// unusable: the user asked for it on this very run, so carrying on would only
+/// trade a clear error for a wall of `UnknownIssuer` failures.
+pub fn set_cli_overrides(o: NetworkOverrides) -> Result<()> {
+    if let Some(p) = &o.ca_cert {
+        load_ca(p)?;
+    }
+    if let Some(u) = o.proxy.as_deref().filter(|u| !u.trim().is_empty()) {
+        ureq::Proxy::new(u.trim()).with_context(|| format!("--proxy {u:?}"))?;
+    }
+    let _ = CLI_NETWORK.set(o);
+    Ok(())
+}
+
+impl NetworkOverrides {
+    /// Flags win over the file; `--no-proxy` adds to the file's list.
+    fn apply_to(&self, net: &mut NetworkSettings) {
+        if self.proxy.is_some() {
+            net.proxy = self.proxy.clone();
+        }
+        if self.ca_cert.is_some() {
+            net.ca_cert = self.ca_cert.clone();
+        }
+        net.no_proxy.extend(self.no_proxy.iter().cloned());
+    }
+}
+
+/// Every certificate in a PEM file, or an error naming the file.
+fn load_ca(path: &Path) -> Result<Vec<rustls_pki_types::CertificateDer<'static>>> {
+    use rustls_pki_types::pem::PemObject;
+    let certs = rustls_pki_types::CertificateDer::pem_file_iter(path)
+        .and_then(|it| it.collect::<Result<Vec<_>, _>>())
+        .map_err(|e| match e {
+            rustls_pki_types::pem::Error::Io(io) => anyhow::anyhow!(io),
+            other => anyhow::anyhow!("{other:?}"),
+        })
+        .with_context(|| format!("reading CA certificates from {}", path.display()))?;
+    if certs.is_empty() {
+        anyhow::bail!("no PEM certificate found in {}", path.display());
+    }
+    Ok(certs)
+}
+
+fn with_tls(
+    builder: ureq::AgentBuilder,
+    tls: Option<std::sync::Arc<rustls::ClientConfig>>,
+) -> ureq::AgentBuilder {
+    match tls {
+        Some(c) => builder.tls_config(c),
+        None => builder,
+    }
+}
+
+/// rustls config trusting the public roots ureq ships plus every cert in `path`.
+fn tls_config(path: &Path) -> Result<std::sync::Arc<rustls::ClientConfig>> {
+    let mut roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    for cert in load_ca(path)? {
+        roots
+            .add(cert)
+            .with_context(|| format!("unusable CA certificate in {}", path.display()))?;
+    }
+    let provider = std::sync::Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS12, &rustls::version::TLS13])?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(std::sync::Arc::new(config))
+}
+
 impl NetworkSettings {
-    /// Apply the proxy to a ureq agent builder.
+    /// Trust `ca_cert` in addition to the public roots.
+    ///
+    /// Same policy as a bad proxy URL: warn and carry on with the public roots.
+    /// A bad CA on the command line never gets here — [`set_cli_overrides`]
+    /// already refused it.
+    fn tls(&self) -> Option<std::sync::Arc<rustls::ClientConfig>> {
+        let path = self.ca_cert.as_ref()?;
+        tls_config(path)
+            .inspect_err(|e| eprintln!("warn: ignoring network.ca_cert — {e:#}"))
+            .ok()
+    }
+
+    fn apply_tls(&self, builder: ureq::AgentBuilder) -> ureq::AgentBuilder {
+        with_tls(builder, self.tls())
+    }
+
+    /// Apply the proxy and the extra root CA to a ureq agent builder.
     ///
     /// An unparseable proxy URL warns and is skipped rather than aborting: the
     /// run may still reach an internal mirror directly, and failing the whole
     /// command over a config typo helps nobody. The warning goes to stderr so it
     /// cannot corrupt a machine format on stdout.
     pub fn apply(&self, builder: ureq::AgentBuilder) -> ureq::AgentBuilder {
+        let builder = self.apply_tls(builder);
+        self.apply_proxy(builder)
+    }
+
+    fn apply_proxy(&self, builder: ureq::AgentBuilder) -> ureq::AgentBuilder {
         let Some(url) = self
             .proxy
             .as_deref()
@@ -354,15 +465,21 @@ impl NetworkSettings {
         // ureq keeps one idle connection per host by default, so with several
         // workers on one registry every response but one closed its socket and
         // the next request paid a fresh TCP + TLS handshake.
+        // The CA applies to both: the internal mirror reached directly is the
+        // host most likely to carry the corporate certificate.
+        let tls = self.tls();
         let builder = || {
-            ureq::AgentBuilder::new()
-                .timeout_connect(timeout.min(std::time::Duration::from_secs(5)))
-                .timeout_read(timeout)
-                .timeout_write(timeout)
-                .max_idle_connections_per_host(16)
+            with_tls(
+                ureq::AgentBuilder::new()
+                    .timeout_connect(timeout.min(std::time::Duration::from_secs(5)))
+                    .timeout_read(timeout)
+                    .timeout_write(timeout)
+                    .max_idle_connections_per_host(16),
+                tls.clone(),
+            )
         };
         let direct = builder().build();
-        let proxied = self.apply(builder()).build();
+        let proxied = self.apply_proxy(builder()).build();
         Agents {
             proxied,
             direct,
@@ -434,8 +551,20 @@ impl Default for TreeSettings {
 }
 
 impl Settings {
-    /// Load `config.yml`, or defaults if it's absent.
+    /// Load `config.yml` (or defaults if it's absent), with this run's network
+    /// flags layered on top.
     pub fn load() -> Result<Self> {
+        Self::load_file().map(Self::with_cli_overrides)
+    }
+
+    fn with_cli_overrides(mut self) -> Self {
+        if let Some(o) = CLI_NETWORK.get() {
+            o.apply_to(&mut self.network);
+        }
+        self
+    }
+
+    fn load_file() -> Result<Self> {
         let Some(p) = config_path() else {
             return Ok(Self::default());
         };
@@ -470,7 +599,8 @@ impl Settings {
                     "warn: ignoring {where_} — {e:#}\n\
                      warn: continuing with defaults; any `network` overrides in it are NOT applied"
                 );
-                Self::default()
+                // The flags still hold: they were never in the broken file.
+                Self::default().with_cli_overrides()
             }
         }
     }
@@ -482,7 +612,12 @@ impl Settings {
         };
         std::fs::create_dir_all(&dir)?;
         let p = dir.join("config.yml");
-        let yaml = serde_yaml::to_string(self)?;
+        // `self.network` carries this run's `--proxy`/`--ca-cert`; persisting
+        // them would turn a one-off flag (perhaps with proxy credentials) into
+        // machine config. Write back the file's own network block instead.
+        let mut out = self.clone();
+        out.network = Self::load_file().map(|s| s.network).unwrap_or_default();
+        let yaml = serde_yaml::to_string(&out)?;
         std::fs::write(&p, format!("# postmortem configuration\n{yaml}"))?;
         restrict_perms(&p);
         Ok(())
@@ -758,4 +893,105 @@ mod tests {
         let a = NetworkSettings::default().agents(std::time::Duration::from_secs(1));
         assert!(!a.bypasses("anything.test"));
     }
+
+    const TEST_CA: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tls/ca.pem");
+
+    #[test]
+    fn ca_cert_is_a_config_key() {
+        let net: NetworkSettings = serde_yaml::from_str("ca_cert: /etc/ssl/corp.pem\n").unwrap();
+        assert_eq!(net.ca_cert.as_deref(), Some(Path::new("/etc/ssl/corp.pem")));
+    }
+
+    #[test]
+    fn flags_override_the_file_and_no_proxy_adds_to_it() {
+        let mut net = NetworkSettings {
+            proxy: Some("http://file:1".into()),
+            no_proxy: vec!["file.corp".into()],
+            ca_cert: Some("/file.pem".into()),
+            ..Default::default()
+        };
+        NetworkOverrides {
+            proxy: Some("http://flag:2".into()),
+            no_proxy: vec!["flag.corp".into()],
+            ca_cert: None,
+        }
+        .apply_to(&mut net);
+        assert_eq!(net.proxy.as_deref(), Some("http://flag:2"));
+        assert_eq!(net.no_proxy, ["file.corp", "flag.corp"]);
+        // An absent flag leaves the file's value alone.
+        assert_eq!(net.ca_cert.as_deref(), Some(Path::new("/file.pem")));
+    }
+
+    #[test]
+    fn a_ca_file_without_a_certificate_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("pm-ca-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let junk = dir.join("junk.pem");
+        std::fs::write(&junk, "not a certificate\n").unwrap();
+        assert!(load_ca(&junk).is_err());
+        assert!(load_ca(&dir.join("missing.pem")).is_err());
+        assert_eq!(load_ca(Path::new(TEST_CA)).unwrap().len(), 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// A one-shot HTTPS server on 127.0.0.1 presenting the `localhost` leaf
+    /// signed by the test root. Returns the URL to fetch.
+    fn tls_server() -> String {
+        use rustls_pki_types::pem::PemObject;
+        use std::io::{Read, Write};
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/tls/");
+        let certs = rustls_pki_types::CertificateDer::pem_file_iter(format!("{dir}localhost.pem"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let key = rustls_pki_types::PrivateKeyDer::from_pem_file(format!("{dir}localhost.key")).unwrap();
+        let config = std::sync::Arc::new(
+            rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
+                rustls::crypto::ring::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .unwrap(),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for sock in listener.incoming().flatten() {
+                let conn = rustls::ServerConnection::new(config.clone()).unwrap();
+                let mut tls = rustls::StreamOwned::new(conn, sock);
+                let mut buf = [0u8; 1024];
+                // A failed handshake (the untrusted case) surfaces here.
+                if tls.read(&mut buf).is_ok() {
+                    let _ = tls.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok");
+                    let _ = tls.flush();
+                }
+            }
+        });
+        format!("https://localhost:{port}/")
+    }
+
+    #[test]
+    fn ca_cert_makes_a_privately_signed_server_trusted() {
+        let url = tls_server();
+        let t = std::time::Duration::from_secs(5);
+
+        // Public roots only: the private root is unknown, the handshake fails.
+        let plain = NetworkSettings::default().agents(t);
+        assert!(plain.for_url(&url).get(&url).call().is_err());
+
+        // With the root configured, both agents trust it — the direct one too,
+        // since an internal mirror under `no_proxy` is the likeliest user.
+        let net = NetworkSettings {
+            ca_cert: Some(TEST_CA.into()),
+            no_proxy: vec!["localhost".into()],
+            ..Default::default()
+        };
+        let body = net.agents(t).for_url(&url).get(&url).call().unwrap().into_string().unwrap();
+        assert_eq!(body, "ok");
+        let body = net.apply(ureq::AgentBuilder::new()).build().get(&url).call().unwrap().into_string().unwrap();
+        assert_eq!(body, "ok");
+    }
+
 }

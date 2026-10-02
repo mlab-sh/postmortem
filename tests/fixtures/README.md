@@ -12,3 +12,4 @@ included; the strings/structures are reproductions of publicly documented incide
 | `clean-node/` | benign sanity baseline | — |
 | `licensed-node/` | benign; exercises [licenses](../../wiki/Licenses.md): a permissive id, a dual `MIT OR AGPL-3.0` (which must escape a denylist via its other option), a copyleft id, free text that must never become an SPDX id, and a package declaring nothing. | — |
 | `scoped-node/` | benign; exercises [dependency scopes](../../wiki/Dependency-Scopes.md). `shared-lib` is reachable from **both** `prod-lib` and the dev tool, so `--omit dev` must keep it — a naive "listed under devDependencies" filter would drop it. | — |
+| `tls/` | **Test-only** PKI for `--ca-cert`: a throwaway root (`ca.pem`) and a `localhost` / `127.0.0.1` leaf it signed (`localhost.pem` + its key). The key protects nothing; the tests stand up a local TLS server with it and check the root is trusted only when configured. | — |

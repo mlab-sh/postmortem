@@ -1,6 +1,6 @@
 [package]
 name = "postmortem"
-version = "2.7.0"
+version = "2.7.1"
 edition = "2024"
 description = "Supply-chain scanner. Flags malicious install code, typosquats, and shady provenance across your dependencies and your OS packages."
 license = "Apache-2.0"
@@ -46,6 +46,11 @@ comfy-table = { version = "7", features = ["custom_styling"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 indicatif = "0.18"
 ureq = "2"
+# Already in the tree through ureq (same features, so nothing new is built);
+# used directly to add a corporate root CA (`--ca-cert`) to ureq's TLS roots.
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+webpki-roots = "0.26"
 serde_yaml = "0.9"
 # Already in the tree through ureq; used directly to read apk's scripts archive.
 flate2 = "1"

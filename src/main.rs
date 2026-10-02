@@ -56,7 +56,13 @@ use anyhow::Result;
 use clap::Parser;
 
 fn main() -> Result<()> {
-    match cli::Cli::parse().command {
+    let cli = cli::Cli::parse();
+    settings::set_cli_overrides(settings::NetworkOverrides {
+        proxy: cli.proxy,
+        no_proxy: cli.no_proxy,
+        ca_cert: cli.ca_cert,
+    })?;
+    match cli.command {
         cli::Command::Scan(args) => cmd::scan::run_scan(args),
         cli::Command::Tree(args) => cmd::tree::run_tree(args),
         cli::Command::Diff(args) => cmd::diff::run_diff(args),

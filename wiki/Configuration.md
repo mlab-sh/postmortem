@@ -34,11 +34,11 @@ Resolution order for GitHub: `config.yml` → `$GITHUB_TOKEN` → interactive pr
 
 ## Corporate networks - `network`
 
-Proxy and endpoint overrides for a machine that cannot reach the public
-internet directly. This lives in the **config file only** — not in flags, not in
-environment variables. It is a property of the *machine*, not of a run: a build
-agent behind a proxy needs it on every invocation of every command, and
-expressing that as flags means every CI step repeats them and drifts out of sync.
+Proxy, root CA and endpoint overrides for a machine that cannot reach the
+public internet directly. This belongs in the **config file**: it is a property
+of the *machine*, not of a run — a build agent behind a proxy needs it on every
+invocation of every command, and repeating flags in every CI step drifts out of
+sync. For a one-off run, the [global flags](#per-run-flags) override it.
 
 ```yaml
 # ~/.postmortem/config.yml
@@ -48,6 +48,9 @@ network:
   # Hosts reached directly, bypassing the proxy. Suffix-matched, so
   # `corp.example` also covers `nexus.corp.example`.
   no_proxy: ["corp.example"]
+  # PEM file of extra root CAs (TLS-inspecting proxy, internal mirror). Added
+  # to the public roots, not a replacement; used with and without the proxy.
+  ca_cert: "/etc/ssl/certs/corp-root.pem"
   # Any subset — absent entries keep the public default.
   endpoints:
     npm:      "https://nexus.corp/repository/npm-proxy"
@@ -56,6 +59,31 @@ network:
     github:   "https://github.corp/api/v3"      # GitHub Enterprise
     vuln:     "https://vuln.internal"
 ```
+
+### Per-run flags
+
+Accepted by every command, before or after the subcommand
+(`postmortem --proxy … tree` and `postmortem tree --proxy …` are the same):
+
+| Flag | Effect on `network` |
+| --- | --- |
+| `--proxy <URL>` | replaces `proxy` for this run |
+| `--no-proxy <HOST>[,<HOST>…]` | **added** to `no_proxy` (suffix-matched) |
+| `--ca-cert <FILE>` | replaces `ca_cert` for this run |
+
+```sh
+postmortem tree --online \
+  --proxy http://proxy.corp:3128 \
+  --no-proxy nexus.corp \
+  --ca-cert /etc/ssl/certs/corp-root.pem
+```
+
+A flag is checked before anything runs: a missing file, a file with no PEM
+certificate in it, or a malformed proxy URL is a fatal error — you asked for it
+on this run, so carrying on would only trade a clear message for a wall of
+`UnknownIssuer` failures. The same mistake in `config.yml` is a warning
+(public roots / no proxy), like any other `network` value. Flags are never
+written back to `config.yml`.
 
 ### Every endpoint
 
@@ -207,8 +235,8 @@ replace it with something weaker.
 
 ### Proxies and clear text
 
-Delivery goes through the [`network.proxy`](#corporate-networks---network)
-setting like every other request, so a corporate runner needs no special case.
+Delivery goes through the [`network.proxy` and `network.ca_cert`](#corporate-networks---network)
+settings (and their `--proxy` / `--ca-cert` flags) like every other request, so a corporate runner needs no special case.
 
 A report is an inventory of your machine or your project. Sending one over plain
 HTTP prints a warning:

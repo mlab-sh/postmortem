@@ -5,6 +5,24 @@ All notable changes to postmortem are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`--proxy`, `--no-proxy`, `--ca-cert`** — global flags, accepted by every
+  command (before or after the subcommand). `--proxy` overrides `network.proxy`
+  for one run, `--no-proxy` (comma-separated, suffix-matched) adds to
+  `network.no_proxy`, `--ca-cert` trusts the root CAs in a PEM file. A bad
+  `--ca-cert` or `--proxy` on the command line is a fatal error, before any
+  request is made.
+- **`network.ca_cert`** in `~/.postmortem/config.yml`: a PEM file of extra root
+  CAs (a TLS-inspecting proxy's, an internal mirror's). **Added to** the public
+  roots, not a replacement, and used by both the proxied and the direct
+  (`no_proxy`) connections and by `--webhook`. Unreadable in the file → a
+  warning and the public roots, like a bad `network.proxy`.
+- Flags are never written back to `config.yml` when postmortem saves a GitHub
+  token from its prompt.
+
 ## [2.7.0]
 
 A performance release, with the detection bugs the profiling turned up. Every

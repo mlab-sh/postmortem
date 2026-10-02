@@ -46,6 +46,21 @@ plus your machine's OS packages. No telemetry; offline unless you pass --online 
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
+
+    /// Proxy for every outbound request (`http://user:pass@proxy:3128`).
+    /// Overrides `network.proxy` in ~/.postmortem/config.yml for this run.
+    #[arg(long, global = true, value_name = "URL")]
+    pub proxy: Option<String>,
+
+    /// Hosts reached directly, bypassing the proxy (suffix-matched,
+    /// comma-separated). Added to `network.no_proxy`.
+    #[arg(long, global = true, value_name = "HOST", value_delimiter = ',')]
+    pub no_proxy: Vec<String>,
+
+    /// PEM file of extra root CAs to trust (a TLS-inspecting proxy, an internal
+    /// mirror), on top of the public roots. Overrides `network.ca_cert`.
+    #[arg(long, global = true, value_name = "FILE")]
+    pub ca_cert: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]

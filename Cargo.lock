@@ -761,7 +761,7 @@ checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "postmortem"
-version = "2.7.0"
+version = "2.7.1"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -774,6 +774,8 @@ dependencies = [
  "memchr",
  "owo-colors",
  "regex",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -781,6 +783,7 @@ dependencies = [
  "toml",
  "ureq",
  "walkdir",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]
