@@ -99,7 +99,7 @@ fn render_allowlist(
     soon: Option<usize>,
     window: Option<i64>,
 ) {
-    use owo_colors::OwoColorize;
+    use crate::color::Paint;
     println!("{}  {}", "allowlist".bold(), where_.dimmed());
     if items.is_empty() {
         println!();

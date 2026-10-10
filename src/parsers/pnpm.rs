@@ -71,7 +71,7 @@ struct Directs {
 pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let doc: Lock = serde_yaml::from_str(&text)
+    let doc = lock_document(&text)
         .with_context(|| format!("parsing {} as pnpm-lock.yaml", path.display()))?;
 
     let mut acc: BTreeMap<DepRef, Dependency> = BTreeMap::new();
@@ -185,6 +185,18 @@ pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
     Ok(acc.into_values().collect())
 }
 
+/// The lockfile document. pnpm ≥ 11 writes a multi-document file: a leading
+/// `packageManagerDependencies` document (pnpm itself, with its own
+/// `importers`/`packages`), `---`, then the project lockfile. The project one is
+/// always last; a single-document file is unchanged.
+fn lock_document(text: &str) -> Result<Lock> {
+    let mut last = None;
+    for de in serde_yaml::Deserializer::from_str(text) {
+        last = Some(Lock::deserialize(de)?);
+    }
+    last.context("empty lockfile")
+}
+
 fn node(name: String, version: String) -> Dependency {
     Dependency {
         name,
@@ -287,6 +299,41 @@ mod tests {
             key_to_ref("react-dom@18.2.0(react@18.2.0)"),
             Some(("react-dom".into(), "18.2.0".into()))
         );
+    }
+
+    #[test]
+    fn multi_document_lock_reads_the_project_document() {
+        // pnpm ≥ 11: pnpm's own lock first, then the project lock.
+        let lock = r#"---
+lockfileVersion: '9.0'
+importers:
+  .:
+    packageManagerDependencies:
+      pnpm: {specifier: 12.4.2, version: 12.4.2}
+packages:
+  pnpm@12.4.2:
+    resolution: {integrity: sha512-pm}
+---
+lockfileVersion: '9.0'
+importers:
+  .:
+    dependencies:
+      express: {specifier: ^4.18.2, version: 4.18.2}
+packages:
+  express@4.18.2:
+    resolution: {integrity: sha512-aaa}
+snapshots:
+  express@4.18.2: {}
+"#;
+        let dir = std::env::temp_dir().join(format!("pm-pnpm11-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("pnpm-lock.yaml");
+        std::fs::write(&p, lock).unwrap();
+        let deps = parse(&p).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let names: Vec<_> = deps.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, ["express"]);
+        assert!(deps[0].direct);
     }
 
     #[test]

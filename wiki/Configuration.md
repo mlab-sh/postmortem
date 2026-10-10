@@ -29,6 +29,7 @@ tree:
 | `GITLAB_TOKEN` | GitLab repo stats (optional; public repos resolve anonymously). |
 | `CODEBERG_TOKEN` | Codeberg repo stats (optional). |
 | `VULN_MLAB_TOKEN` | `vuln.mlab.sh` scans - raises the anonymous 8/hr limit. |
+| `NO_COLOR` | Set and non-empty: no ANSI colour in any output ([no-color.org](https://no-color.org)). Also stops the progress animation, as `CI` does. |
 
 Resolution order for GitHub: `config.yml` → `$GITHUB_TOKEN` → interactive prompt.
 

@@ -39,6 +39,7 @@ const WATCHED: &[&str] = &[
     "composer.lock",
     "poetry.lock",
     "Pipfile.lock",
+    "uv.lock",
     "go.sum",
     "gradle.lockfile",
     "requirements.txt",

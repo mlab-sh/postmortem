@@ -31,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 
 use crate::model::{DepRef, Dependency};
 use crate::resolve::Resolution;

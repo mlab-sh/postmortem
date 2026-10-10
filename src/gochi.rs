@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 
 // ─── Faces ──────────────────────────────────────────────────────────────────
 // Raw glyphs, kept public for the rare caller that needs the bare string. Prefer

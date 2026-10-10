@@ -11,7 +11,7 @@ use std::path::PathBuf;
 /// A feedback loop, not a gate: it reacts after an install has finished. Runs
 /// until interrupted, or until `--max-runs`.
 pub(crate) fn run_watch(args: cli::WatchArgs) -> Result<()> {
-    use owo_colors::OwoColorize;
+    use crate::color::Paint;
     let root = args
         .path
         .canonicalize()

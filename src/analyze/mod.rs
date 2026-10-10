@@ -13,6 +13,7 @@ pub mod sensitive_api;
 pub mod util;
 
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -254,7 +255,7 @@ pub fn scan_source_tree(root: &Path) -> Vec<Finding> {
         Step::new("ide", move |out| ide_hooks::scan_dir(list, out)),
         Step::new("gha", move |out| gha::scan_dir(list, out)),
     ];
-    run_steps(steps, |_| {})
+    one_per_host(run_steps(steps, |_| {}))
 }
 
 /// Run every analyzer that applies to the detected ecosystems, driving a
@@ -321,12 +322,46 @@ fn run_plan(
         bar.step(label);
         bar.inc();
     });
+    let findings = one_per_host(findings);
     bar.done(format!(
         "analyzed {total} unit(s) — {} finding(s)",
         findings.len()
     ));
 
     findings
+}
+
+/// Keep one embedded URL / domain finding per (package, host): the IOC is the
+/// host, and `docs.n8n.io` repeated 3 000 times across `n8n-nodes-base` is one
+/// fact. The first location (in path order) is kept, so output is stable.
+fn one_per_host(findings: Vec<Finding>) -> Vec<Finding> {
+    let key = |f: &Finding| {
+        if !matches!(f.category, Category::Ioc)
+            || !matches!(f.detail.as_str(), "embedded URL" | "embedded domain name")
+        {
+            return None;
+        }
+        let e = f.evidence.as_deref()?;
+        let host = e.split_once("://").map_or(e, |(_, r)| r);
+        let host = host.split(['/', '?', '#', ':', '"', '\'', ' ']).next()?;
+        Some((f.dependency.clone(), host.to_ascii_lowercase()))
+    };
+    let mut keep: HashMap<(String, String), usize> = HashMap::new();
+    for (i, f) in findings.iter().enumerate() {
+        if let Some(k) = key(f) {
+            let e = keep.entry(k).or_insert(i);
+            if f.location < findings[*e].location {
+                *e = i;
+            }
+        }
+    }
+    let kept: HashSet<usize> = keep.into_values().collect();
+    findings
+        .into_iter()
+        .enumerate()
+        .filter(|(i, f)| key(f).is_none() || kept.contains(i))
+        .map(|(_, f)| f)
+        .collect()
 }
 
 /// Enumerate the analysis units for the detected ecosystems. This is the single
@@ -507,6 +542,24 @@ mod tests {
             evidence: None,
             enrich_url: None,
         }
+    }
+
+    #[test]
+    fn one_finding_per_package_and_host() {
+        let f = |dep: &str, ev: &str, loc: &str| Finding {
+            dependency: dep.into(),
+            detail: "embedded URL".into(),
+            evidence: Some(ev.into()),
+            ..ioc(loc)
+        };
+        let out = one_per_host(vec![
+            f("a", "https://docs.n8n.io/x", "b.js:2"),
+            f("a", "https://docs.n8n.io/y", "a.js:9"),
+            f("a", "evil.tk", "a.js:1"),
+            f("b", "https://docs.n8n.io/x", "c.js:1"),
+        ]);
+        let locs: Vec<_> = out.iter().map(|f| f.location.as_deref().unwrap()).collect();
+        assert_eq!(locs, ["a.js:9", "a.js:1", "c.js:1"]);
     }
 
     #[test]

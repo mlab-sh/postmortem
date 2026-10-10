@@ -8,7 +8,7 @@ richest ecosystem - the only one with **identity/provenance** signals.
 | File | Notes |
 | --- | --- |
 | `package-lock.json` | npm; `npm-shrinkwrap.json` treated the same. |
-| `pnpm-lock.yaml` | pnpm (YAML). |
+| `pnpm-lock.yaml` | pnpm (YAML), lockfile v5 / v6 / v9. pnpm ≥ 11 writes two YAML documents (pnpm's own `packageManagerDependencies`, then the project); the project document is the one read. |
 | `yarn.lock` | Yarn v1 (classic) and Berry (v2+). |
 
 Scoped names (`@scope/pkg`) are handled throughout, including cache keys.

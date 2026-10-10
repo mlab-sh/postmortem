@@ -12,7 +12,7 @@
 
 use std::collections::HashMap;
 
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 
 use crate::model::{DepRef, Dependency, Ecosystem, Severity};
 use crate::resolve::Resolution;

@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::Write;
 
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 use serde::Serialize;
 
 use crate::model::{DepRef, Dependency, Severity};

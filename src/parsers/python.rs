@@ -1,4 +1,4 @@
-//! Python lockfile parsers: poetry.lock (TOML), Pipfile.lock (JSON), requirements*.txt.
+//! Python lockfile parsers: poetry.lock / uv.lock (TOML), Pipfile.lock (JSON), requirements*.txt.
 //!
 //! Python has no single source of truth for transitive resolution — we extract what each
 //! format reveals. poetry.lock is the richest (full graph + hashes), Pipfile.lock is decent,
@@ -17,16 +17,21 @@ pub fn parse_any(manifest: &Path, lockfile: Option<&Path>) -> Result<Vec<Depende
         if name == "poetry.lock" {
             return parse_poetry(lf);
         }
+        if name == "uv.lock" {
+            return parse_uv(lf);
+        }
         if name == "Pipfile.lock" {
             return parse_pipfile_lock(lf);
         }
-        if name.starts_with("requirements") && name.ends_with(".txt") {
+        // Any `.txt` that got this far is a requirements file: detection only
+        // takes `requirements.txt` itself, or a `.txt` the user named.
+        if name.ends_with(".txt") {
             return parse_requirements(lf);
         }
     }
     // Fall back to manifest as a flat requirements file.
     let mname = manifest.file_name().and_then(|s| s.to_str()).unwrap_or("");
-    if mname.starts_with("requirements") && mname.ends_with(".txt") {
+    if mname.ends_with(".txt") {
         return parse_requirements(manifest);
     }
     Ok(Vec::new())
@@ -147,6 +152,124 @@ fn parse_poetry(path: &Path) -> Result<Vec<Dependency>> {
         });
     }
     Ok(out)
+}
+
+#[derive(Debug, Deserialize)]
+struct UvLock {
+    #[serde(default)]
+    package: Vec<UvPkg>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UvPkg {
+    name: String,
+    /// Absent on a virtual workspace root.
+    #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
+    source: BTreeMap<String, toml::Value>,
+    #[serde(default)]
+    dependencies: Vec<UvDep>,
+    #[serde(default, rename = "optional-dependencies")]
+    optional_dependencies: BTreeMap<String, Vec<UvDep>>,
+    #[serde(default, rename = "dev-dependencies")]
+    dev_dependencies: BTreeMap<String, Vec<UvDep>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct UvDep {
+    name: String,
+    /// Only written when several versions of `name` are locked.
+    #[serde(default)]
+    version: Option<String>,
+}
+
+impl UvPkg {
+    /// A workspace member or local path: the project itself, not a dependency.
+    fn is_local(&self) -> bool {
+        ["editable", "virtual", "directory", "path"]
+            .iter()
+            .any(|k| self.source.contains_key(*k))
+    }
+}
+
+/// `uv.lock`: every package with its edges. Workspace members (editable /
+/// virtual sources) are the project — their dependencies are the direct set,
+/// `dev-dependencies` seeding `Dev`, the rest left to `scope::propagate`.
+fn parse_uv(path: &Path) -> Result<Vec<Dependency>> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let lock: UvLock =
+        toml::from_str(&text).with_context(|| format!("parsing {} as uv.lock", path.display()))?;
+
+    let locked = |p: &UvPkg| (!p.is_local()).then(|| p.version.clone()).flatten();
+    // name → locked versions, to resolve an edge that names no version.
+    let mut versions: HashMap<String, Vec<String>> = HashMap::new();
+    for p in &lock.package {
+        if let Some(v) = locked(p) {
+            versions.entry(norm(&p.name)).or_default().push(v);
+        }
+    }
+    let resolve = |d: &UvDep| -> Vec<(String, String)> {
+        let vs = versions.get(&norm(&d.name)).map(Vec::as_slice).unwrap_or_default();
+        vs.iter()
+            .filter(|v| d.version.as_ref().is_none_or(|w| w == *v))
+            .map(|v| (norm(&d.name), v.clone()))
+            .collect()
+    };
+
+    let mut acc: BTreeMap<(String, String), Dependency> = BTreeMap::new();
+    for p in &lock.package {
+        if let Some(v) = locked(p) {
+            acc.insert((norm(&p.name), v.clone()), Dependency {
+                name: p.name.clone(),
+                version: v,
+                ecosystem: Ecosystem::Python,
+                direct: false,
+                scope: Scope::Prod,
+                licenses: Vec::new(),
+                license_source: LicenseSource::Unknown,
+                resolved_url: None,
+                integrity: None,
+                parents: Vec::new(),
+            });
+        }
+    }
+    let mut seeds: HashMap<(String, String), Scope> = HashMap::new();
+    for p in &lock.package {
+        let prod = p.dependencies.iter().chain(p.optional_dependencies.values().flatten());
+        let dev = p.dev_dependencies.values().flatten();
+        let edges = prod.map(|d| (d, Scope::Prod)).chain(dev.map(|d| (d, Scope::Dev)));
+        match locked(p) {
+            None => {
+                for (d, scope) in edges {
+                    for k in resolve(d) {
+                        let e = seeds.entry(k).or_insert(scope);
+                        *e = (*e).max(scope);
+                    }
+                }
+            }
+            Some(v) => {
+                let parent = (p.name.clone(), v);
+                for (d, _) in edges {
+                    for k in resolve(d) {
+                        if let Some(dep) = acc.get_mut(&k)
+                            && !dep.parents.contains(&parent)
+                        {
+                            dep.parents.push(parent.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (k, scope) in seeds {
+        if let Some(d) = acc.get_mut(&k) {
+            d.direct = true;
+            d.scope = scope;
+        }
+    }
+    Ok(acc.into_values().collect())
 }
 
 #[derive(Debug, Deserialize)]
@@ -282,6 +405,46 @@ fn requirements_scope(path: &Path) -> Scope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uv_lock_graph_and_workspace_directs() {
+        let dir = std::env::temp_dir().join(format!("pm-uv-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("uv.lock");
+        std::fs::write(&p, r#"version = 1
+[[package]]
+name = "app"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [{ name = "requests" }]
+[package.dev-dependencies]
+dev = [{ name = "pytest" }]
+
+[[package]]
+name = "requests"
+version = "2.32.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [{ name = "urllib3" }]
+
+[[package]]
+name = "urllib3"
+version = "2.2.3"
+source = { registry = "https://pypi.org/simple" }
+
+[[package]]
+name = "pytest"
+version = "8.3.3"
+source = { registry = "https://pypi.org/simple" }
+"#).unwrap();
+        let deps = parse_any(&dir.join("pyproject.toml"), Some(&p)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let get = |n: &str| deps.iter().find(|d| d.name == n).unwrap();
+        assert_eq!(deps.len(), 3, "the workspace member is the project, not a dep");
+        assert!(get("requests").direct && get("requests").scope == Scope::Prod);
+        assert!(get("pytest").direct && get("pytest").scope == Scope::Dev);
+        assert!(!get("urllib3").direct);
+        assert_eq!(get("urllib3").parents, [("requests".into(), "2.32.3".into())]);
+    }
 
     #[test]
     fn requirements_parses_simple() {

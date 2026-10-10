@@ -6,7 +6,7 @@ use anyhow::{Context, Result};
 
 /// `postmortem hook <action>` — manage the git pre-commit hook.
 pub(crate) fn run_hook(args: cli::HookArgs) -> Result<()> {
-    use owo_colors::OwoColorize;
+    use crate::color::Paint;
     let root = args
         .path
         .canonicalize()

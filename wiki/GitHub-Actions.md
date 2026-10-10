@@ -17,10 +17,22 @@ there is no separate flag.
 | **Third-party action** not pinned to a commit SHA (tag) | Low | tags are repointable; pin a full SHA |
 | `pull_request_target` / `workflow_run` trigger | Medium | runs in a privileged context with repo secrets |
 | …the same trigger **+ a checkout of the PR head** | High | runs untrusted PR code with secrets — poisoned-pipeline execution |
-| Untrusted `${{ github.event.* }}` in a `run:` step | High | expression injection into a shell step |
+| Untrusted `${{ github.event.* }}` in a `run:` step or a github-script `script:` | High | expression injection into a shell step |
 | `permissions: write-all` | Medium | the `GITHUB_TOKEN` is over-scoped |
 | `runs-on: self-hosted` | Medium | untrusted workflow code runs inside your network |
 | `curl … \| sh` in a step | High | pipes a remote script straight to a shell (the Codecov pattern) |
+
+Only executed text counts for injection: a `run:` value (inline or a `|`/`>`
+block) and `actions/github-script`'s `script:`. The same expression in `env:`,
+`if:`, `concurrency.group` or a reusable workflow's `with:` is never
+interpolated into a shell, so it is not reported. Moving it to `env:` is the
+fix this page recommends.
+
+"Checks out the PR head" means the head appears in a checkout `ref:` /
+`repository:` (`head.ref`, `head.sha`, `head_ref`, `head.repo`, `refs/pull/`,
+`merge_commit_sha`), or a step runs `gh pr checkout` / `git fetch … pull/`. A
+`pull_request_target` that checks out `ref: master` stays Medium. Triggers named
+only in a YAML comment are ignored.
 
 An official action on a version tag (`actions/checkout@v4`), a local action
 (`./…`), a `docker://` image, or a **commit-SHA-pinned** action is not flagged.

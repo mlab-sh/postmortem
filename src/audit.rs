@@ -4,7 +4,7 @@
 //! reputation and known-vulnerability layers. The orchestration lives in
 //! [`crate::cmd::audit`]; this module is the pure summary → grade → render.
 
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 
 use crate::model::Severity;
 

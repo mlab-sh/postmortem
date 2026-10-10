@@ -46,7 +46,7 @@ use std::collections::HashMap;
 use std::process::Command;
 
 use anyhow::{Context, Result};
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 use serde::Deserialize;
 
 use crate::model::{Category, DepRef, Dependency, Ecosystem, LicenseSource, Scope, Severity};

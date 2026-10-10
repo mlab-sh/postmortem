@@ -22,7 +22,7 @@ use std::io::IsTerminal;
 use std::time::{Duration, Instant};
 
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 
 /// Braille spinner frames.
 const TICK: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "✓"];

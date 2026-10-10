@@ -29,7 +29,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 
 use crate::model::{Category, Dependency, Ecosystem, Finding, Severity};
 

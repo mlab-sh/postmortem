@@ -45,10 +45,10 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
         } => {
             if lockfile
                 .as_ref()
-                .is_some_and(|p| base(p) == "requirements.txt")
+                .is_some_and(|p| base(p).ends_with(".txt"))
             {
                 lockfile.as_deref().map(|p| (p, "pip"))
-            } else if base(manifest) == "requirements.txt" {
+            } else if base(manifest).ends_with(".txt") {
                 Some((manifest.as_path(), "pip"))
             } else {
                 None

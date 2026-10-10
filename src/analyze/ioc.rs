@@ -277,6 +277,9 @@ const FILE_EXTENSIONS: &[&str] = &[
     "sqlite",
 ];
 
+/// From this many domain names, a file is read as a list (see `scan_text`).
+const DOMAIN_LIST_MIN: usize = 500;
+
 pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
     // Most files yield no IOC at all, so the owner is only worked out for one
     // that does.
@@ -396,6 +399,7 @@ pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
     // cheapest first: the O(1) code-shape and TLD checks reject nearly all of
     // them before the URL-range and comment lookups.
     let (mut lines, mut comments) = (Lines::new(text), Comments::new(text));
+    let mut domains = Vec::new();
     for m in domain_re().find_iter(text) {
         let candidate = m.as_str();
         if domain_is_code_access(text, m.start(), m.end(), candidate)
@@ -406,7 +410,7 @@ pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
         {
             continue;
         }
-        out.push(Finding {
+        domains.push(Finding {
             dependency: dep(),
             severity: Severity::Medium,
             category: Category::Ioc,
@@ -416,11 +420,30 @@ pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
             enrich_url: None,
         });
     }
+    // A file that is a domain *list* (the Public Suffix List in `psl`, a
+    // disposable-mail list) is data, not thousands of endpoints: one finding.
+    // ponytail: a C2 host hidden among DOMAIN_LIST_MIN decoys is folded too;
+    // diff the list against its upstream if that ever matters.
+    if domains.len() >= DOMAIN_LIST_MIN {
+        let first = domains.swap_remove(0);
+        out.push(Finding {
+            severity: Severity::Low,
+            detail: format!("domain list ({} embedded domain names)", domains.len() + 1),
+            ..first
+        });
+    } else {
+        out.append(&mut domains);
+    }
 
-    let mut lines = Lines::new(text);
+    // A wallet address in a comment is a docs example (`contractAddress:
+    // "0x887F…"` in a JSDoc block), like a URL there.
+    let (mut lines, mut comments) = (Lines::new(text), Comments::new(text));
     for m in btc_re().find_iter(text) {
         let addr = m.as_str();
-        if !looks_like_btc(addr) || welded_to_non_ascii(text, m.start(), m.end()) {
+        if !looks_like_btc(addr)
+            || welded_to_non_ascii(text, m.start(), m.end())
+            || comments.at(m.start())
+        {
             continue;
         }
         out.push(Finding {
@@ -434,10 +457,10 @@ pub fn scan_text(path: &Path, text: &str, out: &mut Vec<Finding>) {
         });
     }
 
-    let mut lines = Lines::new(text);
+    let (mut lines, mut comments) = (Lines::new(text), Comments::new(text));
     for m in eth_re().find_iter(text) {
         let addr = m.as_str();
-        if welded_to_non_ascii(text, m.start(), m.end()) {
+        if welded_to_non_ascii(text, m.start(), m.end()) || comments.at(m.start()) {
             continue;
         }
         out.push(Finding {
@@ -761,11 +784,33 @@ fn quote_adjacent(b: &[u8], start: usize, end: usize) -> bool {
     start.checked_sub(1).is_some_and(|i| is_q(b[i])) || b.get(end).copied().is_some_and(is_q)
 }
 
+/// A legacy (P2PKH `1…` / P2SH `3…`) address is Base58Check: 25 bytes whose
+/// last 4 are the double SHA-256 of the first 21. A base58-shaped run in an SVG
+/// path, a base64 certificate or a wasm blob passes the regex but this check
+/// only once in 2³² — so only a real address gets through.
 fn looks_like_btc(addr: &str) -> bool {
-    let has_digit = addr.chars().any(|c| c.is_ascii_digit());
-    let has_lower = addr.chars().any(|c| c.is_ascii_lowercase());
-    let has_upper = addr.chars().any(|c| c.is_ascii_uppercase());
-    has_digit && has_lower && has_upper
+    const ALPHABET: &[u8] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    let mut bytes = [0u8; 25];
+    for c in addr.bytes() {
+        let Some(mut carry) = ALPHABET.iter().position(|&a| a == c).map(|d| d as u32) else {
+            return false;
+        };
+        for b in bytes.iter_mut().rev() {
+            carry += u32::from(*b) * 58;
+            *b = carry as u8;
+            carry >>= 8;
+        }
+        if carry != 0 {
+            return false; // more than 25 bytes
+        }
+    }
+    // Each leading `1` encodes a leading zero byte; the value must agree.
+    let ones = addr.bytes().take_while(|&c| c == b'1').count();
+    if bytes.iter().take_while(|&&b| b == 0).count() != ones {
+        return false;
+    }
+    let sha = |d: &[u8]| ring::digest::digest(&ring::digest::SHA256, d);
+    sha(sha(&bytes[..21]).as_ref()).as_ref()[..4] == bytes[21..]
 }
 
 #[cfg(test)]
@@ -777,6 +822,30 @@ mod tests {
         let mut out = Vec::new();
         scan_text(&PathBuf::from("test.js"), input, &mut out);
         out
+    }
+
+    #[test]
+    fn a_domain_list_is_one_finding() {
+        let list: String = (0..DOMAIN_LIST_MIN).map(|i| format!("\"site{i}.com\",\n")).collect();
+        let out = scan(&list);
+        assert_eq!(out.len(), 1, "{:?}", out.first());
+        assert_eq!(out[0].severity, Severity::Low);
+        assert!(out[0].detail.contains(&format!("{DOMAIN_LIST_MIN} embedded")));
+    }
+
+    #[test]
+    fn only_checksum_valid_bitcoin_addresses_are_flagged() {
+        // Real addresses: the genesis P2PKH and a P2SH.
+        assert!(looks_like_btc("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"));
+        assert!(looks_like_btc("3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy"));
+        // n8n's false positives: an SVG path, base64 certificates, a write key.
+        for fp in ["32V768h64v128h128V768zM384", "1gQQQVEFAgMBAAGjQjBAMA8GA1UdEwEB",
+                   "3zzsQ92yUCjYmRNeSbdXbPfz3K", "1zPn7YoGC3ZXE9zLeTKLuQCB4F6",
+                   "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNb"] {
+            assert!(!looks_like_btc(fp), "{fp}");
+        }
+        let doc = " * contractAddress: \"0x887F3909C14DAbd9e9510128cA6cBb448E932d7f\",\n";
+        assert!(!scan(&format!("/**\n{doc} */")).iter().any(|f| f.detail.contains("Ethereum")));
     }
 
     /// Lines up to the cap keep the exact pre-cap behaviour: a marker at the

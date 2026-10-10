@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Result, bail};
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 
 use crate::model::{DepRef, Dependency, Severity};
 use crate::resolve::{RepoRef, Resolution};

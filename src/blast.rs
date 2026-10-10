@@ -31,7 +31,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
 
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 
 use crate::model::{Category, DepRef, Dependency, Finding, Scope};
 

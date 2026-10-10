@@ -8,7 +8,7 @@
 /// Grouped by the question each command answers rather than listed flat: at
 /// sixteen commands an alphabetical list tells you nothing about where to start.
 pub(crate) fn print_overview() {
-    use owo_colors::OwoColorize;
+    use crate::color::Paint;
 
     /// One command row, padded before colouring — ANSI escapes count toward a
     /// format width, so `{:<9}` on a coloured string misaligns the column.

@@ -38,6 +38,7 @@ const WANTED: &[&str] = &[
     "requirements.txt",
     "poetry.lock",
     "Pipfile.lock",
+    "uv.lock",
     "pyproject.toml",
     "Cargo.toml",
     "Cargo.lock",
@@ -501,7 +502,8 @@ mod tests {
             "yarn.lock", // node
             "requirements.txt",
             "poetry.lock",
-            "Pipfile.lock",  // python
+            "Pipfile.lock",
+            "uv.lock",       // python
             "Cargo.lock",    // rust
             "Gemfile.lock",  // ruby
             "composer.lock", // php

@@ -8,7 +8,7 @@ or suspicious code. They power [`scan`](Scan) and the deep audit of
 
 | Analyzer | Looks for |
 | --- | --- |
-| **IOC** | Indicators of compromise in source - hard-coded IPs, suspicious/bare domains, exfil URLs. Language-agnostic (text + allowlists). |
+| **IOC** | Indicators of compromise in source - hard-coded IPs, suspicious/bare domains, exfil URLs, wallet addresses. Language-agnostic (text + allowlists). One URL/domain finding per (package, host). A file holding 500+ domain names is reported once, as a Low `domain list`. Bitcoin addresses must pass Base58Check. Wallet addresses and URLs in comments are skipped. |
 | **Obfuscation** | High-entropy blobs, long `\xNN`/`\uNNNN` runs, base64 blobs, and per-language markers (`eval()`, base64 decode, `include_bytes!`, inline asm, `pack/unpack`, …). |
 | **Sensitive-API** | Dangerous primitives per language - process spawning, raw sockets, dynamic loading, HTTP clients. Also EtherHiding markers (`eth_call` — C2 fetched from a smart contract). |
 | **Install-hooks** | Install-time code execution (see below) - ecosystem-specific, not language-generic. |

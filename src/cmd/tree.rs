@@ -485,7 +485,7 @@ fn render_layers(
     files: &std::collections::HashMap<String, Vec<String>>,
     forest: &tree::Tree,
 ) {
-    use owo_colors::OwoColorize;
+    use crate::color::Paint;
 
     if img.layers.is_empty() {
         return;

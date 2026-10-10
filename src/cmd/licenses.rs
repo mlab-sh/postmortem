@@ -76,7 +76,7 @@ fn render_licenses(
     unknown_only: bool,
     show_packages: bool,
 ) {
-    use owo_colors::OwoColorize;
+    use crate::color::Paint;
     const ORANGE: (u8, u8, u8) = (255, 165, 0);
     let unknown = inventory
         .iter()

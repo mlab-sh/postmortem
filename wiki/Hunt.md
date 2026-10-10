@@ -74,7 +74,10 @@ Measured on a laptop: a whole home directory (4 878 directories, 124 projects,
 - History matching is textual rather than parsed, because a revision from years
   ago may predate the formats the parsers read. A name counts when it is bounded
   like a package name, with the version right after it (`name@1.2.3`,
-  `name (1.2.3)`, `path v1.2.3`) or on the first `version` line that follows.
+  `name (1.2.3)`, `path v1.2.3`) or on a `version` line directly after the
+  name (on the same line or the next one). Further down, the version belongs to
+  another entry. In a yarn Berry lock, a `dependencies:` line is followed by the
+  next block's `version:`.
 - History follows the first parent of the current branch: when a package
   **landed on** the mainline, not when a feature branch first tried it.
 - "Installed" is checked for npm only, at the top level of `node_modules`.

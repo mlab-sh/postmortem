@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.2]
+
+Fixes from a field test on n8n, Strapi, Zed, Airflow and an `npx n8n` install.
+
+### Added
+
+- **`uv.lock`** (Python). The full graph with edges. Workspace members
+  (`editable` / `virtual` sources) are the project itself: their dependencies
+  are the direct set, and `dev-dependencies` are classed as dev. Airflow,
+  unreadable until now, gives 840 packages. Also watched by `hunt`, `watch`,
+  `pr` and the pre-commit `hook`.
+- **Any requirements file by name.** `postmortem tree requirements/base.txt`
+  (or `constraints.txt`) is read as a requirements file. Before, only the
+  exact name `requirements.txt` was accepted. Directory detection is
+  unchanged.
+- **`timeline` lists unpublished versions** as an `unpublished` event (notable,
+  red). The packument's `time` map keeps them, and they used to be skipped. The
+  next release is still compared with the last *published* one. An installed
+  version that was unpublished is still reported as `installed_missing`.
+
+### Fixed
+
+- **pnpm ≥ 11 lockfiles read as empty.** pnpm 11+ writes a multi-document
+  `pnpm-lock.yaml`: pnpm's own `packageManagerDependencies` lock, `---`, then
+  the project lock. Only the first document was parsed, so n8n (pnpm 12.4.2)
+  gave 0 nodes. The project document (always the last) is read now: 3 767
+  nodes.
+- **GitHub Actions expression injection: 16/16 false positives** on n8n,
+  Strapi and Zed. The check fired when an untrusted `${{ }}` was anywhere in a
+  file that had a `run:`. It now looks only at executed text: `run:` values
+  (inline or `|`/`>` blocks) and `actions/github-script`'s `script:`. An
+  expression in `env:` (the recommended fix), `if:`, `concurrency.group` or a
+  reusable workflow's `with:` is no longer reported.
+- **Poisoned-pipeline false positives.** "Checks out untrusted PR code" fired
+  on `head_ref` / `head.sha` anywhere in the file. It now needs the PR head in a
+  checkout `ref:` / `repository:`, or a `gh pr checkout` / `git fetch … pull/`
+  in a step. n8n's `ci-owners-required-reviews.yml` (`ref: master`) is no
+  longer High. A `pull_request_target` / `workflow_run` named only in a YAML
+  comment no longer counts as a trigger.
+- **`hunt` false exposure on yarn Berry.** `hunt color-name@2.0.1` reported
+  Strapi as exposed for 430 days. A Berry `dependencies:` line
+  (`color-name: "npm:1.1.3"`) took its version from the next block
+  (`color-convert@npm:^2.0.1` → `version: 2.0.1`). The version line must now
+  directly follow the name. This also removes the "gone now" vs "→ HEAD"
+  contradiction it produced.
+- **Bitcoin address false positives.** Candidates are now verified with
+  Base58Check (double SHA-256), so SVG icon paths, base64 CA certificates, wasm
+  blobs and API write keys no longer match. A wallet address (Bitcoin or
+  Ethereum) in a comment is a docs example and is skipped, like a URL there.
+  On `npx n8n`: 38 high findings → 1 (a real address used as a parameter
+  example).
+- **`NO_COLOR` was ignored.** owo-colors' `.red()` / `.bold()` always emit
+  ANSI. Every colour now goes through `src/color.rs`, which honours `NO_COLOR`
+  (set and non-empty).
+
+### Changed
+
+- **Embedded URL / domain findings are one per (package, host).** The IOC is
+  the host. `docs.n8n.io` appearing 3 000 times in `n8n-nodes-base` is one
+  finding, kept at its first location in path order.
+- **A domain list is one finding.** A file with 500 or more domain names (the
+  Public Suffix List in `psl`, disposable-mail lists) gives a single Low
+  `domain list (N embedded domain names)` finding instead of N Medium ones.
+  On `npx n8n` (2.7 GB, 1 975 packages) the scan goes from 57 049 findings to
+  9 400. URL/domain findings go from 51 274 to 3 662, at the same speed (~12 s).
+
+## [2.7.1]
+
 ### Added
 
 - **`--proxy`, `--no-proxy`, `--ca-cert`** — global flags, accepted by every

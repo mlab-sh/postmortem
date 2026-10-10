@@ -23,7 +23,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Result, bail};
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 use serde::Serialize;
 
 use crate::model::{Category, Dependency, Finding, Severity};

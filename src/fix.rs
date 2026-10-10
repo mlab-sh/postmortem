@@ -38,7 +38,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Write;
 
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 
 use crate::model::{Dependency, Ecosystem, Severity};
 use crate::vuln::{Vuln, VulnPackage};

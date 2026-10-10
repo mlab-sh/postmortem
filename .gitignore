@@ -44,3 +44,4 @@ tests/system/reports/
 /target-linux
 /target-musl
 todo.md
+.inkdex/

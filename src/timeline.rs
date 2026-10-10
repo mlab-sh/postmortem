@@ -29,7 +29,7 @@
 //! publisher, scripts, repository and attestation together. The other registries
 //! publish a current view, not a history, so there is nothing to lay out.
 
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 
 use crate::resolve::{NpmPackument, NpmVersion};
 
@@ -59,6 +59,8 @@ pub enum Event {
         days: i64,
     },
     Deprecated,
+    /// Listed in `time` but its manifest is gone: the version was unpublished.
+    Unpublished,
 }
 
 impl Event {
@@ -73,6 +75,7 @@ impl Event {
                 | Event::InstallScriptAdded
                 | Event::RepoChanged { .. }
                 | Event::ProvenanceRemoved
+                | Event::Unpublished
         )
     }
 
@@ -87,6 +90,7 @@ impl Event {
             Event::ProvenanceRemoved => "provenance attestation removed".into(),
             Event::Dormancy { days } => format!("released after {days}d of silence"),
             Event::Deprecated => "deprecated".into(),
+            Event::Unpublished => "unpublished".into(),
         }
     }
 
@@ -102,6 +106,7 @@ impl Event {
             Event::ProvenanceRemoved => "provenance_removed",
             Event::Dormancy { .. } => "dormancy",
             Event::Deprecated => "deprecated",
+            Event::Unpublished => "unpublished",
         }
     }
 }
@@ -183,9 +188,16 @@ pub fn build(doc: &NpmPackument, package: &str, installed: Option<&str>) -> Time
 
     for (version, ts) in ordered {
         let Some(manifest) = versions.get(version) else {
-            // A `time` entry with no manifest is an unpublished version. It is
-            // still a real event in the package's history, but there is nothing
-            // to compare, so it is skipped rather than guessed at.
+            // A `time` entry with no manifest is an unpublished version: a real
+            // event in the history, kept as such. There is nothing to compare,
+            // so the next release is still compared with the last published one.
+            releases.push(Release {
+                version: version.to_string(),
+                published: ts,
+                publisher: None,
+                events: vec![Event::Unpublished],
+                installed: installed == Some(version),
+            });
             continue;
         };
         let mut events = Vec::new();
@@ -245,7 +257,11 @@ pub fn build(doc: &NpmPackument, package: &str, installed: Option<&str>) -> Time
         .filter(|r| r.events.is_empty() && !r.installed)
         .count();
     let installed_missing = installed
-        .filter(|v| !releases.iter().any(|r| r.version == *v))
+        .filter(|v| {
+            !releases
+                .iter()
+                .any(|r| r.version == *v && !r.events.contains(&Event::Unpublished))
+        })
         .map(str::to_string);
     Timeline {
         package: package.into(),
@@ -410,7 +426,7 @@ fn summary(t: &Timeline, notable: usize) -> String {
         );
     }
     format!(
-        "{}: {notable} release(s) changed who or how it publishes",
+        "{}: {notable} release(s) changed who or how it publishes, or were unpublished",
         t.package
     )
 }
@@ -664,13 +680,20 @@ mod tests {
     }
 
     #[test]
-    fn a_time_entry_without_a_manifest_is_skipped_not_guessed_at() {
-        // An unpublished version leaves a `time` entry behind; there is nothing
-        // to compare it against.
-        let mut doc = packument(&[("1.0.0", "2020-01-01", "a", false, "")]);
-        doc["time"]["9.9.9"] = json!("2021-01-01T00:00:00.000Z");
-        let t = build(&doc, "p", None);
-        assert_eq!(t.releases.len(), 1);
+    fn a_time_entry_without_a_manifest_is_an_unpublished_release() {
+        // An unpublished version leaves a `time` entry behind: listed, flagged,
+        // and the next release still compares with the last published one.
+        let mut doc = packument(&[
+            ("1.0.0", "2020-01-01", "a", false, ""),
+            ("1.2.0", "2020-06-01", "a", false, ""),
+        ]);
+        doc["time"]["1.1.0"] = json!("2020-03-01T00:00:00.000Z");
+        let t = build(&doc, "p", Some("1.1.0"));
+        assert_eq!(t.releases.len(), 3);
+        assert_eq!(t.releases[1].events, [Event::Unpublished]);
+        assert!(t.releases[1].installed);
+        assert_eq!(t.installed_missing.as_deref(), Some("1.1.0"));
+        assert!(t.releases[2].events.is_empty(), "1.2.0 compared with 1.0.0, not with nothing");
     }
 
     #[test]

@@ -29,7 +29,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 
 /// Marker written into the hook so a later run can tell it is ours and replace
 /// it safely. Anything without it is treated as somebody else's file.
@@ -117,7 +117,7 @@ set -e
 
 # Only when a manifest or lockfile is actually staged — every other commit
 # should cost nothing.
-if ! git diff --cached --name-only | grep -qE '(^|/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|Gemfile\.lock|composer\.lock|poetry\.lock|Pipfile\.lock|go\.sum|requirements.*\.txt|gradle\.lockfile)$'; then
+if ! git diff --cached --name-only | grep -qE '(^|/)(package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|yarn\.lock|Cargo\.lock|Gemfile\.lock|composer\.lock|poetry\.lock|Pipfile\.lock|uv\.lock|go\.sum|requirements.*\.txt|gradle\.lockfile)$'; then
   exit 0
 fi
 

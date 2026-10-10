@@ -6,15 +6,18 @@ Part of the [ecosystems](Ecosystems-and-Hosts) matrix.
 
 | File | Notes |
 | --- | --- |
-| `requirements.txt` | pip. |
+| `requirements.txt` | pip. Any other requirements file (`requirements/base.txt`, `constraints.txt`) is read when passed explicitly: `postmortem tree requirements/base.txt`. |
 | `poetry.lock` | Poetry - carries the resolved graph. |
+| `uv.lock` | uv - carries the resolved graph. Workspace members (editable / virtual sources) are the project, not dependencies. |
 
 Package names are normalized (case, `-`/`_`/`.`) so `Foo_Bar` and `foo-bar`
 match.
 
 ## Graph
 
-Poetry lockfiles give a full graph; a bare `requirements.txt` is flatter.
+Poetry and uv lockfiles give a full graph; a bare `requirements.txt` is flatter.
+In a uv workspace (Airflow and its 140 provider packages, say), every member's
+dependencies are direct.
 
 ## Licenses
 
@@ -27,6 +30,8 @@ See [Licenses](Licenses).
 
 Varies by format. `Pipfile.lock` is authoritative (`default` vs `develop`).
 `poetry.lock` uses `groups` (poetry >= 1.5) or the legacy `category` field.
+`uv.lock` seeds the workspace's `dev-dependencies` as dev, and its
+`dependencies` and optional extras as production.
 A bare `requirements.txt` carries no metadata, so only the filename convention
 (`requirements-dev.txt`, `requirements/dev.txt`, ...) marks it as development.
 See [Dependency scopes](Dependency-Scopes).

@@ -59,7 +59,7 @@ pub(crate) fn run_cache(args: cli::CacheArgs) -> Result<()> {
 
 /// The `cache info` view: one line per namespace, then the totals.
 fn render_cache_info(stats: &cache::CacheStats) {
-    use owo_colors::OwoColorize;
+    use crate::color::Paint;
     let where_ = stats
         .root
         .as_ref()

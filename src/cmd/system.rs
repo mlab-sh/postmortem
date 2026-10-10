@@ -125,7 +125,7 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
     // loader that used to carry it only prints on a terminal, so a redirected
     // run or a CI log never saw it.
     if read.len() > 1 {
-        use owo_colors::OwoColorize;
+        use crate::color::Paint;
         for inv in &read {
             eprintln!("  {:>10}  {}", inv.manager.bold(), inv.summary.dimmed());
         }
@@ -142,7 +142,7 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
     // DB, …) as a gochi alert followed by one bullet per caveat, so a system with
     // many caveats stays readable instead of collapsing into one run-on line.
     if !inv.notes.is_empty() {
-        use owo_colors::OwoColorize;
+        use crate::color::Paint;
         let header = format!(
             "{} trust caveat(s) — review before trusting this inventory",
             inv.notes.len()

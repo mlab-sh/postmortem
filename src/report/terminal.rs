@@ -1,5 +1,5 @@
 use comfy_table::{Cell, Table, presets::UTF8_FULL};
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 
 use crate::model::{Report, Severity};
 

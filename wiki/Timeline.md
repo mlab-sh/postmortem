@@ -42,6 +42,7 @@ is the signal.
 | `provenance added` / `removed` | A Trusted-Publishing attestation appeared or vanished. |
 | `released after Nd of silence` | A long dormancy broken. |
 | `deprecated` | Marked deprecated at this release. |
+| `unpublished` | Listed in the packument's `time` map, but its manifest is gone. The next release is compared with the last *published* one. |
 
 ## Why the sequence matters
 
@@ -59,6 +60,14 @@ sequence it is obviously a takeover. That is the whole reason this view exists.
 ```
 ⚠ you have event-stream@3.3.6 installed, and the registry no longer lists it —
   versions get unpublished, and malice is the usual reason
+```
+
+The version also shows in the history, marked `unpublished`:
+
+```
+  2018-09-05 ! 3.3.5        publisher changed  dominictarr → right9ctrl
+                            released after 779d of silence
+  2018-09-09 ! 3.3.6        unpublished
 ```
 
 Reported as a **finding**, not as a failed lookup. Versions disappear because

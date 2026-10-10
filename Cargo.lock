@@ -761,7 +761,7 @@ checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
 
 [[package]]
 name = "postmortem"
-version = "2.7.1"
+version = "2.7.2"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -774,6 +774,7 @@ dependencies = [
  "memchr",
  "owo-colors",
  "regex",
+ "ring",
  "rustls",
  "rustls-pki-types",
  "serde",

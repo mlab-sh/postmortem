@@ -372,7 +372,7 @@ pub fn evaluate(
 /// exit-code decision human-readable in CI logs. Written to stderr so it never
 /// corrupts `--json` on stdout.
 pub fn report(outcome: &Outcome, policy: &Policy) {
-    use owo_colors::OwoColorize;
+    use crate::color::Paint;
 
     for e in &outcome.expired_allows {
         eprintln!(

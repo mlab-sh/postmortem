@@ -23,7 +23,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result};
-use owo_colors::OwoColorize;
+use crate::color::Paint;
 use serde::Serialize;
 
 use crate::detect::{self, Detected};
@@ -38,6 +38,7 @@ const MARKERS: &[&str] = &[
     "yarn.lock",
     "poetry.lock",
     "Pipfile.lock",
+    "uv.lock",
     "requirements.txt",
     "Cargo.lock",
     "Gemfile.lock",
@@ -523,10 +524,7 @@ fn cat_file_batch(
 /// version-pinned target — the version follows either directly (`name@1.2.3`,
 /// `name (1.2.3)`, `path v1.2.3`, `/name/1.2.3`) or on the first `version` line
 /// after it (`package-lock.json`, `yarn.lock`, `Cargo.lock`, `poetry.lock`,
-/// `composer.lock`).
-// ponytail: textual, not parsed — a version line belonging to the *next* entry
-// can match when an entry has none. Re-parse the flipping revisions with the
-// real parsers if that ever produces a false window.
+/// `composer.lock`) — that line must directly follow the name.
 pub fn present_in(text: &str, targets: &[Target], names: &Names) -> HashSet<usize> {
     let mut found = HashSet::new();
     for m in names.re.find_iter(text) {
@@ -564,9 +562,14 @@ pub fn present_in(text: &str, targets: &[Target], names: &Names) -> HashSet<usiz
                             .map(|x| norm_ver(x) == v)
                             .unwrap_or(false)
                     };
+                    // The version line must be the entry's own: on the match's
+                    // line or the one right after. Further down it belongs to
+                    // the next entry (a yarn Berry `dependencies:` line is
+                    // followed by a blank line, then another block's version).
                     token(adjacent)
                         || tail
                             .lines()
+                            .take(2)
                             .find(|l| l.contains("version"))
                             .is_some_and(|l| {
                                 l.split(|c: char| !(c.is_ascii_alphanumeric() || "._+-".contains(c)))
@@ -726,6 +729,15 @@ mod tests {
         assert!(hits(gem, "rest-client@1.6.13"));
         let gomod = "\tgithub.com/boltdb-go/bolt v1.3.1\n";
         assert!(hits(gomod, "github.com/boltdb-go/bolt@1.3.1"));
+    }
+
+    #[test]
+    fn a_berry_dependency_line_does_not_borrow_the_next_blocks_version() {
+        // strapi: `color-name@2.0.1` was "found" via color-convert's `version: 2.0.1`.
+        let berry = "\"color-convert@npm:1.9.3\":\n  version: 1.9.3\n  dependencies:\n    color-name: \"npm:1.1.3\"\n  checksum: 10c0/5ad3\n  languageName: node\n  linkType: hard\n\n\"color-convert@npm:^2.0.1\":\n  version: 2.0.1\n";
+        assert!(!hits(berry, "color-name@2.0.1"));
+        assert!(hits(berry, "color-name@1.1.3"));
+        assert!(hits("\"color-name@npm:^1.0.0, color-name@npm:~1.1.4\":\n  version: 1.1.4\n", "color-name@1.1.4"));
     }
 
     #[test]

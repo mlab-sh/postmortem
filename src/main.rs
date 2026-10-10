@@ -15,6 +15,7 @@ mod cache;
 mod ci;
 mod cli;
 mod cmd;
+mod color;
 mod config;
 mod detect;
 mod diff;

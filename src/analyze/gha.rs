@@ -75,9 +75,15 @@ pub fn scan_dir(list: &util::Listing, out: &mut Vec<Finding>) {
         };
 
         // File-level: dangerous trigger, worse with an untrusted checkout.
-        let risky_trigger = text.contains("pull_request_target") || text.contains("workflow_run");
-        let untrusted_checkout =
-            text.contains("head.ref") || text.contains("head.sha") || text.contains("head_ref");
+        // Code only: n8n names `workflow_run` in a comment of a workflow that
+        // runs on `pull_request_review`.
+        let risky_trigger = text.lines().any(|l| {
+            let code = l.split(" #").next().unwrap_or(l);
+            !code.trim_start().starts_with('#')
+                && (code.contains("pull_request_target") || code.contains("workflow_run"))
+        });
+        let exec = exec_lines(&text);
+        let untrusted_checkout = untrusted_checkout(&text, &exec);
         if risky_trigger && untrusted_checkout {
             out.push(mk(Severity::High,
                 "`pull_request_target`/`workflow_run` checks out untrusted PR code and runs it with repo secrets (poisoned-pipeline execution)".into()));
@@ -87,8 +93,9 @@ pub fn scan_dir(list: &util::Listing, out: &mut Vec<Finding>) {
         }
 
         // File-level: expression injection into a shell step.
-        if text.contains("run:")
-            && let Some(inj) = INJECTABLE.iter().find(|i| text.contains(**i))
+        if let Some(inj) = INJECTABLE
+            .iter()
+            .find(|i| exec.iter().any(|l| l.contains(**i)))
         {
             out.push(mk(Severity::High,
                 format!("untrusted `${{{{ {inj} }}}}` may be interpolated into a `run:` step (expression injection)")));
@@ -131,6 +138,56 @@ pub fn scan_dir(list: &util::Listing, out: &mut Vec<Finding>) {
             }
         }
     }
+}
+
+/// Lines whose text is executed: the value of a `run:` step, or the `script:`
+/// of `actions/github-script`, inline or as a `|`/`>` block. An expression in
+/// `env:`, `if:`, `with:` or `concurrency:` is not interpolated into a shell —
+/// moving it to `env:` is the very fix for expression injection.
+fn exec_lines(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    // Indent of the key that opened the current block scalar.
+    let mut block: Option<usize> = None;
+    for line in text.lines() {
+        let indent = line.len() - line.trim_start().len();
+        if let Some(i) = block {
+            if line.trim().is_empty() || indent > i {
+                out.push(line);
+                continue;
+            }
+            block = None;
+        }
+        let key = line.trim_start().trim_start_matches("- ");
+        let Some(value) = key
+            .strip_prefix("run:")
+            .or_else(|| key.strip_prefix("script:"))
+        else {
+            continue;
+        };
+        let value = value.trim();
+        if value.starts_with(['|', '>']) {
+            // The key's own indent: `- run: |` nests its body under the `-`.
+            block = Some(indent);
+        } else {
+            out.push(value);
+        }
+    }
+    out
+}
+
+/// Does the workflow check out (or fetch) the PR head? Only a checkout `ref:` /
+/// `repository:` or a shell fetch counts — `head_ref` in a `concurrency.group`
+/// or an `env:` does not run anything.
+fn untrusted_checkout(text: &str, exec: &[&str]) -> bool {
+    const HEAD: &[&str] = &["head.ref", "head.sha", "head_ref", "head.repo", "refs/pull/", "merge_commit_sha"];
+    let checkout_key = text.lines().any(|l| {
+        let k = l.trim_start().trim_start_matches("- ");
+        (k.starts_with("ref:") || k.starts_with("repository:")) && HEAD.iter().any(|h| k.contains(h))
+    });
+    checkout_key
+        || exec.iter().any(|l| {
+            l.contains("gh pr checkout") || (l.contains("git fetch") && l.contains("pull/"))
+        })
 }
 
 /// Classify a `uses:` action reference. `None` when it's SHA-pinned, local
@@ -207,5 +264,28 @@ mod tests {
             "the SHA-pinned clean workflow is not flagged"
         );
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn expressions_outside_run_are_not_injection() {
+        // n8n / strapi / zed shapes: env:, if:, concurrency, reusable `with:`,
+        // and a privileged trigger that checks out a trusted branch.
+        let wf = "on: pull_request_target\nconcurrency:\n  group: ${{ github.head_ref || github.ref }}\njobs:\n  x:\n    if: startsWith(github.event.comment.body, '/cla')\n    uses: ./.github/workflows/r.yml\n    with:\n      body: ${{ github.event.pull_request.body }}\n  y:\n    steps:\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n        with:\n          ref: master\n      - env:\n          PR_TITLE: ${{ github.event.pull_request.title }}\n        run: |\n          echo \"$PR_TITLE\"\n";
+        let exec = exec_lines(wf);
+        assert!(!INJECTABLE.iter().any(|i| exec.iter().any(|l| l.contains(i))), "{exec:?}");
+        assert!(!untrusted_checkout(wf, &exec));
+
+        let bad = "steps:\n  - name: x\n    run: |\n      echo start\n      echo \"${{ github.event.issue.title }}\"\n  - uses: actions/checkout@v4\n    with:\n      ref: ${{ github.event.pull_request.head.sha }}\n";
+        let exec = exec_lines(bad);
+        let mut out = Vec::new();
+        let tmp = std::env::temp_dir().join(format!("pm-gha-c-{}", std::process::id()));
+        fs::create_dir_all(tmp.join(".github/workflows")).unwrap();
+        fs::write(tmp.join(".github/workflows/r.yml"),
+            "# workflow_run listens to this one\non:\n  pull_request_review:\n").unwrap();
+        scan_dir(&util::Listing::walk(&tmp), &mut out);
+        let _ = fs::remove_dir_all(&tmp);
+        assert!(out.is_empty(), "a trigger named in a comment is not a trigger: {out:?}");
+        assert!(exec.iter().any(|l| l.contains("issue.title")));
+        assert!(untrusted_checkout(bad, &exec));
     }
 }

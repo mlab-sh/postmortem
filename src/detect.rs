@@ -86,7 +86,7 @@ const NODE_LOCKS: &[&str] = &[
     "yarn.lock",
 ];
 
-const PY_LOCKS: &[&str] = &["poetry.lock", "Pipfile.lock"];
+const PY_LOCKS: &[&str] = &["poetry.lock", "uv.lock", "Pipfile.lock"];
 
 /// Detect every supported ecosystem present at `root`, picking one lockfile per
 /// ecosystem by the priority order of [`NODE_LOCKS`] / [`PY_LOCKS`]. Only the
@@ -186,12 +186,13 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
             Some(lock) => node_at(root, lock),
             None => anyhow::bail!("{}: no supported lockfile alongside it", target.display()),
         },
-        "poetry.lock" | "Pipfile.lock" => {
+        "poetry.lock" | "uv.lock" | "Pipfile.lock" => {
             let m = py_manifest(root).ok_or_else(|| missing("pyproject.toml/setup.py/Pipfile"))?;
             python_at(root, m, Some(file))
         }
-        // requirements.txt is its own manifest and its own pinned set.
-        "requirements.txt" => python_at(root, file.clone(), Some(file)),
+        // A requirements file is its own manifest and its own pinned set — any
+        // name (`requirements/base.txt`, `constraints.txt`) once it is named.
+        name if name.ends_with(".txt") => python_at(root, file.clone(), Some(file)),
         "pyproject.toml" | "setup.py" | "Pipfile" => python_at(root, file, py_lock(root)),
         "Cargo.lock" | "Cargo.toml" => {
             if !root.join("Cargo.toml").is_file() {
@@ -217,7 +218,7 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
         other => anyhow::bail!(
             "{other}: not a recognised manifest or lockfile — expected one of \
              package.json, package-lock.json, npm-shrinkwrap.json, pnpm-lock.yaml, yarn.lock, \
-             pyproject.toml, setup.py, Pipfile, Pipfile.lock, poetry.lock, requirements.txt, \
+             pyproject.toml, setup.py, Pipfile, Pipfile.lock, poetry.lock, uv.lock, requirements*.txt, \
              Cargo.toml, Cargo.lock, Gemfile.lock, composer.lock, go.mod, go.sum, pom.xml, \
              gradle.lockfile"
         ),
