@@ -105,3 +105,50 @@ In the GitHub Action, use the newline-separated `paths` input (it replaces
 
 The uploaded SARIF carries one `runs[]` entry per target, each with its own
 `SRCROOT`, so Code Scanning attributes every alert to the right package.
+
+## Opening an issue when the gate trips
+
+The GitHub Action can turn a tripped gate into an issue that explains it: which
+thresholds were exceeded and what each one measures, the vulnerable and risky
+packages (top 20 of each, read from the SARIF), how to fix or allowlist them,
+and the raw gate output.
+
+```yaml
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+  issues: write            # required by create-issue
+  security-events: write   # SARIF upload
+
+jobs:
+  supply-chain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlab-sh/postmortem@v2
+        with:
+          max-high: 0
+          fail-on-vuln: high
+          create-issue: true
+          issue-assignees: alice,bob   # optional
+```
+
+- **One issue per branch.** A later failing run refreshes the description and
+  adds a comment instead of opening a duplicate; the issue is found again by its
+  label (`issue-label`, default `postmortem`) and a hidden marker.
+- **Closes itself** with a comment once the gate passes again
+  (`close-issue-on-pass: false` to keep it open).
+- **Pull requests are skipped**: a fork's token is read-only, and a failing PR
+  already shows up as a failed check.
+- A misconfiguration (exit `2`) never opens an issue — it is a setup problem,
+  not a supply-chain one.
+- It never fails the job by itself: a missing `issues: write` permission or an
+  API error is reported as a warning.
+- Package names and advisory text come from third parties, so they are
+  rendered inert: code spans, no `@mentions`, no HTML.
+- The `issue-url` output holds the issue opened, updated or closed.

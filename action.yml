@@ -76,6 +76,23 @@ inputs:
     description: Report but never fail the job (exit 0 even when the gate trips).
     default: "false"
 
+  create-issue:
+    description: >-
+      Open a GitHub issue explaining the failure when the gate trips. One issue
+      per branch: later failures update it and comment, and it closes once the
+      gate passes again. Skipped on pull_request events (fork tokens are
+      read-only). Needs `permissions: issues: write`.
+    default: "false"
+  issue-label:
+    description: Label put on the issue and used to find it again (created if missing).
+    default: postmortem
+  issue-assignees:
+    description: Comma-separated GitHub logins to assign the issue to (optional).
+    default: ""
+  close-issue-on-pass:
+    description: Close the branch's open issue once the gate passes again.
+    default: "true"
+
   github-token:
     description: Token for the GitHub API (raises the reputation-scan rate limit).
     default: ${{ github.token }}
@@ -90,6 +107,9 @@ outputs:
   sarif-file:
     description: Path to the generated SARIF file (empty when sarif=false).
     value: ${{ steps.run.outputs.sarif-file }}
+  issue-url:
+    description: URL of the issue opened, updated or closed by create-issue (empty otherwise).
+    value: ${{ steps.issue.outputs.issue-url }}
 
 runs:
   using: composite
@@ -226,8 +246,181 @@ runs:
         fi
         exit "$code"
 
+    # Runs even when the gate step failed — that is the run that needs the issue.
+    # Never fails the job itself: any GitHub API problem is only a warning.
+    - name: Report gate result as an issue
+      id: issue
+      if: >-
+        ${{ always() && inputs.create-issue == 'true'
+            && steps.run.outputs.exit-code != ''
+            && github.event_name != 'pull_request'
+            && github.event_name != 'pull_request_target' }}
+      shell: bash
+      env:
+        CODE: ${{ steps.run.outputs.exit-code }}
+        SARIF: ${{ steps.run.outputs.sarif-file }}
+        LABEL: ${{ inputs.issue-label }}
+        ASSIGNEES: ${{ inputs.issue-assignees }}
+        CLOSE_ON_PASS: ${{ inputs.close-issue-on-pass }}
+        PM_VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        GH_REPO: ${{ github.repository }}
+        RUN_NUMBER: ${{ github.run_number }}
+      run: |
+        set -uo pipefail
+        warn() { echo "::warning::postmortem issue: $*"; exit 0; }
+        command -v gh >/dev/null || warn "gh CLI not found on this runner — skipped"
+        command -v jq >/dev/null || warn "jq not found on this runner — skipped"
+        [ "$CODE" = "0" ] || [ "$CODE" = "1" ] || exit 0   # exit 2 = misconfig, not a risk
+
+        branch="$GITHUB_REF_NAME"
+        marker="<!-- postmortem-gate:$branch -->"
+        repo_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+        run_url="$repo_url/actions/runs/$GITHUB_RUN_ID"
+        sha="${GITHUB_SHA:0:7}"
+        tmp="${RUNNER_TEMP:-/tmp}"
+
+        # The branch's open issue, found by the hidden marker in its body.
+        existing=$(gh issue list --label "$LABEL" --state open --limit 100 --json number,body,url \
+          | jq -r --arg m "$marker" 'map(select(.body | contains($m))) | first // empty | "\(.number) \(.url)"') \
+          || warn "could not list issues (does the workflow grant issues: write?)"
+        num="${existing%% *}"; url="${existing#* }"
+
+        if [ "$CODE" = "0" ]; then
+          if [ -n "$existing" ] && [ "$CLOSE_ON_PASS" = "true" ]; then
+            gh issue close "$num" --comment "✅ The gate passes again at commit [\`$sha\`]($repo_url/commit/$GITHUB_SHA) ([run #$RUN_NUMBER]($run_url)). Closing." \
+              || warn "could not close #$num"
+            echo "issue-url=$url" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+        fi
+
+        # ---- build the report -------------------------------------------------
+        plain=$(sed -r 's/\x1b\[[0-9;]*m//g' gate.txt 2>/dev/null)
+        # Violation lines: "    ✗ <metric padded>  <actual> > max <limit>"
+        violations=$(printf '%s\n' "$plain" | sed -nE 's/^ *✗ (.*[^ ]) +([^ ]+) > max (.*)$/\1\t\2\t\3/p')
+        nviol=$(printf '%s' "$violations" | grep -c . || true)
+
+        explain() {
+          case "$1" in
+            "risk score")      echo 'max-risk|Risk score (0-100) of the single worst dependency — repository reputation combined with identity and provenance signals.' ;;
+            "dep score")       echo 'max-dep|Worst subtree score (0-100): a dependency counted together with everything it pulls in.' ;;
+            "high-risk deps")  echo 'max-high|Dependencies rated *high risk*: missing or archived repository, recent maintainer change, likely typosquat…' ;;
+            "suspicious deps") echo 'max-sus|Dependencies with at least one suspicious signal worth a manual look.' ;;
+            "known vulns")     echo 'max-vulns|Number of known vulnerabilities (OSV / GHSA / CVE) across the dependency tree.' ;;
+            "vuln severity")   echo 'fail-on-vuln|At least one known vulnerability is at or above the configured severity.' ;;
+            *)                 echo "$1|" ;;
+          esac
+        }
+
+        body="$tmp/postmortem-issue.md"
+        {
+          echo "$marker"
+          echo "## 🛡️ postmortem supply-chain gate failed on \`$branch\`"
+          echo
+          echo "**$nviol threshold(s) exceeded** at commit [\`$sha\`]($repo_url/commit/$GITHUB_SHA) · [run #$RUN_NUMBER]($run_url) · postmortem \`$PM_VERSION\`"
+          echo
+          if [ -n "$violations" ]; then
+            echo "| Threshold | Value | Limit | What it means |"
+            echo "|---|---|---|---|"
+            while IFS=$'\t' read -r metric actual limit; do
+              e=$(explain "$metric")
+              echo "| \`${e%%|*}\` | **$actual** | $limit | ${e#*|} |"
+            done <<< "$violations"
+            echo
+          fi
+          checked=$(printf '%s\n' "$plain" | grep -E '^ {4}((risk|dep|high|sus|vulns) |[0-9]+ (package|pre-existing))' | sed 's/^ *//' | awk 'NR>1{printf " · "}{printf "%s",$0}')
+          [ -n "$checked" ] && { echo "<sub>Checked: $checked</sub>"; echo; }
+
+          if [ -n "$SARIF" ] && [ -s "$SARIF" ]; then
+            IFS= read -r -d '' prog <<'JQ' || true
+            def sev: (.properties["security-severity"] // "1.0") as $s
+              | {"9.0":"critical","7.5":"high","5.0":"medium","3.0":"low"}[$s] // "info";
+            def rank: {"critical":0,"high":1,"medium":2,"low":3}[.] // 4;
+            def emoji: {"critical":"🔴","high":"🟠","medium":"🟡","low":"🔵"}[.] // "⚪";
+            # Third-party text: no table breaks, no @mentions, no HTML.
+            def text: gsub("[\r\n]+";" ") | gsub("\\|";"\\|") | gsub("<";"&lt;") | gsub("@";"@​");
+            def code: gsub("[`\r\n]";"") | gsub("\\|";"\\|") | "`" + . + "`";
+            def table($title; $head; $rows):
+              if ($rows|length) == 0 then empty else
+                "### \($title) (\($rows|length))\n\n\($head)\n"
+                + ($rows[:20] | map(. + "\n") | add)
+                + (if ($rows|length) > 20 then "\n<sub>First 20 shown — the full list is under **Security → Code scanning** and in the run's SARIF.</sub>\n" else "" end)
+              end;
+            [.runs[].results[]] as $all
+            | ($all | map(select(.ruleId == "postmortem.known-vulnerability")
+                | .properties.advisory as $id | .message.text as $m
+                | ($m | index(": " + $id)) as $i
+                | { s: sev, id: $id,
+                    pkg: (if $i then $m[0:$i] else $m end),
+                    sum: (if $i then $m[$i + 2 + ($id|length):] | ltrimstr(" — ") else "" end) })
+                | unique_by(.pkg + " " + .id) | sort_by(.s | rank)
+                | map("| \(.s|emoji) \(.s) | \(.pkg|code) | [\(.id|text)](https://osv.dev/vulnerability/\(.id|@uri)) | \(.sum|text) |")) as $vulns
+            | ($all | map(select(.ruleId == "postmortem.dependency-risk")
+                | .properties as $p | sev as $s
+                | (.message.text | capture("^(?<pkg>.*) \\[(?<repo>[^\\]]*)\\] — (?<sig>.*)$") // {pkg: ., repo: "—", sig: ""})
+                | . + { s: $s, risk: ($p.risk // 0), dep: ($p.dep // 0) })
+                | unique_by(.pkg) | sort_by((.s | rank), -.risk)
+                | map("| \(.s|emoji) \(.s) | \(.pkg|code) | \(.risk) | \(.dep) | \(if .repo == "—" then "—" else (.repo|code) end) | \(.sig|text) |")) as $risky
+            | table("🐛 Known vulnerabilities"; "| Severity | Package | Advisory | Summary |\n|---|---|---|---|"; $vulns),
+              table("⚠️ Risky dependencies"; "| Severity | Package | Risk | Dep | Repository | Signals |\n|---|---|---|---|---|---|"; $risky)
+        JQ
+            jq -r "$prog" "$SARIF" || echo "_Could not read the SARIF for per-package details._"
+            echo
+          else
+            echo "_Per-package details need \`sarif: true\`._"
+            echo
+          fi
+
+          cat <<'MD'
+        ### 🔧 How to fix
+
+        1. **Upgrade or replace** the packages listed above. Most advisories have a fixed release — `postmortem fix` suggests the version bumps.
+        2. **Accept a known risk** by allowlisting it in `postmortem.conf`, with a reason and an expiry date:
+           ```toml
+           [[gate.allow]]
+           package = "name@1.2.3"
+           reason  = "why this is acceptable, tracked in #123"
+           expires = "2026-12-31"
+           ```
+        3. **Fail only on new risk** by passing a reference `tree --json` through the action's `baseline:` input.
+
+        Docs: [CI Gate](https://github.com/mlab-sh/postmortem/wiki/CI-Gate) · [Allowlist](https://github.com/mlab-sh/postmortem/wiki/Allowlist)
+
+        <details>
+        <summary>Raw gate output</summary>
+
+        ```
+        MD
+          printf '%s\n' "$plain" | head -c 20000
+          cat <<'MD'
+        ```
+
+        </details>
+
+        ---
+        <sub>Opened automatically by the [postmortem](https://github.com/mlab-sh/postmortem) action. Later failing runs update this issue and comment here; it closes on its own once the gate passes again. Learn more: [mlab.sh/postmortem](https://mlab.sh/postmortem)</sub>
+        MD
+        } > "$body"
+
+        # ---- open or update ---------------------------------------------------
+        if [ -n "$existing" ]; then
+          gh issue edit "$num" --body-file "$body" >/dev/null || warn "could not update #$num"
+          gh issue comment "$num" --body "❌ Still failing at commit [\`$sha\`]($repo_url/commit/$GITHUB_SHA) ([run #$RUN_NUMBER]($run_url)) — $nviol threshold(s) exceeded. The description above is refreshed." >/dev/null \
+            || warn "could not comment on #$num"
+        else
+          gh label create "$LABEL" --color B60205 --description "postmortem supply-chain gate" >/dev/null 2>&1 || true
+          extra=()
+          [ -n "$ASSIGNEES" ] && extra+=(--assignee "$ASSIGNEES")
+          url=$(gh issue create --title "postmortem: supply-chain gate tripped on $branch" \
+                  --label "$LABEL" --body-file "$body" ${extra[@]+"${extra[@]}"}) \
+            || warn "could not create the issue (does the workflow grant issues: write?)"
+        fi
+        echo "issue-url=$url" >> "$GITHUB_OUTPUT"
+        echo "postmortem issue: $url"
+
     - name: Upload SARIF
-      if: ${{ inputs.sarif == 'true' && steps.run.outputs.sarif-file != '' }}
+      if: ${{ always() && inputs.sarif == 'true' && steps.run.outputs.sarif-file != '' }}
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: ${{ steps.run.outputs.sarif-file }}

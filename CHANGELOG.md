@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`create-issue` in the GitHub Action.** When the gate trips, the action
+  opens an issue explaining it: the exceeded thresholds and what each measures,
+  the vulnerable and risky packages (from the SARIF), how to fix or allowlist
+  them. One issue per branch — later failures refresh it and comment, and it
+  closes once the gate passes again. Skipped on pull requests; needs
+  `permissions: issues: write`. New inputs `issue-label`, `issue-assignees`,
+  `close-issue-on-pass`, new output `issue-url`. See
+  [CI Gate](wiki/CI-Gate.md#opening-an-issue-when-the-gate-trips).
+
+### Fixed
+
+- **GitHub Action: SARIF is now uploaded when the gate trips.** The upload step
+  lacked `always()`, so a failing gate skipped it and Code Scanning never saw
+  the findings of exactly the run that needed them.
+
 ## [2.7.2]
 
 Fixes from a field test on n8n, Strapi, Zed, Airflow and an `npx n8n` install.
