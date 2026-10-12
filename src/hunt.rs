@@ -330,7 +330,8 @@ fn pin_file(d: &Detected) -> Option<&Path> {
         | Detected::Ruby { lockfile, .. }
         | Detected::Php { lockfile, .. }
         | Detected::Cocoapods { lockfile, .. }
-        | Detected::Swift { lockfile, .. } => Some(lockfile),
+        | Detected::Swift { lockfile, .. }
+        | Detected::Dart { lockfile, .. } => Some(lockfile),
         Detected::Python { lockfile, manifest, .. } => Some(lockfile.as_deref().unwrap_or(manifest)),
         Detected::Go { manifest, .. } => Some(manifest),
         Detected::Java { lockfile, manifest, .. } | Detected::Dotnet { lockfile, manifest, .. } => {

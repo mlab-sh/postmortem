@@ -69,7 +69,8 @@ pub fn scans_dependency_code(detected: &[Detected]) -> bool {
         | Detected::Java { .. }
         | Detected::Dotnet { .. }
         | Detected::Cocoapods { .. }
-        | Detected::Swift { .. } => false,
+        | Detected::Swift { .. }
+        | Detected::Dart { .. } => false,
     })
 }
 
@@ -506,6 +507,8 @@ fn plan<'a>(
             Detected::Dotnet { .. } => {}
             // ponytail: no Swift/Obj-C content analyzer yet (needs Lang::Swift).
             Detected::Cocoapods { .. } | Detected::Swift { .. } => {}
+            // ponytail: no Dart content analyzer yet (needs Lang::Dart).
+            Detected::Dart { .. } => {}
         }
     }
 

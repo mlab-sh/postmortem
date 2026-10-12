@@ -84,6 +84,7 @@ fn lockfile_hint(ecosystem: &str) -> &'static str {
         "maven" | "java" => "pom.xml",
         "nuget" | "dotnet" => "packages.lock.json",
         "cocoapods" => "Podfile.lock",
+        "dart" | "pub" => "pubspec.lock",
         "swift" | "swifturl" => "Package.resolved",
         _ => "lockfile",
     }

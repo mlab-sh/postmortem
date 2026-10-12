@@ -243,6 +243,9 @@ pub struct Endpoints {
     /// CocoaPods trunk API. Default `https://trunk.cocoapods.org`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cocoapods: Option<String>,
+    /// pub.dev API (Dart / Flutter). Default `https://pub.dev`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pub_dev: Option<String>,
     /// deps.dev API (Java and Go licenses). Default `https://api.deps.dev`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deps_dev: Option<String>,
@@ -301,6 +304,9 @@ impl Endpoints {
     }
     pub fn cocoapods(&self) -> String {
         base(&self.cocoapods, "https://trunk.cocoapods.org")
+    }
+    pub fn pub_dev(&self) -> String {
+        base(&self.pub_dev, "https://pub.dev")
     }
     pub fn deps_dev(&self) -> String {
         base(&self.deps_dev, "https://api.deps.dev")

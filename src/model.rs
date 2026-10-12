@@ -17,6 +17,8 @@ pub enum Ecosystem {
     Cocoapods,
     /// Swift Package Manager (`Package.resolved`).
     Swift,
+    /// Dart / Flutter — pub packages (`pubspec.lock`).
+    Dart,
     /// Homebrew (macOS/Linux) — an OS-level package manager, surfaced by the
     /// `system` command rather than the project-lockfile parsers.
     Brew,
@@ -69,6 +71,7 @@ impl Ecosystem {
             Ecosystem::Dotnet => "dotnet",
             Ecosystem::Cocoapods => "cocoapods",
             Ecosystem::Swift => "swift",
+            Ecosystem::Dart => "dart",
             Ecosystem::Brew => "brew",
             Ecosystem::Pacman => "pacman",
             Ecosystem::Apt => "apt",

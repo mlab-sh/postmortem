@@ -69,6 +69,12 @@ pub enum Detected {
         /// `Package.resolved`, at the root or inside an Xcode project/workspace.
         lockfile: PathBuf,
     },
+    Dart {
+        root: PathBuf,
+        /// `pubspec.lock` — marks the direct set itself; `pubspec.yaml` is not
+        /// needed.
+        lockfile: PathBuf,
+    },
 }
 
 impl Detected {
@@ -84,6 +90,7 @@ impl Detected {
             Detected::Dotnet { .. } => "dotnet",
             Detected::Cocoapods { .. } => "cocoapods",
             Detected::Swift { .. } => "swift",
+            Detected::Dart { .. } => "dart",
         }
     }
 
@@ -99,7 +106,8 @@ impl Detected {
             | Detected::Java { root, .. }
             | Detected::Dotnet { root, .. }
             | Detected::Cocoapods { root, .. }
-            | Detected::Swift { root, .. } => root,
+            | Detected::Swift { root, .. }
+            | Detected::Dart { root, .. } => root,
         }
     }
 }
@@ -193,6 +201,14 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
         out.push(swift_at(root, resolved));
     }
 
+    let pubspec_lock = root.join("pubspec.lock");
+    if pubspec_lock.is_file() {
+        out.push(Detected::Dart {
+            root: root.to_path_buf(),
+            lockfile: pubspec_lock,
+        });
+    }
+
     Ok(out)
 }
 
@@ -275,6 +291,20 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
             lockfile: file,
         },
         "Package.resolved" => swift_at(root, file),
+        "pubspec.lock" => Detected::Dart {
+            root: root.to_path_buf(),
+            lockfile: file,
+        },
+        "pubspec.yaml" => {
+            let lock = root.join("pubspec.lock");
+            if !lock.is_file() {
+                anyhow::bail!("{}: no pubspec.lock alongside it", target.display());
+            }
+            Detected::Dart {
+                root: root.to_path_buf(),
+                lockfile: lock,
+            }
+        }
         "Package.swift" => match swift_resolved(root) {
             Some(resolved) => swift_at(root, resolved),
             None => anyhow::bail!("{}: no Package.resolved alongside it", target.display()),
@@ -293,7 +323,7 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
              pyproject.toml, setup.py, Pipfile, Pipfile.lock, poetry.lock, uv.lock, requirements*.txt, \
              Cargo.toml, Cargo.lock, Gemfile.lock, composer.lock, go.mod, go.sum, pom.xml, \
              gradle.lockfile, packages.lock.json, *.csproj, *.fsproj, *.vbproj, Podfile.lock, \
-             Package.resolved, Package.swift"
+             Package.resolved, Package.swift, pubspec.lock, pubspec.yaml"
         ),
     };
     Ok(vec![detected])

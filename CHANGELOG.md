@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pin list named by repo path (`github.com/apple/swift-nio`), direct set from
   `Package.swift`. `--online`: trunk for pods (new `cocoapods` endpoint),
   the path itself for SwiftPM. See [Swift / iOS](wiki/Swift.md).
+- **Dart / Flutter.** `pubspec.lock`: the direct set and the dev split of
+  direct packages come from the lockfile; the graph is flat (no edges). `sdk`
+  and `path` packages are left out. `--online` through pub.dev (new `pub_dev`
+  endpoint); a git package resolves to its own repo, and a private pub
+  server's package is never looked up on pub.dev. `--vulns` uploads the
+  lockfile to vuln.mlab.sh. See [Dart / Flutter](wiki/Dart.md).
 
 - **`create-issue` in the GitHub Action.** When the gate trips, the action
   opens an issue explaining it: the exceeded thresholds and what each measures,

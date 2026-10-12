@@ -19,6 +19,7 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 | [**.NET**](DotNet) | NuGet (`packages.lock.json`, `*.csproj`) | deps.dev |
 | [**CocoaPods**](Swift) | `Podfile.lock` | CocoaPods trunk |
 | [**SwiftPM**](Swift) | `Package.resolved` | *(none - the package path is the repo)* |
+| [**Dart / Flutter**](Dart) | pub (`pubspec.lock`) | pub.dev |
 | [**Homebrew**](Homebrew) | via [`system`](System) | formulae.brew.sh |
 | [**pacman**](Pacman) | via [`system`](System) | AUR RPC *(+ homepage → repo)* |
 | [**apt / dpkg**](Apt) | via [`system`](System) | *(none - homepage → repo)* |
@@ -26,7 +27,7 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 | [**Nix**](Nix) | via [`system`](System) | *(none - store closure + signatures)* |
 | [**apk**](Apk) | via [`system`](System) | *(none - homepage → repo)* |
 
-> Go, Java, SwiftPM (and .NET without `packages.lock.json`) are **flat-graph** ecosystems offline (transitive parent edges
+> Go, Java, SwiftPM, Dart (and .NET without `packages.lock.json`) are **flat-graph** ecosystems offline (transitive parent edges
 > can't be reconstructed without the toolchain). postmortem emits a
 > **diagnostic** when the graph is incomplete, so a small result is never
 > silently read as "clean".
@@ -48,7 +49,7 @@ what its lockfile records:
 | Support | Ecosystems | Source |
 | --- | --- | --- |
 | **Complete** (transitives included) | PHP, Python (pipenv), Java (Gradle) | The lockfile resolves the dev tree itself. |
-| **Seeded** (direct deps, then propagated) | Node, Rust, Python (poetry), Ruby, Java (Maven) | The manifest classifies direct deps; the graph does the rest. |
+| **Seeded** (direct deps, then propagated) | Node, Rust, Python (poetry), Ruby, Java (Maven), Dart (direct only - no edges) | The manifest classifies direct deps; the graph does the rest. |
 | **None** | Go, Python (`requirements.txt`), .NET, CocoaPods, SwiftPM | No distinction exists in the format. |
 
 ## Code hosts

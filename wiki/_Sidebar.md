@@ -34,6 +34,7 @@
 - [Java](Java)
 - [.NET](DotNet)
 - [Swift / iOS](Swift)
+- [Dart / Flutter](Dart)
 
 **System managers**
 - [Homebrew](Homebrew)

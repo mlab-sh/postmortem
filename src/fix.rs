@@ -243,6 +243,7 @@ pub fn upgrade_command(eco: Ecosystem, name: &str, target: &str) -> Option<Strin
         // The requirement lives in Package.swift; `swift package update` only
         // moves within it.
         Ecosystem::Swift => return None,
+        Ecosystem::Dart => format!("dart pub add {name}:^{target}"),
         // OS packages are the distro's to move, not a manifest edit.
         Ecosystem::Brew => format!("brew upgrade {name}"),
         Ecosystem::Pacman => format!("pacman -Syu {name}"),
@@ -305,6 +306,10 @@ pub fn override_snippet(
             format!("<dependencyManagement> pins {name} to {target}"),
         ),
         // A direct reference wins over the transitive one (NuGet "direct wins").
+        Ecosystem::Dart => (
+            "pubspec.yaml",
+            format!("dependency_overrides:\n  {name}: ^{target}"),
+        ),
         Ecosystem::Dotnet => (
             "*.csproj (or Directory.Packages.props)",
             format!("<PackageReference Include=\"{name}\" Version=\"{target}\" />"),

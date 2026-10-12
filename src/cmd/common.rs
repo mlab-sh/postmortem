@@ -66,6 +66,7 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
             manifest.as_deref().map(|m| (m, vuln::COORDS_NUGET))
         }
         detect::Detected::Swift { lockfile, .. } => Some((lockfile.as_path(), vuln::COORDS_SWIFT)),
+        detect::Detected::Dart { lockfile, .. } => Some((lockfile.as_path(), "")),
         detect::Detected::Cocoapods { .. } => None,
     }
 }
@@ -319,6 +320,21 @@ fn parse_one(eco: &detect::Detected) -> (Vec<model::Dependency>, Vec<model::Diag
                     "dotnet graph is flat — no packages.lock.json, so only the project's direct PackageReferences are known (enable RestorePackagesWithLockFile)".into(),
                 );
             }
+        }
+        detect::Detected::Dart { lockfile, .. } => {
+            match parsers::dart::parse_lockfile(lockfile) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "dart",
+                    "parse_failed",
+                    format!("pubspec.lock parse failed: {e:#}"),
+                ),
+            }
+            diag(
+                "dart",
+                "flat_graph",
+                "dart graph is flat — pubspec.lock marks direct vs transitive but records no edges".into(),
+            );
         }
         detect::Detected::Cocoapods { lockfile, .. } => {
             match parsers::swift::parse_podfile_lock(lockfile) {

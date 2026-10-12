@@ -52,6 +52,12 @@ pub(super) fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) ->
             urlencode(dep.name.split('/').next().unwrap_or(&dep.name)),
             urlencode(&dep.version),
         ),
+        Ecosystem::Dart => format!(
+            "{}/api/packages/{}/versions/{}",
+            ep.pub_dev(),
+            dep.name,
+            urlencode(&dep.version),
+        ),
         // Homebrew: the formula JSON carries `homepage` (often a GitHub repo).
         // The name can contain `@` (`openssl@3`); the API path takes it verbatim.
         Ecosystem::Brew => format!("{}/api/formula/{}.json", ep.brew(), dep.name),
@@ -290,6 +296,10 @@ pub(super) fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<Stri
         .into_iter()
         .flatten()
         .collect(),
+        Ecosystem::Dart => v
+            .get("pubspec")
+            .map(|p| [s(p, "repository"), s(p, "homepage")].into_iter().flatten().collect())
+            .unwrap_or_default(),
         Ecosystem::Cocoapods => [
             v.get("source").and_then(|src| s(src, "git")),
             s(v, "homepage"),
