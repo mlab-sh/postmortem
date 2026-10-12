@@ -58,6 +58,17 @@ pub enum Detected {
         /// `packages.lock.json` if present — the full resolved NuGet graph.
         lockfile: Option<PathBuf>,
     },
+    Cocoapods {
+        root: PathBuf,
+        lockfile: PathBuf,
+    },
+    Swift {
+        root: PathBuf,
+        /// `Package.swift` if present — its `.package(url:)`s are the direct set.
+        manifest: Option<PathBuf>,
+        /// `Package.resolved`, at the root or inside an Xcode project/workspace.
+        lockfile: PathBuf,
+    },
 }
 
 impl Detected {
@@ -71,6 +82,8 @@ impl Detected {
             Detected::Go { .. } => "go",
             Detected::Java { .. } => "java",
             Detected::Dotnet { .. } => "dotnet",
+            Detected::Cocoapods { .. } => "cocoapods",
+            Detected::Swift { .. } => "swift",
         }
     }
 
@@ -84,7 +97,9 @@ impl Detected {
             | Detected::Php { root, .. }
             | Detected::Go { root, .. }
             | Detected::Java { root, .. }
-            | Detected::Dotnet { root, .. } => root,
+            | Detected::Dotnet { root, .. }
+            | Detected::Cocoapods { root, .. }
+            | Detected::Swift { root, .. } => root,
         }
     }
 }
@@ -165,6 +180,19 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
         });
     }
 
+    // CocoaPods always resolves the Podfile into a Podfile.lock.
+    let podfile_lock = root.join("Podfile.lock");
+    if podfile_lock.is_file() {
+        out.push(Detected::Cocoapods {
+            root: root.to_path_buf(),
+            lockfile: podfile_lock,
+        });
+    }
+
+    if let Some(resolved) = swift_resolved(root) {
+        out.push(swift_at(root, resolved));
+    }
+
     Ok(out)
 }
 
@@ -242,6 +270,15 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
             manifest: dotnet_project(root),
             lockfile: Some(file),
         },
+        "Podfile.lock" => Detected::Cocoapods {
+            root: root.to_path_buf(),
+            lockfile: file,
+        },
+        "Package.resolved" => swift_at(root, file),
+        "Package.swift" => match swift_resolved(root) {
+            Some(resolved) => swift_at(root, resolved),
+            None => anyhow::bail!("{}: no Package.resolved alongside it", target.display()),
+        },
         name if is_dotnet_project(name) => {
             let lock = root.join("packages.lock.json");
             Detected::Dotnet {
@@ -255,7 +292,8 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
              package.json, package-lock.json, npm-shrinkwrap.json, pnpm-lock.yaml, yarn.lock, \
              pyproject.toml, setup.py, Pipfile, Pipfile.lock, poetry.lock, uv.lock, requirements*.txt, \
              Cargo.toml, Cargo.lock, Gemfile.lock, composer.lock, go.mod, go.sum, pom.xml, \
-             gradle.lockfile, packages.lock.json, *.csproj, *.fsproj, *.vbproj"
+             gradle.lockfile, packages.lock.json, *.csproj, *.fsproj, *.vbproj, Podfile.lock, \
+             Package.resolved, Package.swift"
         ),
     };
     Ok(vec![detected])
@@ -335,6 +373,38 @@ fn gradle_at(root: &Path, lockfile: PathBuf) -> Detected {
             .find(|p| p.is_file()),
         lockfile: Some(lockfile),
     }
+}
+
+/// A `Package.resolved` sitting next to an Xcode file is not the package's
+/// own: the manifest is not consulted then.
+fn swift_at(root: &Path, lockfile: PathBuf) -> Detected {
+    let manifest = root.join("Package.swift");
+    Detected::Swift {
+        root: root.to_path_buf(),
+        manifest: (manifest.is_file() && lockfile.parent() == Some(root)).then_some(manifest),
+        lockfile,
+    }
+}
+
+/// SwiftPM's resolved pins: at the root for a package, or where Xcode keeps
+/// them — `X.xcworkspace/xcshareddata/swiftpm/` (preferred: it covers every
+/// project in it) or `X.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/`.
+fn swift_resolved(root: &Path) -> Option<PathBuf> {
+    let direct = root.join("Package.resolved");
+    if direct.is_file() {
+        return Some(direct);
+    }
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(root).ok()?.flatten().map(|e| e.path()).collect();
+    entries.sort();
+    let tail = Path::new("xcshareddata/swiftpm/Package.resolved");
+    let in_ext = |ext: &str, sub: &str| {
+        entries
+            .iter()
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some(ext))
+            .map(|p| p.join(sub).join(tail))
+            .find(|p| p.is_file())
+    };
+    in_ext("xcworkspace", "").or_else(|| in_ext("xcodeproj", "project.xcworkspace"))
 }
 
 fn is_dotnet_project(name: &str) -> bool {

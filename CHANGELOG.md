@@ -16,7 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   versions from the nearest `Directory.Packages.props`, and a `flat_graph`
   diagnostic. `--online` resolves repos and licenses through deps.dev; `sbom`
   emits `pkg:nuget/…`; `fix` suggests `dotnet add package`. No C# content
-  scan, typosquat corpus or `--vulns` yet. See [.NET](wiki/DotNet.md).
+  scan or typosquat corpus yet. See [.NET](wiki/DotNet.md).
+- **Swift / iOS: CocoaPods and SwiftPM.** `Podfile.lock` gives the full graph
+  (subspecs as nodes, `DEPENDENCIES` as the direct set); a pod from `:git:`
+  resolves to that repo, not to the same-named trunk pod. `Package.resolved`
+  (v1-v3, at the root or inside an `.xcworkspace` / `.xcodeproj`) gives a flat
+  pin list named by repo path (`github.com/apple/swift-nio`), direct set from
+  `Package.swift`. `--online`: trunk for pods (new `cocoapods` endpoint),
+  the path itself for SwiftPM. See [Swift / iOS](wiki/Swift.md).
+
 - **`create-issue` in the GitHub Action.** When the gate trips, the action
   opens an issue explaining it: the exceeded thresholds and what each measures,
   the vulnerable and risky packages (from the SARIF), how to fix or allowlist
@@ -25,6 +33,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `permissions: issues: write`. New inputs `issue-label`, `issue-assignees`,
   `close-issue-on-pass`, new output `issue-url`. See
   [CI Gate](wiki/CI-Gate.md#opening-an-issue-when-the-gate-trips).
+
+### Changed
+
+- **`--vulns` covers every ecosystem vuln.mlab.sh can read.** yarn, pnpm,
+  poetry, uv, Pipfile, `pom.xml`, `gradle.lockfile` and `packages.lock.json`
+  were skipped as "not covered by the advisory API"; they are now uploaded.
+  What mlab cannot parse is sent as OSV coordinates: `go.mod` without `go.sum`,
+  a `.csproj` without lockfile, SwiftPM pins (`SwiftURL`). Only CocoaPods stays
+  unassessed (no OSV ecosystem).
 
 ### Fixed
 

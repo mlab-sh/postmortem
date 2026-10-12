@@ -45,6 +45,12 @@ postmortem tree . --online --languages  # + repo language / breakdown
 Scans the lockfile against the mlab SBOM API (`vuln.mlab.sh`, OSV/GHSA/CVE) and
 lists advisories per package, worst-severity first. Independent of `--online`.
 
+Every advisory lookup goes through vuln.mlab.sh. Lockfiles it reads are uploaded
+as is (npm, yarn, pnpm, Cargo, poetry, uv, Pipfile, requirements, composer,
+Gemfile, go.sum, pom.xml, gradle.lockfile, packages.lock.json); the rest are
+parsed locally and sent as OSV coordinates (`go.mod` without `go.sum`, a
+`.csproj` alone, SwiftPM's `Package.resolved`). CocoaPods has no OSV data.
+
 ```bash
 postmortem tree . --vulns
 postmortem tree . --online --vulns      # reputation + CVEs together

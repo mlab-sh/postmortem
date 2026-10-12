@@ -95,6 +95,7 @@ written back to `config.yml`.
 | `crates` | `https://crates.io` | Rust |
 | `rubygems` | `https://rubygems.org` | Ruby |
 | `packagist` | `https://packagist.org` | PHP |
+| `cocoapods` | `https://trunk.cocoapods.org` | CocoaPods |
 | `deps_dev` | `https://api.deps.dev` | Java and Go licenses |
 | `github` | `https://api.github.com` | repo stats — set for GitHub Enterprise |
 | `github_raw` | `https://raw.githubusercontent.com` | reading a repo's `package.json` |

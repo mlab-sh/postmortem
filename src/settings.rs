@@ -240,6 +240,9 @@ pub struct Endpoints {
     /// Packagist API. Default `https://packagist.org`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub packagist: Option<String>,
+    /// CocoaPods trunk API. Default `https://trunk.cocoapods.org`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cocoapods: Option<String>,
     /// deps.dev API (Java and Go licenses). Default `https://api.deps.dev`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deps_dev: Option<String>,
@@ -295,6 +298,9 @@ impl Endpoints {
     }
     pub fn packagist(&self) -> String {
         base(&self.packagist, "https://packagist.org")
+    }
+    pub fn cocoapods(&self) -> String {
+        base(&self.cocoapods, "https://trunk.cocoapods.org")
     }
     pub fn deps_dev(&self) -> String {
         base(&self.deps_dev, "https://api.deps.dev")

@@ -61,6 +61,28 @@ pub struct VulnPackage {
     pub vulns: Vec<Vuln>,
 }
 
+/// `format`s that mlab cannot parse itself: the file is parsed here and its
+/// coordinates are sent through [`scan_coordinates`] under this OSV ecosystem.
+pub const COORDS_GO: &str = "coords:Go";
+pub const COORDS_NUGET: &str = "coords:NuGet";
+pub const COORDS_SWIFT: &str = "coords:SwiftURL";
+
+/// The `(OSV ecosystem, name, version)` coordinates of a file mlab cannot read.
+fn coordinates_of(path: &Path, osv_eco: &str) -> Result<Vec<(String, String, String)>> {
+    let deps = match osv_eco {
+        "Go" => crate::parsers::go::parse(path, None)?,
+        "NuGet" => crate::parsers::dotnet::parse(Some(path), None)?,
+        "SwiftURL" => crate::parsers::swift::parse_package_resolved(path, None)?,
+        other => anyhow::bail!("no coordinate parser for {other}"),
+    };
+    Ok(deps
+        .into_iter()
+        // `managed` (no version anywhere) and a branch pin match no range.
+        .filter(|d| !d.version.is_empty() && d.version != "managed")
+        .map(|d| (osv_eco.to_string(), d.name, d.version))
+        .collect())
+}
+
 /// Scan one lockfile through mlab. `format` is a mlab format hint
 /// (`npm`/`cargo`/`pip`/`composer`/`gem`/`go`) or empty for auto-detect.
 /// Returns only the packages that carry vulnerabilities.
@@ -72,6 +94,10 @@ pub fn scan(
     format: &str,
     scan_url: &str,
 ) -> Result<Vec<VulnPackage>> {
+    if let Some(osv_eco) = format.strip_prefix("coords:") {
+        let coords = coordinates_of(lockfile, osv_eco)?;
+        return scan_coordinates(agent, cache, token, &coords, scan_url);
+    }
     let bytes =
         std::fs::read(lockfile).with_context(|| format!("reading {}", lockfile.display()))?;
 

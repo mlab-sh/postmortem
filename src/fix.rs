@@ -239,6 +239,10 @@ pub fn upgrade_command(eco: Ecosystem, name: &str, target: &str) -> Option<Strin
         Ecosystem::Go => format!("go get {name}@v{}", target.trim_start_matches('v')),
         Ecosystem::Java => return None, // no single canonical CLI; the pin is the edit
         Ecosystem::Dotnet => format!("dotnet add package {name} --version {target}"),
+        Ecosystem::Cocoapods => format!("pod update {}", name.split('/').next().unwrap_or(name)),
+        // The requirement lives in Package.swift; `swift package update` only
+        // moves within it.
+        Ecosystem::Swift => return None,
         // OS packages are the distro's to move, not a manifest edit.
         Ecosystem::Brew => format!("brew upgrade {name}"),
         Ecosystem::Pacman => format!("pacman -Syu {name}"),

@@ -17,9 +17,14 @@ type ParsedProject = (
     Vec<model::Diagnostic>,
 );
 
-/// Map a detected ecosystem to the lockfile + mlab `format` its vuln API
-/// accepts, or `None` when mlab doesn't support that format (pnpm/yarn, poetry/
-/// Pipfile, Java).
+/// Map a detected ecosystem to the file + mlab `format` its vuln API reads, or
+/// `None` when there is nothing to send (CocoaPods: OSV has no such ecosystem).
+///
+/// Every advisory lookup goes through vuln.mlab.sh. An empty format lets the
+/// service detect it from the content (yarn, pnpm, poetry, uv, Pipfile, pom.xml,
+/// gradle.lockfile); a `vuln::COORDS_*` format sends the file's parsed
+/// `(ecosystem, name, version)` coordinates instead, for the formats mlab
+/// cannot read itself.
 pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)> {
     let base = |p: &Path| {
         p.file_name()
@@ -28,11 +33,13 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
             .to_string()
     };
     match d {
-        detect::Detected::Node { lockfile, .. } => matches!(
-            base(lockfile).as_str(),
-            "package-lock.json" | "npm-shrinkwrap.json"
-        )
-        .then_some((lockfile.as_path(), "npm")),
+        detect::Detected::Node { lockfile, .. } => Some((
+            lockfile.as_path(),
+            match base(lockfile).as_str() {
+                "package-lock.json" | "npm-shrinkwrap.json" => "npm",
+                _ => "",
+            },
+        )),
         detect::Detected::Rust { lockfile, .. } => Some((lockfile.as_path(), "cargo")),
         detect::Detected::Php { lockfile, .. } => Some((lockfile.as_path(), "composer")),
         detect::Detected::Ruby { lockfile, .. } => Some((lockfile.as_path(), "gem")),
@@ -40,23 +47,26 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
             lockfile: Some(go_sum),
             ..
         } => Some((go_sum.as_path(), "go")),
+        detect::Detected::Go { manifest, .. } => Some((manifest.as_path(), vuln::COORDS_GO)),
         detect::Detected::Python {
             lockfile, manifest, ..
-        } => {
-            if lockfile
-                .as_ref()
-                .is_some_and(|p| base(p).ends_with(".txt"))
-            {
-                lockfile.as_deref().map(|p| (p, "pip"))
-            } else if base(manifest).ends_with(".txt") {
-                Some((manifest.as_path(), "pip"))
-            } else {
-                None
-            }
+        } => match lockfile {
+            Some(l) if base(l).ends_with(".txt") => Some((l.as_path(), "pip")),
+            Some(l) => Some((l.as_path(), "")),
+            None if base(manifest).ends_with(".txt") => Some((manifest.as_path(), "pip")),
+            None => None,
+        },
+        detect::Detected::Java {
+            lockfile, manifest, ..
+        } => lockfile.as_deref().or(manifest.as_deref()).map(|p| (p, "")),
+        detect::Detected::Dotnet {
+            lockfile: Some(l), ..
+        } => Some((l.as_path(), "nuget")),
+        detect::Detected::Dotnet { manifest, .. } => {
+            manifest.as_deref().map(|m| (m, vuln::COORDS_NUGET))
         }
-        detect::Detected::Go { .. }
-        | detect::Detected::Java { .. }
-        | detect::Detected::Dotnet { .. } => None,
+        detect::Detected::Swift { lockfile, .. } => Some((lockfile.as_path(), vuln::COORDS_SWIFT)),
+        detect::Detected::Cocoapods { .. } => None,
     }
 }
 
@@ -309,6 +319,33 @@ fn parse_one(eco: &detect::Detected) -> (Vec<model::Dependency>, Vec<model::Diag
                     "dotnet graph is flat — no packages.lock.json, so only the project's direct PackageReferences are known (enable RestorePackagesWithLockFile)".into(),
                 );
             }
+        }
+        detect::Detected::Cocoapods { lockfile, .. } => {
+            match parsers::swift::parse_podfile_lock(lockfile) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "cocoapods",
+                    "parse_failed",
+                    format!("Podfile.lock parse failed: {e:#}"),
+                ),
+            }
+        }
+        detect::Detected::Swift {
+            manifest, lockfile, ..
+        } => {
+            match parsers::swift::parse_package_resolved(lockfile, manifest.as_deref()) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "swift",
+                    "parse_failed",
+                    format!("Package.resolved parse failed: {e:#}"),
+                ),
+            }
+            diag(
+                "swift",
+                "flat_graph",
+                "swift graph is flat — Package.resolved pins every package but records no edges".into(),
+            );
         }
     }
     (deps, diags)

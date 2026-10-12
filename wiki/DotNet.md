@@ -44,8 +44,12 @@ Needs `--online`, from deps.dev (version-pinned, SPDX). See [Licenses](Licenses)
   `api.deps.dev/v3/systems/nuget/packages/<id>/versions/<version>` → the `links`
   array, preferring `SOURCE_REPO`.
 
+## Vulnerabilities
+
+Through vuln.mlab.sh: `packages.lock.json` is uploaded as is; a project file
+alone is sent as its NuGet coordinates.
+
 ## Not covered yet
 
 - Source-code scanning of C# / F# (no content analyzer for those languages).
 - Typosquatting (no NuGet corpus).
-- `--vulns` (the mlab scan API has no NuGet format).

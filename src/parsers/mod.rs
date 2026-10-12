@@ -7,6 +7,7 @@ pub mod pnpm;
 pub mod python;
 pub mod ruby;
 pub mod rust;
+pub mod swift;
 pub mod yarn;
 
 use serde_yaml::Value;

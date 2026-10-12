@@ -67,7 +67,9 @@ pub fn scans_dependency_code(detected: &[Detected]) -> bool {
         Detected::Rust { .. }
         | Detected::Ruby { .. }
         | Detected::Java { .. }
-        | Detected::Dotnet { .. } => false,
+        | Detected::Dotnet { .. }
+        | Detected::Cocoapods { .. }
+        | Detected::Swift { .. } => false,
     })
 }
 
@@ -502,6 +504,8 @@ fn plan<'a>(
             // ponytail: no C# content analyzer yet (needs Lang::CSharp patterns);
             // NuGet packages live in ~/.nuget/packages, never in-repo.
             Detected::Dotnet { .. } => {}
+            // ponytail: no Swift/Obj-C content analyzer yet (needs Lang::Swift).
+            Detected::Cocoapods { .. } | Detected::Swift { .. } => {}
         }
     }
 

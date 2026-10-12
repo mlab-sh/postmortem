@@ -20,6 +20,9 @@ fn purl_type(eco: Ecosystem) -> &'static str {
         Ecosystem::Go => "golang",
         Ecosystem::Java => "maven",
         Ecosystem::Dotnet => "nuget",
+        Ecosystem::Cocoapods => "cocoapods",
+        // `pkg:swift/github.com/apple/swift-nio@2.65.0` — the name is the path.
+        Ecosystem::Swift => "swift",
         Ecosystem::Brew => "brew",
         Ecosystem::Pacman => "alpm",
         Ecosystem::Apt => "deb",

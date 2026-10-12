@@ -406,6 +406,23 @@ impl Resolver {
         dep: &Dependency,
         history: &mut history::Fetched,
     ) -> Result<CachedRepo> {
+        // A SwiftPM package is named by its repository path: no registry exists.
+        if dep.ecosystem == Ecosystem::Swift {
+            return Ok(CachedRepo {
+                repo: parse_repo(&dep.name),
+                ..Default::default()
+            });
+        }
+        // A pod taken from `:git:` is that repo, not whatever trunk publishes
+        // under the same name — often the upstream of the fork in use.
+        if dep.ecosystem == Ecosystem::Cocoapods
+            && let Some(url) = &dep.resolved_url
+        {
+            return Ok(CachedRepo {
+                repo: parse_repo(url),
+                ..Default::default()
+            });
+        }
         // Go's module path *is* its repo, so the repo needs no request at all.
         // The license does: it is the one ecosystem where postmortem makes a
         // call it would not otherwise make, so it is skipped unless the caller

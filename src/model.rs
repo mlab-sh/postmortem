@@ -13,6 +13,10 @@ pub enum Ecosystem {
     Java,
     /// .NET — NuGet packages (`packages.lock.json` / `*.csproj`).
     Dotnet,
+    /// CocoaPods (`Podfile.lock`).
+    Cocoapods,
+    /// Swift Package Manager (`Package.resolved`).
+    Swift,
     /// Homebrew (macOS/Linux) — an OS-level package manager, surfaced by the
     /// `system` command rather than the project-lockfile parsers.
     Brew,
@@ -63,6 +67,8 @@ impl Ecosystem {
             Ecosystem::Go => "go",
             Ecosystem::Java => "java",
             Ecosystem::Dotnet => "dotnet",
+            Ecosystem::Cocoapods => "cocoapods",
+            Ecosystem::Swift => "swift",
             Ecosystem::Brew => "brew",
             Ecosystem::Pacman => "pacman",
             Ecosystem::Apt => "apt",

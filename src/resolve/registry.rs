@@ -44,12 +44,21 @@ pub(super) fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) ->
             urlencode(&dep.name),
             urlencode(&dep.version),
         ),
+        // Trunk redirects to the version's podspec JSON. A subspec
+        // (`Firebase/Core`) is described by its pod's spec.
+        Ecosystem::Cocoapods => format!(
+            "{}/api/v1/pods/{}/specs/{}",
+            ep.cocoapods(),
+            urlencode(dep.name.split('/').next().unwrap_or(&dep.name)),
+            urlencode(&dep.version),
+        ),
         // Homebrew: the formula JSON carries `homepage` (often a GitHub repo).
         // The name can contain `@` (`openssl@3`); the API path takes it verbatim.
         Ecosystem::Brew => format!("{}/api/formula/{}.json", ep.brew(), dep.name),
         // Go's module path and Pacman's package URL resolve without a registry
         // call (repo parsed from the name / `resolved_url`).
         Ecosystem::Go
+        | Ecosystem::Swift
         | Ecosystem::Pacman
         | Ecosystem::Apt
         | Ecosystem::Dnf
@@ -168,6 +177,8 @@ pub(super) fn raw_licenses_from(dep: &Dependency, v: &serde_json::Value) -> Vec<
         }
         // deps.dev is already version-pinned and returns SPDX identifiers.
         Ecosystem::Java | Ecosystem::Dotnet | Ecosystem::Go => arr_at(v, "licenses"),
+        // A podspec's `license` is `"MIT"` or `{"type": "MIT", "file": ...}`.
+        Ecosystem::Cocoapods => npm_licenses(v.get("license"), None),
         // OS packages: licensing is a distro concern, not resolved here.
         _ => Vec::new(),
     }
@@ -279,8 +290,16 @@ pub(super) fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<Stri
         .into_iter()
         .flatten()
         .collect(),
+        Ecosystem::Cocoapods => [
+            v.get("source").and_then(|src| s(src, "git")),
+            s(v, "homepage"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
         // Resolved directly from the name / resolved_url, never via a registry.
         Ecosystem::Go
+        | Ecosystem::Swift
         | Ecosystem::Pacman
         | Ecosystem::Apt
         | Ecosystem::Dnf
