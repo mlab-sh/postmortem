@@ -45,6 +45,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Vulnerabilities: Conan goes to vuln.mlab.sh as OSV `ConanCenter` (nearly
   empty); vcpkg has no OSV ecosystem and is reported unassessed. Both enable
   the C/C++ source scan of the project. See [C / C++](wiki/Cpp.md).
+- **Scala / sbt and Clojure / Leiningen.** Both publish Maven coordinates and
+  are reported as `java`, detected as `scala` / `clojure`; neither has a
+  lockfile, so the declared set is read, flat. sbt: `build.sbt` +
+  `project/*.scala`, `%%` suffixed from `scalaVersion`, identifiers resolved
+  to the nearest `val` (comments ignored), `% Test` as dev. Leiningen:
+  `project.clj` read with a Clojure reader, `:profiles` as dev,
+  `:managed-dependencies` for missing versions. `--vulns` sends OSV `Maven`
+  coordinates to vuln.mlab.sh (riemann: 22 advisories). `--online` falls back
+  to **Clojars** (new `clojars` endpoint) when deps.dev has no record, and
+  resolves **JitPack** coordinates (`com.github.<user>.<repo>`) to their GitHub
+  repo: lichess goes from 18 unchecked packages to 2. See [JVM](wiki/Java.md).
 
 - **`create-issue` in the GitHub Action.** When the gate trips, the action
   opens an issue explaining it: the exceeded thresholds and what each measures,

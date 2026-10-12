@@ -15,7 +15,7 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 | [**Ruby**](Ruby) | Bundler (`Gemfile.lock`) | RubyGems |
 | [**PHP**](PHP) | Composer (`composer.lock`) | Packagist |
 | [**Go**](Go) | modules (`go.mod`, `go.sum`) | *(none - the module path is the repo)* |
-| [**Java**](Java) | Maven, Gradle (`pom.xml`, `build.gradle`) | deps.dev |
+| [**Java**](Java) | Maven, Gradle, sbt, Leiningen (`pom.xml`, `build.gradle`, `build.sbt`, `project.clj`) | deps.dev, Clojars |
 | [**.NET**](DotNet) | NuGet (`packages.lock.json`, `*.csproj`) | deps.dev |
 | [**CocoaPods**](Swift) | `Podfile.lock` | CocoaPods trunk |
 | [**SwiftPM**](Swift) | `Package.resolved` | *(none - the package path is the repo)* |

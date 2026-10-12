@@ -4,12 +4,14 @@ pub mod dotnet;
 pub mod elixir;
 pub mod go;
 pub mod java;
+pub mod lein;
 pub mod node;
 pub mod php;
 pub mod pnpm;
 pub mod python;
 pub mod ruby;
 pub mod rust;
+pub mod sbt;
 pub mod swift;
 pub mod yarn;
 

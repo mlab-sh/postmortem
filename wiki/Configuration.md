@@ -98,6 +98,7 @@ written back to `config.yml`.
 | `cocoapods` | `https://trunk.cocoapods.org` | CocoaPods |
 | `pub_dev` | `https://pub.dev` | Dart / Flutter |
 | `hex` | `https://hex.pm` | Elixir / Erlang |
+| `clojars` | `https://clojars.org` | Clojure (when deps.dev has no record) |
 | `deps_dev` | `https://api.deps.dev` | Java and Go licenses |
 | `github` | `https://api.github.com` | repo stats — set for GitHub Enterprise |
 | `github_raw` | `https://raw.githubusercontent.com` | reading a repo's `package.json` |

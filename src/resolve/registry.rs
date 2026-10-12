@@ -112,6 +112,12 @@ pub(super) fn registry_url_fallback(
     Some(match dep.ecosystem {
         Ecosystem::Python => format!("{}/pypi/{}/json", ep.pypi(), dep.name),
         Ecosystem::Ruby => format!("{}/api/v1/gems/{}.json", ep.rubygems(), dep.name),
+        // Clojure libraries mostly live on Clojars alone, which deps.dev does
+        // not index. Its artifact document is the latest release's.
+        Ecosystem::Java => {
+            let (group, artifact) = dep.name.split_once(':')?;
+            format!("{}/api/artifacts/{group}/{artifact}", ep.clojars())
+        }
         _ => return None,
     })
 }
@@ -195,6 +201,12 @@ pub(super) fn raw_licenses_from(dep: &Dependency, v: &serde_json::Value) -> Vec<
                 .map(|ver| arr_at(ver, "license"))
                 .unwrap_or_default()
         }
+        // Clojars: `licenses` is `[{name, url}]`.
+        Ecosystem::Java if v.get("jar_name").is_some() => v
+            .get("licenses")
+            .and_then(|l| l.as_array())
+            .map(|a| a.iter().filter_map(|l| str_at(l, "name")).collect())
+            .unwrap_or_default(),
         // deps.dev is already version-pinned and returns SPDX identifiers.
         Ecosystem::Java | Ecosystem::Dotnet | Ecosystem::Go => arr_at(v, "licenses"),
         Ecosystem::Elixir => v.get("meta").map(|m| arr_at(m, "licenses")).unwrap_or_default(),
@@ -281,6 +293,13 @@ pub(super) fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<Stri
             .and_then(|p| s(p, "repository"))
             .into_iter()
             .collect(),
+        Ecosystem::Java if v.get("jar_name").is_some() => [
+            v.get("scm").and_then(|scm| s(scm, "url")),
+            s(v, "homepage"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
         Ecosystem::Java | Ecosystem::Dotnet => v
             .get("links")
             .and_then(|l| l.as_array())

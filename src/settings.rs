@@ -243,6 +243,9 @@ pub struct Endpoints {
     /// CocoaPods trunk API. Default `https://trunk.cocoapods.org`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cocoapods: Option<String>,
+    /// Clojars API (Clojure). Default `https://clojars.org`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clojars: Option<String>,
     /// Hex API (Elixir / Erlang). Default `https://hex.pm`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hex: Option<String>,
@@ -307,6 +310,9 @@ impl Endpoints {
     }
     pub fn cocoapods(&self) -> String {
         base(&self.cocoapods, "https://trunk.cocoapods.org")
+    }
+    pub fn clojars(&self) -> String {
+        base(&self.clojars, "https://clojars.org")
     }
     pub fn hex(&self) -> String {
         base(&self.hex, "https://hex.pm")

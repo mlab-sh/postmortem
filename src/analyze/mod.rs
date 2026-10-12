@@ -73,7 +73,9 @@ pub fn scans_dependency_code(detected: &[Detected]) -> bool {
         | Detected::Dart { .. }
         | Detected::Elixir { .. }
         | Detected::Conan { .. }
-        | Detected::Vcpkg { .. } => false,
+        | Detected::Vcpkg { .. }
+        | Detected::Scala { .. }
+        | Detected::Clojure { .. } => false,
     })
 }
 
@@ -514,6 +516,9 @@ fn plan<'a>(
             Detected::Dart { .. } => {}
             // ponytail: no Elixir content analyzer yet (needs Lang::Elixir).
             Detected::Elixir { .. } => {}
+            // ponytail: no Scala / Clojure content analyzer yet (Lang::Java
+            // covers .java/.kt only).
+            Detected::Scala { .. } | Detected::Clojure { .. } => {}
             // The project's own C/C++ source; dependencies live in the Conan
             // cache / vcpkg_installed, outside the walk's reach.
             Detected::Conan { root, .. } | Detected::Vcpkg { root, .. } => {

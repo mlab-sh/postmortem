@@ -88,6 +88,18 @@ pub enum Detected {
         /// `conan.lock` if present — the resolved set.
         lockfile: Option<PathBuf>,
     },
+    /// Scala / sbt — Maven coordinates, reported as `java`.
+    Scala {
+        root: PathBuf,
+        /// `build.sbt`; `project/*.scala` beside it is read too.
+        manifest: PathBuf,
+    },
+    /// Clojure / Leiningen — Maven coordinates, reported as `java`.
+    Clojure {
+        root: PathBuf,
+        /// `project.clj`.
+        manifest: PathBuf,
+    },
     Vcpkg {
         root: PathBuf,
         /// `vcpkg.json`.
@@ -114,6 +126,8 @@ impl Detected {
             Detected::Elixir { .. } => "elixir",
             Detected::Conan { .. } => "conan",
             Detected::Vcpkg { .. } => "vcpkg",
+            Detected::Scala { .. } => "scala",
+            Detected::Clojure { .. } => "clojure",
         }
     }
 
@@ -133,7 +147,9 @@ impl Detected {
             | Detected::Dart { root, .. }
             | Detected::Elixir { root, .. }
             | Detected::Conan { root, .. }
-            | Detected::Vcpkg { root, .. } => root,
+            | Detected::Vcpkg { root, .. }
+            | Detected::Scala { root, .. }
+            | Detected::Clojure { root, .. } => root,
         }
     }
 }
@@ -230,6 +246,22 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
     let conan = conan_at(root, None);
     if matches!(&conan, Detected::Conan { manifest, lockfile, .. } if manifest.is_some() || lockfile.is_some()) {
         out.push(conan);
+    }
+
+    // sbt and Leiningen publish Maven coordinates; neither has a lockfile.
+    let build_sbt = root.join("build.sbt");
+    if build_sbt.is_file() {
+        out.push(Detected::Scala {
+            root: root.to_path_buf(),
+            manifest: build_sbt,
+        });
+    }
+    let project_clj = root.join("project.clj");
+    if project_clj.is_file() {
+        out.push(Detected::Clojure {
+            root: root.to_path_buf(),
+            manifest: project_clj,
+        });
     }
 
     let vcpkg_json = root.join("vcpkg.json");
@@ -342,6 +374,14 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
             other => other,
         },
         "vcpkg.json" => vcpkg_at(root, file),
+        "build.sbt" => Detected::Scala {
+            root: root.to_path_buf(),
+            manifest: file,
+        },
+        "project.clj" => Detected::Clojure {
+            root: root.to_path_buf(),
+            manifest: file,
+        },
         "mix.lock" => elixir_at(root, file),
         "mix.exs" => {
             let lock = root.join("mix.lock");
@@ -383,7 +423,7 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
              Cargo.toml, Cargo.lock, Gemfile.lock, composer.lock, go.mod, go.sum, pom.xml, \
              gradle.lockfile, packages.lock.json, *.csproj, *.fsproj, *.vbproj, Podfile.lock, \
              Package.resolved, Package.swift, pubspec.lock, pubspec.yaml, mix.lock, mix.exs, \
-             conan.lock, conanfile.txt, conanfile.py, vcpkg.json"
+             conan.lock, conanfile.txt, conanfile.py, vcpkg.json, build.sbt, project.clj"
         ),
     };
     Ok(vec![detected])

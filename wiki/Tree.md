@@ -49,7 +49,8 @@ Every advisory lookup goes through vuln.mlab.sh. Lockfiles it reads are uploaded
 as is (npm, yarn, pnpm, Cargo, poetry, uv, Pipfile, requirements, composer,
 Gemfile, go.sum, pom.xml, gradle.lockfile, packages.lock.json, pubspec.lock, mix.lock); the rest are
 parsed locally and sent as OSV coordinates (`go.mod` without `go.sum`, a
-`.csproj` alone, SwiftPM's `Package.resolved`, Conan as `ConanCenter` - nearly
+`.csproj` alone, SwiftPM's `Package.resolved`, `build.sbt` and `project.clj` as
+`Maven`, Conan as `ConanCenter` - nearly
 empty in OSV). CocoaPods and vcpkg have no OSV ecosystem: they are reported as
 unassessed.
 

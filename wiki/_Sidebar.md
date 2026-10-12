@@ -31,7 +31,7 @@
 - [Ruby](Ruby)
 - [PHP](PHP)
 - [Go](Go)
-- [Java](Java)
+- [JVM (Java, Scala, Clojure)](Java)
 - [.NET](DotNet)
 - [Swift / iOS](Swift)
 - [Dart / Flutter](Dart)

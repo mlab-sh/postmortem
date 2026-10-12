@@ -75,6 +75,9 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
             .as_deref()
             .or(manifest.as_deref())
             .map(|p| (p, vuln::COORDS_CONAN)),
+        detect::Detected::Scala { manifest, .. } | detect::Detected::Clojure { manifest, .. } => {
+            Some((manifest.as_path(), vuln::COORDS_MAVEN))
+        }
         // No OSV ecosystem: no advisory source to ask.
         detect::Detected::Cocoapods { .. } | detect::Detected::Vcpkg { .. } => None,
     }
@@ -356,6 +359,32 @@ fn parse_one(eco: &detect::Detected) -> (Vec<model::Dependency>, Vec<model::Diag
                     .into(),
                 );
             }
+        }
+        detect::Detected::Scala { manifest, .. } => {
+            match parsers::sbt::parse(manifest) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag("scala", "parse_failed", format!("build.sbt parse failed: {e:#}")),
+            }
+            diag(
+                "scala",
+                "flat_graph",
+                "scala graph is flat — sbt has no lockfile, so only the build's declared dependencies are known (no transitive closure offline)".into(),
+            );
+        }
+        detect::Detected::Clojure { manifest, .. } => {
+            match parsers::lein::parse(manifest) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "clojure",
+                    "parse_failed",
+                    format!("project.clj parse failed: {e:#}"),
+                ),
+            }
+            diag(
+                "clojure",
+                "flat_graph",
+                "clojure graph is flat — Leiningen has no lockfile, so only project.clj's declared dependencies are known (no transitive closure offline)".into(),
+            );
         }
         detect::Detected::Vcpkg {
             manifest, status, ..

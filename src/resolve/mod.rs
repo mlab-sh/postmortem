@@ -682,6 +682,9 @@ impl Resolver {
         {
             repo = dep.resolved_url.as_deref().and_then(parse_repo);
         }
+        if repo.is_none() && dep.ecosystem == Ecosystem::Java {
+            repo = jitpack_repo(&dep.name);
+        }
         let record = CachedRepo {
             repo,
             licenses,
@@ -692,6 +695,19 @@ impl Resolver {
     }
 }
 
+/// A JitPack artifact names its GitHub repo in its coordinate:
+/// `com.github.<user>:<repo>` or `com.github.<user>.<repo>:<module>`. Neither
+/// Maven Central nor deps.dev knows these (sbt and Leiningen builds use them).
+fn jitpack_repo(name: &str) -> Option<RepoRef> {
+    let (group, artifact) = name.split_once(':')?;
+    let rest = group.strip_prefix("com.github.")?;
+    let (user, repo) = match rest.split_once('.') {
+        Some((user, repo)) => (user, repo),
+        None => (rest, artifact),
+    };
+    parse_repo(&format!("https://github.com/{user}/{repo}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -699,6 +715,20 @@ mod tests {
     /// The npm record read from the packument must be the record the version
     /// manifest gave — same repo, same raw licenses, same cached JSON — or every
     /// cache entry written from now on would differ from the ones before it.
+    #[test]
+    fn jitpack_coordinates_name_their_repo() {
+        let slug = |n: &str| jitpack_repo(n).map(|r| format!("{}/{}", r.owner, r.name));
+        assert_eq!(
+            slug("com.github.lichess-org.scalachess:scalachess_3").as_deref(),
+            Some("lichess-org/scalachess")
+        );
+        assert_eq!(
+            slug("com.github.lenguyenthanh:scala-probabilistic-data-structures").as_deref(),
+            Some("lenguyenthanh/scala-probabilistic-data-structures")
+        );
+        assert_eq!(slug("org.typelevel:cats-core_3"), None);
+    }
+
     #[test]
     fn npm_record_from_the_packument_matches_the_version_manifest() {
         let doc = serde_json::json!({

@@ -306,8 +306,10 @@ pub fn override_snippet(
         ),
         Ecosystem::Ruby => ("Gemfile", format!("gem \"{name}\", \">= {target}\"")),
         Ecosystem::Java => (
-            "pom.xml",
-            format!("<dependencyManagement> pins {name} to {target}"),
+            "pom.xml / build.sbt / project.clj",
+            format!(
+                "pin {name} to {target}: <dependencyManagement> (Maven), dependencyOverrides (sbt), :managed-dependencies (Leiningen)"
+            ),
         ),
         // A direct reference wins over the transitive one (NuGet "direct wins").
         Ecosystem::Conan => (

@@ -67,6 +67,7 @@ pub const COORDS_GO: &str = "coords:Go";
 pub const COORDS_NUGET: &str = "coords:NuGet";
 pub const COORDS_SWIFT: &str = "coords:SwiftURL";
 pub const COORDS_CONAN: &str = "coords:ConanCenter";
+pub const COORDS_MAVEN: &str = "coords:Maven";
 
 /// The `(OSV ecosystem, name, version)` coordinates of a file mlab cannot read.
 fn coordinates_of(path: &Path, osv_eco: &str) -> Result<Vec<(String, String, String)>> {
@@ -74,6 +75,11 @@ fn coordinates_of(path: &Path, osv_eco: &str) -> Result<Vec<(String, String, Str
         "Go" => crate::parsers::go::parse(path, None)?,
         "NuGet" => crate::parsers::dotnet::parse(Some(path), None)?,
         "SwiftURL" => crate::parsers::swift::parse_package_resolved(path, None)?,
+        // sbt and Leiningen: the build file names which.
+        "Maven" if path.file_name().is_some_and(|n| n == "project.clj") => {
+            crate::parsers::lein::parse(path)?
+        }
+        "Maven" => crate::parsers::sbt::parse(path)?,
         "ConanCenter" => {
             let lock = path.file_name().is_some_and(|n| n == "conan.lock");
             crate::parsers::cpp::parse_conan(lock.then_some(path), (!lock).then_some(path))?

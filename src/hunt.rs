@@ -335,7 +335,9 @@ fn pin_file(d: &Detected) -> Option<&Path> {
         | Detected::Elixir { lockfile, .. } => Some(lockfile),
         Detected::Python { lockfile, manifest, .. } => Some(lockfile.as_deref().unwrap_or(manifest)),
         Detected::Go { manifest, .. } => Some(manifest),
-        Detected::Vcpkg { manifest, .. } => Some(manifest),
+        Detected::Vcpkg { manifest, .. }
+        | Detected::Scala { manifest, .. }
+        | Detected::Clojure { manifest, .. } => Some(manifest),
         Detected::Java { lockfile, manifest, .. }
         | Detected::Dotnet { lockfile, manifest, .. }
         | Detected::Conan { lockfile, manifest, .. } => {
