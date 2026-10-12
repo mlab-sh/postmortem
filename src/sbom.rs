@@ -26,6 +26,9 @@ fn purl_type(eco: Ecosystem) -> &'static str {
         Ecosystem::Dart => "pub",
         // A private organisation's package is `org/pkg`: purl's namespace.
         Ecosystem::Elixir => "hex",
+        Ecosystem::Conan => "conan",
+        // No registered purl type for vcpkg; `generic` is the spec's escape hatch.
+        Ecosystem::Vcpkg => "generic",
         Ecosystem::Brew => "brew",
         Ecosystem::Pacman => "alpm",
         Ecosystem::Apt => "deb",

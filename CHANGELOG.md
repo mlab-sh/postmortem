@@ -36,6 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and dev/test split from `mix.exs` `deps`. `--online` through hex.pm (new
   `hex` endpoint); `--vulns` uploads the lockfile to vuln.mlab.sh. Plausible
   (169 packages): 98 direct, 19 advisories. See [Elixir / Hex](wiki/Elixir.md).
+- **C / C++: Conan and vcpkg.** Conan: `conan.lock` v2 (flat; `build_requires`
+  as dev) and v1 (graph), else `conanfile.txt` / `conanfile.py`; `@user/channel`
+  packages are never matched to ConanCenter. vcpkg: the build's
+  `vcpkg_installed/vcpkg/status` gives the full graph with exact versions,
+  else `vcpkg.json` (features included, overlay ports kept off the registry).
+  `--online` reads conan-center-index recipes and microsoft/vcpkg ports.
+  Vulnerabilities: Conan goes to vuln.mlab.sh as OSV `ConanCenter` (nearly
+  empty); vcpkg has no OSV ecosystem and is reported unassessed. Both enable
+  the C/C++ source scan of the project. See [C / C++](wiki/Cpp.md).
 
 - **`create-issue` in the GitHub Action.** When the gate trips, the action
   opens an issue explaining it: the exceeded thresholds and what each measures,

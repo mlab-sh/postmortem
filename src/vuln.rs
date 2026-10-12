@@ -66,6 +66,7 @@ pub struct VulnPackage {
 pub const COORDS_GO: &str = "coords:Go";
 pub const COORDS_NUGET: &str = "coords:NuGet";
 pub const COORDS_SWIFT: &str = "coords:SwiftURL";
+pub const COORDS_CONAN: &str = "coords:ConanCenter";
 
 /// The `(OSV ecosystem, name, version)` coordinates of a file mlab cannot read.
 fn coordinates_of(path: &Path, osv_eco: &str) -> Result<Vec<(String, String, String)>> {
@@ -73,12 +74,21 @@ fn coordinates_of(path: &Path, osv_eco: &str) -> Result<Vec<(String, String, Str
         "Go" => crate::parsers::go::parse(path, None)?,
         "NuGet" => crate::parsers::dotnet::parse(Some(path), None)?,
         "SwiftURL" => crate::parsers::swift::parse_package_resolved(path, None)?,
+        "ConanCenter" => {
+            let lock = path.file_name().is_some_and(|n| n == "conan.lock");
+            crate::parsers::cpp::parse_conan(lock.then_some(path), (!lock).then_some(path))?
+        }
         other => anyhow::bail!("no coordinate parser for {other}"),
     };
     Ok(deps
         .into_iter()
-        // `managed` (no version anywhere) and a branch pin match no range.
-        .filter(|d| !d.version.is_empty() && d.version != "managed")
+        // `managed` (no version anywhere), a branch pin, a Conan range or
+        // system wrapper match no advisory range.
+        .filter(|d| {
+            !d.version.is_empty()
+                && !matches!(d.version.as_str(), "managed" | "system")
+                && !d.version.starts_with('[')
+        })
         .map(|d| (osv_eco.to_string(), d.name, d.version))
         .collect())
 }

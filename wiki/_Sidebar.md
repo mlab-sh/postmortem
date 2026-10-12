@@ -36,6 +36,7 @@
 - [Swift / iOS](Swift)
 - [Dart / Flutter](Dart)
 - [Elixir / Hex](Elixir)
+- [C / C++](Cpp)
 
 **System managers**
 - [Homebrew](Homebrew)

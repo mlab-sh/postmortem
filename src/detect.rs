@@ -81,6 +81,20 @@ pub enum Detected {
         manifest: Option<PathBuf>,
         lockfile: PathBuf,
     },
+    Conan {
+        root: PathBuf,
+        /// `conanfile.txt` or `conanfile.py` — the declared (direct) set.
+        manifest: Option<PathBuf>,
+        /// `conan.lock` if present — the resolved set.
+        lockfile: Option<PathBuf>,
+    },
+    Vcpkg {
+        root: PathBuf,
+        /// `vcpkg.json`.
+        manifest: PathBuf,
+        /// `vcpkg_installed/vcpkg/status` — what a build installed, if one ran.
+        status: Option<PathBuf>,
+    },
 }
 
 impl Detected {
@@ -98,6 +112,8 @@ impl Detected {
             Detected::Swift { .. } => "swift",
             Detected::Dart { .. } => "dart",
             Detected::Elixir { .. } => "elixir",
+            Detected::Conan { .. } => "conan",
+            Detected::Vcpkg { .. } => "vcpkg",
         }
     }
 
@@ -115,7 +131,9 @@ impl Detected {
             | Detected::Cocoapods { root, .. }
             | Detected::Swift { root, .. }
             | Detected::Dart { root, .. }
-            | Detected::Elixir { root, .. } => root,
+            | Detected::Elixir { root, .. }
+            | Detected::Conan { root, .. }
+            | Detected::Vcpkg { root, .. } => root,
         }
     }
 }
@@ -207,6 +225,16 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
 
     if let Some(resolved) = swift_resolved(root) {
         out.push(swift_at(root, resolved));
+    }
+
+    let conan = conan_at(root, None);
+    if matches!(&conan, Detected::Conan { manifest, lockfile, .. } if manifest.is_some() || lockfile.is_some()) {
+        out.push(conan);
+    }
+
+    let vcpkg_json = root.join("vcpkg.json");
+    if vcpkg_json.is_file() {
+        out.push(vcpkg_at(root, vcpkg_json));
     }
 
     let mix_lock = root.join("mix.lock");
@@ -304,6 +332,16 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
             lockfile: file,
         },
         "Package.resolved" => swift_at(root, file),
+        "conan.lock" => conan_at(root, Some(file)),
+        "conanfile.txt" | "conanfile.py" => match conan_at(root, None) {
+            Detected::Conan { root, lockfile, .. } => Detected::Conan {
+                root,
+                manifest: Some(file),
+                lockfile,
+            },
+            other => other,
+        },
+        "vcpkg.json" => vcpkg_at(root, file),
         "mix.lock" => elixir_at(root, file),
         "mix.exs" => {
             let lock = root.join("mix.lock");
@@ -344,7 +382,8 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
              pyproject.toml, setup.py, Pipfile, Pipfile.lock, poetry.lock, uv.lock, requirements*.txt, \
              Cargo.toml, Cargo.lock, Gemfile.lock, composer.lock, go.mod, go.sum, pom.xml, \
              gradle.lockfile, packages.lock.json, *.csproj, *.fsproj, *.vbproj, Podfile.lock, \
-             Package.resolved, Package.swift, pubspec.lock, pubspec.yaml, mix.lock, mix.exs"
+             Package.resolved, Package.swift, pubspec.lock, pubspec.yaml, mix.lock, mix.exs, \
+             conan.lock, conanfile.txt, conanfile.py, vcpkg.json"
         ),
     };
     Ok(vec![detected])
@@ -456,6 +495,24 @@ fn swift_resolved(root: &Path) -> Option<PathBuf> {
             .find(|p| p.is_file())
     };
     in_ext("xcworkspace", "").or_else(|| in_ext("xcodeproj", "project.xcworkspace"))
+}
+
+fn conan_at(root: &Path, lockfile: Option<PathBuf>) -> Detected {
+    let lock = root.join("conan.lock");
+    Detected::Conan {
+        root: root.to_path_buf(),
+        manifest: first_existing(root, &["conanfile.txt", "conanfile.py"]),
+        lockfile: lockfile.or_else(|| lock.is_file().then_some(lock)),
+    }
+}
+
+fn vcpkg_at(root: &Path, manifest: PathBuf) -> Detected {
+    let status = root.join("vcpkg_installed").join("vcpkg").join("status");
+    Detected::Vcpkg {
+        root: root.to_path_buf(),
+        manifest,
+        status: status.is_file().then_some(status),
+    }
 }
 
 fn elixir_at(root: &Path, lockfile: PathBuf) -> Detected {

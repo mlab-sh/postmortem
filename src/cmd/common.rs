@@ -69,7 +69,14 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
         detect::Detected::Dart { lockfile, .. } | detect::Detected::Elixir { lockfile, .. } => {
             Some((lockfile.as_path(), ""))
         }
-        detect::Detected::Cocoapods { .. } => None,
+        detect::Detected::Conan {
+            lockfile, manifest, ..
+        } => lockfile
+            .as_deref()
+            .or(manifest.as_deref())
+            .map(|p| (p, vuln::COORDS_CONAN)),
+        // No OSV ecosystem: no advisory source to ask.
+        detect::Detected::Cocoapods { .. } | detect::Detected::Vcpkg { .. } => None,
     }
 }
 
@@ -320,6 +327,52 @@ fn parse_one(eco: &detect::Detected) -> (Vec<model::Dependency>, Vec<model::Diag
                     "dotnet",
                     "flat_graph",
                     "dotnet graph is flat — no packages.lock.json, so only the project's direct PackageReferences are known (enable RestorePackagesWithLockFile)".into(),
+                );
+            }
+        }
+        detect::Detected::Conan {
+            manifest, lockfile, ..
+        } => {
+            match parsers::cpp::parse_conan(lockfile.as_deref(), manifest.as_deref()) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "conan",
+                    "parse_failed",
+                    format!("conan.lock / conanfile parse failed: {e:#}"),
+                ),
+            }
+            let v1 = lockfile
+                .as_deref()
+                .and_then(|l| std::fs::read_to_string(l).ok())
+                .is_some_and(|s| s.contains("\"graph_lock\""));
+            if !v1 {
+                diag(
+                    "conan",
+                    "flat_graph",
+                    match lockfile {
+                        Some(_) => "conan graph is flat — a Conan 2 conan.lock lists references but records no edges",
+                        None => "conan graph is flat — no conan.lock, so only the conanfile's declared requirements are known",
+                    }
+                    .into(),
+                );
+            }
+        }
+        detect::Detected::Vcpkg {
+            manifest, status, ..
+        } => {
+            match parsers::cpp::parse_vcpkg(manifest, status.as_deref()) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "vcpkg",
+                    "parse_failed",
+                    format!("vcpkg manifest/status parse failed: {e:#}"),
+                ),
+            }
+            if status.is_none() {
+                diag(
+                    "vcpkg",
+                    "flat_graph",
+                    "vcpkg graph is flat — no vcpkg_installed/vcpkg/status (build not run), so only vcpkg.json's direct ports are known, versioned by the registry baseline".into(),
                 );
             }
         }

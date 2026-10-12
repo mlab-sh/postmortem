@@ -21,6 +21,10 @@ pub enum Ecosystem {
     Dart,
     /// Elixir / Erlang — Hex packages (`mix.lock`).
     Elixir,
+    /// C / C++ — Conan (`conan.lock` / `conanfile.*`).
+    Conan,
+    /// C / C++ — vcpkg (`vcpkg.json`, `vcpkg_installed/vcpkg/status`).
+    Vcpkg,
     /// Homebrew (macOS/Linux) — an OS-level package manager, surfaced by the
     /// `system` command rather than the project-lockfile parsers.
     Brew,
@@ -75,6 +79,8 @@ impl Ecosystem {
             Ecosystem::Swift => "swift",
             Ecosystem::Dart => "dart",
             Ecosystem::Elixir => "elixir",
+            Ecosystem::Conan => "conan",
+            Ecosystem::Vcpkg => "vcpkg",
             Ecosystem::Brew => "brew",
             Ecosystem::Pacman => "pacman",
             Ecosystem::Apt => "apt",

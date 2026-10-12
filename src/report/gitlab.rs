@@ -86,6 +86,8 @@ fn lockfile_hint(ecosystem: &str) -> &'static str {
         "cocoapods" => "Podfile.lock",
         "dart" | "pub" => "pubspec.lock",
         "elixir" | "hex" => "mix.lock",
+        "conan" | "conancenter" => "conan.lock",
+        "vcpkg" => "vcpkg.json",
         "swift" | "swifturl" => "Package.resolved",
         _ => "lockfile",
     }

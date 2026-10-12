@@ -401,11 +401,112 @@ impl Resolver {
     /// `history` is the worker's history-document slot (see
     /// [`Self::version_meta`]): where the registry record and the release
     /// history live in one document, it is fetched once for both.
+    /// A ConanCenter recipe, read from conan-center-index: `config.yml` maps
+    /// the version to its recipe folder, whose `conanfile.py` declares
+    /// `homepage` and `license`. A homepage that is not a repo (`zlib.net`)
+    /// falls back to the source archive URLs of `conandata.yml`, which mostly
+    /// point at the project's GitHub releases. Not on ConanCenter (a private
+    /// remote, a `user/channel` package): no repo, never a stranger's.
+    fn conan_record(&self, dep: &Dependency) -> Result<CachedRepo> {
+        const MAX: u64 = 4 << 20;
+        let base = format!(
+            "{}/conan-io/conan-center-index/master/recipes/{}",
+            self.endpoints.github_raw(),
+            dep.name
+        );
+        let text = |url: String| -> Result<Option<String>> {
+            Ok(self
+                .get_bytes(&url, MAX)?
+                .map(|b| String::from_utf8_lossy(&b).into_owned()))
+        };
+        let Some(config) = text(format!("{base}/config.yml"))? else {
+            return Ok(CachedRepo::default());
+        };
+        let config: serde_yaml::Value = serde_yaml::from_str(&config).unwrap_or_default();
+        // master keeps only recent versions: an older pin falls back to the
+        // folder of its major line, then to the newest recipe. The repo does
+        // not change between versions; the license rarely does.
+        let folders: Vec<(&str, &str)> = config
+            .get("versions")
+            .and_then(|v| v.as_mapping())
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| Some((k.as_str()?, v.get("folder")?.as_str()?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let major = |v: &str| v.split('.').next().unwrap_or(v).to_string();
+        let folder = folders
+            .iter()
+            .find(|(v, _)| *v == dep.version)
+            .or_else(|| folders.iter().find(|(v, _)| major(v) == major(&dep.version)))
+            .or_else(|| folders.first())
+            .map_or("all", |(_, f)| f)
+            .to_string();
+        let recipe = text(format!("{base}/{folder}/conanfile.py"))?.unwrap_or_default();
+        let attr = |name: &str| -> Vec<String> {
+            let re = regex::Regex::new(&format!(r#"(?m)^\s*{name}\s*=\s*(.+)$"#)).unwrap();
+            re.captures(&recipe)
+                .map(|c| {
+                    regex::Regex::new(r#"["']([^"']+)["']"#)
+                        .unwrap()
+                        .captures_iter(&c[1])
+                        .map(|q| q[1].to_string())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let mut repo = attr("homepage").iter().find_map(|u| parse_repo(u));
+        if repo.is_none()
+            && let Some(data) = text(format!("{base}/{folder}/conandata.yml"))?
+        {
+            let data: serde_yaml::Value = serde_yaml::from_str(&data).unwrap_or_default();
+            // `sources` nests per version, and sometimes per OS and arch, with
+            // `url` a string or a list: every url under it is a candidate.
+            fn urls<'a>(v: &'a serde_yaml::Value, under_url: bool, out: &mut Vec<&'a str>) {
+                match v {
+                    serde_yaml::Value::String(s) if under_url => out.push(s),
+                    serde_yaml::Value::Sequence(items) => {
+                        items.iter().for_each(|i| urls(i, under_url, out))
+                    }
+                    serde_yaml::Value::Mapping(m) => m
+                        .iter()
+                        .for_each(|(k, v)| urls(v, under_url || k.as_str() == Some("url"), out)),
+                    _ => {}
+                }
+            }
+            let mut found = Vec::new();
+            if let Some(sources) = data.get("sources") {
+                urls(sources, false, &mut found);
+            }
+            let urls = found;
+            repo = urls.into_iter().find_map(parse_repo);
+        }
+        Ok(CachedRepo {
+            repo,
+            licenses: attr("license"),
+            ..Default::default()
+        })
+    }
+
     fn registry_record(
         &self,
         dep: &Dependency,
         history: &mut history::Fetched,
     ) -> Result<CachedRepo> {
+        // A `@user/channel` package is not ConanCenter's to describe.
+        if dep.ecosystem == Ecosystem::Conan && dep.resolved_url.is_some() {
+            return Ok(CachedRepo::default());
+        }
+        if dep.ecosystem == Ecosystem::Conan {
+            let key = format!("conan:{}@{}", dep.name, dep.version);
+            if let Some(hit) = self.cache.get::<CachedRepo>("registry", &key) {
+                return Ok(hit);
+            }
+            let record = self.conan_record(dep)?;
+            self.cache.put("registry", &key, &record);
+            return Ok(record);
+        }
         // A SwiftPM package is named by its repository path: no registry exists.
         if dep.ecosystem == Ecosystem::Swift {
             return Ok(CachedRepo {
@@ -419,7 +520,7 @@ impl Resolver {
         // pub.dev's to describe, and resolves to no repo rather than a stranger's.
         if matches!(
             dep.ecosystem,
-            Ecosystem::Cocoapods | Ecosystem::Dart | Ecosystem::Elixir
+            Ecosystem::Cocoapods | Ecosystem::Dart | Ecosystem::Elixir | Ecosystem::Vcpkg
         )
             && let Some(url) = &dep.resolved_url
         {

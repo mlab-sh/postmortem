@@ -71,7 +71,9 @@ pub fn scans_dependency_code(detected: &[Detected]) -> bool {
         | Detected::Cocoapods { .. }
         | Detected::Swift { .. }
         | Detected::Dart { .. }
-        | Detected::Elixir { .. } => false,
+        | Detected::Elixir { .. }
+        | Detected::Conan { .. }
+        | Detected::Vcpkg { .. } => false,
     })
 }
 
@@ -512,6 +514,13 @@ fn plan<'a>(
             Detected::Dart { .. } => {}
             // ponytail: no Elixir content analyzer yet (needs Lang::Elixir).
             Detected::Elixir { .. } => {}
+            // The project's own C/C++ source; dependencies live in the Conan
+            // cache / vcpkg_installed, outside the walk's reach.
+            Detected::Conan { root, .. } | Detected::Vcpkg { root, .. } => {
+                steps.push(Step::new("c/c++ · ioc/obfuscation/sensitive-api", move |f| {
+                    scan_content(list, root, f, Lang::Cpp)
+                }));
+            }
         }
     }
 

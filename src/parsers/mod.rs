@@ -1,3 +1,4 @@
+pub mod cpp;
 pub mod dart;
 pub mod dotnet;
 pub mod elixir;
