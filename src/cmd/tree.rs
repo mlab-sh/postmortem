@@ -84,6 +84,7 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
 
     // Online resolution shares one resolver (and its cache/token) across paths.
     let mut settings = settings::Settings::load_or_warn();
+    settings.tree.low_stars &= !args.no_low_stars;
     let resolver = if args.online {
         gochi::greet(ui.animating()); // gochi says hi before the token prompt
         let github = settings.resolve_github_token()?;

@@ -180,6 +180,7 @@ pub(crate) fn run_system(args: cli::SystemArgs) -> Result<()> {
     if args.online {
         gochi::greet(ui.animating());
         let mut settings = settings::Settings::load_or_warn();
+        settings.tree.low_stars &= !args.no_low_stars;
         let github = settings.resolve_github_token()?;
         if github.is_none() {
             eprintln!(

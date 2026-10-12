@@ -97,6 +97,7 @@ pub(crate) fn run_audit(args: cli::AuditArgs) -> Result<()> {
         }
     }
     let mut settings = settings::Settings::load_or_warn();
+    settings.tree.low_stars &= !args.no_low_stars;
     let resolver = if args.online {
         let tokens = resolve::Tokens {
             github: settings.resolve_github_token()?,

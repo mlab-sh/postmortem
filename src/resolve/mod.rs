@@ -318,7 +318,7 @@ impl Resolver {
             Ok(Some(repo)) => {
                 let signals = match self.stats_for(&repo) {
                     Ok(Some(stats)) => {
-                        let assessed = self.assess(&stats);
+                        let assessed = self.assess(dep, &stats);
                         res.stats = Some(stats);
                         assessed
                     }

@@ -164,6 +164,7 @@ fn finish_diff(
             .cloned()
             .collect();
         let mut settings = settings::Settings::load_or_warn();
+        settings.tree.low_stars &= !args.no_low_stars;
         let resolver = if args.online && !subject.is_empty() {
             let tokens = resolve::Tokens {
                 github: settings.resolve_github_token()?,

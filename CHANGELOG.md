@@ -92,6 +92,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`low-stars` bar per ecosystem, and a switch to turn it off.** One global
+  `min_stars: 20` fired on most of a niche ecosystem: 95 of Mousetrap.jl's
+  nodes, 25 of Plausible's, most of CPAN. Defaults are now off for Perl and 5
+  for Elixir, R, Haskell and Julia (measured: 3-4% of their repos under 5
+  stars, 12-15% under 20; CPAN's median is 3); a Julia `*_jll` wrapper never
+  gets it. `tree.min_stars_by_ecosystem` overrides per ecosystem (`0` = off),
+  `tree.low_stars: false` or `--no-low-stars` (`tree`, `audit`, `system`,
+  `diff`) drops it entirely. High-risk counts: Plausible 25 → 6, Mousetrap.jl
+  95 → 7, singleCellTK 29 → 7.
 - **`--vulns` covers every ecosystem vuln.mlab.sh can read.** yarn, pnpm,
   poetry, uv, Pipfile, `pom.xml`, `gradle.lockfile` and `packages.lock.json`
   were skipped as "not covered by the advisory API"; they are now uploaded.

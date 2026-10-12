@@ -17,9 +17,27 @@ vuln_token: xxx              # or $VULN_MLAB_TOKEN (anonymous = 8/hr limit)
 
 tree:
   min_stars: 20              # flag repos below this many stars
+  low_stars: true            # false = no low-stars signal at all (= --no-low-stars)
+  min_stars_by_ecosystem:    # per ecosystem, wins over min_stars; 0 = off
+    node: 10
+    perl: 0
   recent_days: 30            # flag repos created within this many days
   stale_days: 365            # flag repos with no push in this many days
 ```
+
+Stars measure popularity, and popularity is relative to the ecosystem. Without
+an entry in `min_stars_by_ecosystem`, these defaults apply (measured on real
+projects):
+
+| Ecosystem | Default bar | Why |
+| --- | --- | --- |
+| `perl` | off | median CPAN dist repo: 3 stars, 85% under 20 |
+| `elixir`, `r`, `haskell`, `julia` | 5 (or `min_stars` if lower) | 12-15% of repos under 20 stars, 3-4% under 5 |
+| everything else | `min_stars` | |
+
+A Julia `*_jll` package (a generated binary wrapper, 0 stars by construction)
+never gets `low-stars`. `--no-low-stars` (on `tree`, `audit`, `system`, `diff`,
+with `--online`) turns the signal off for one run.
 
 ### Environment variables
 

@@ -13,5 +13,6 @@ Part of the [ecosystems](Ecosystems-and-Hosts) matrix.
 
 **Source scanning:** the project's own Perl is scanned (IOC / obfuscation / sensitive APIs).
 
-**Reputation caveat:** CPAN distributions' GitHub repos carry few stars, so
-`low-stars` fires on most of them.
+**Reputation caveat:** CPAN distributions' GitHub repos carry few stars (median
+3), so `low-stars` is off for Perl by default. Set
+`tree.min_stars_by_ecosystem.perl` to turn it back on.

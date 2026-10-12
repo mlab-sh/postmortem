@@ -500,6 +500,12 @@ pub struct SystemArgs {
     #[arg(long)]
     pub online: bool,
 
+    /// With --online: drop the low-stars signal. Stars measure popularity, which
+    /// says little in a niche ecosystem or for an internal fork. Config:
+    /// `tree.low_stars: false`, or `tree.min_stars_by_ecosystem` per ecosystem.
+    #[arg(long, requires = "online")]
+    pub no_low_stars: bool,
+
     /// With --online, also fetch each repo's language breakdown (one extra,
     /// cached, call per repo).
     #[arg(long)]
@@ -624,6 +630,12 @@ pub struct DiffArgs {
     /// with the tree.
     #[arg(long)]
     pub online: bool,
+
+    /// With --online: drop the low-stars signal. Stars measure popularity, which
+    /// says little in a niche ecosystem or for an internal fork. Config:
+    /// `tree.low_stars: false`, or `tree.min_stars_by_ecosystem` per ecosystem.
+    #[arg(long, requires = "online")]
+    pub no_low_stars: bool,
 
     /// Report known vulnerabilities against the packages the change introduces.
     #[arg(long)]
@@ -777,6 +789,12 @@ pub struct AuditArgs {
     /// Go ONLINE: add source-repo reputation risk scoring. Touches the network.
     #[arg(long)]
     pub online: bool,
+
+    /// With --online: drop the low-stars signal. Stars measure popularity, which
+    /// says little in a niche ecosystem or for an internal fork. Config:
+    /// `tree.low_stars: false`, or `tree.min_stars_by_ecosystem` per ecosystem.
+    #[arg(long, requires = "online")]
+    pub no_low_stars: bool,
 
     /// With --online, also fetch each repo's language breakdown.
     #[arg(long)]
@@ -1083,6 +1101,12 @@ pub struct TreeArgs {
     /// reputation stats + identity/provenance signals. Touches the network.
     #[arg(long)]
     pub online: bool,
+
+    /// With --online: drop the low-stars signal. Stars measure popularity, which
+    /// says little in a niche ecosystem or for an internal fork. Config:
+    /// `tree.low_stars: false`, or `tree.min_stars_by_ecosystem` per ecosystem.
+    #[arg(long, requires = "online")]
+    pub no_low_stars: bool,
 
     /// With --online, also fetch each repo's language breakdown (one extra,
     /// cached, call per repo). Without it, only GitHub's free primary language

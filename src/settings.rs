@@ -588,6 +588,13 @@ fn host_of(url: &str) -> Option<String> {
 pub struct TreeSettings {
     /// Flag repositories with fewer stars than this.
     pub min_stars: u64,
+    /// `false` turns the low-stars signal off everywhere (`--no-low-stars`).
+    pub low_stars: bool,
+    /// Per-ecosystem `min_stars` (`perl: 0`), keyed by the ecosystem's name
+    /// in `--json` output. `0` turns the signal off for that ecosystem. Wins
+    /// over the built-in per-ecosystem defaults and over `min_stars`.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub min_stars_by_ecosystem: std::collections::BTreeMap<String, u64>,
     /// Flag repositories created within this many days.
     pub recent_days: i64,
     /// Flag repositories with no push in this many days.
@@ -598,9 +605,40 @@ impl Default for TreeSettings {
     fn default() -> Self {
         Self {
             min_stars: 20,
+            low_stars: true,
+            min_stars_by_ecosystem: Default::default(),
             recent_days: 30,
             stale_days: 365,
         }
+    }
+}
+
+impl TreeSettings {
+    /// The star count under which `eco`'s repos are flagged, or `None` when
+    /// the signal is off for it.
+    ///
+    /// Stars measure popularity, and popularity is relative to the ecosystem:
+    /// measured on real projects, a median CPAN dist's repo has 3 stars and 85%
+    /// sit under 20, where npm's median is in the thousands. One global bar made
+    /// the signal fire on most of a niche ecosystem, so these default lower.
+    pub fn min_stars_for(&self, eco: crate::model::Ecosystem) -> Option<u64> {
+        use crate::model::Ecosystem;
+        if !self.low_stars {
+            return None;
+        }
+        let min = match self.min_stars_by_ecosystem.get(eco.as_str()) {
+            Some(&m) => m,
+            None => match eco {
+                // Most dists have no GitHub home, and those that do are mirrors.
+                Ecosystem::Perl => 0,
+                // 3-4% of repos under 5 stars, 12-15% under 20.
+                Ecosystem::Elixir | Ecosystem::R | Ecosystem::Haskell | Ecosystem::Julia => {
+                    self.min_stars.min(5)
+                }
+                _ => self.min_stars,
+            },
+        };
+        (min > 0).then_some(min)
     }
 }
 

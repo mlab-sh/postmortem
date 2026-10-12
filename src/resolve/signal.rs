@@ -156,9 +156,15 @@ fn shares_token(a: &str, b: &str) -> bool {
 }
 
 impl Resolver {
-    pub(super) fn assess(&self, stats: &RepoStats) -> Vec<RiskSignal> {
+    pub(super) fn assess(&self, dep: &Dependency, stats: &RepoStats) -> Vec<RiskSignal> {
         let mut signals = Vec::new();
-        if stats.stars < self.thresholds.min_stars {
+        // A Julia `_jll` is a generated binary wrapper in JuliaBinaryWrappers:
+        // its repo has no stars by construction, whatever it wraps.
+        let generated = dep.ecosystem == crate::model::Ecosystem::Julia && dep.name.ends_with("_jll");
+        if let Some(min) = self.thresholds.min_stars_for(dep.ecosystem)
+            && stats.stars < min
+            && !generated
+        {
             signals.push(RiskSignal::LowStars(stats.stars));
         }
         if let Some(created) = stats.created_at {
@@ -222,6 +228,7 @@ mod tests {
                 min_stars: 20,
                 recent_days: 30,
                 stale_days: 365,
+                ..Default::default()
             },
             now: 1_000_000_000,
             languages: false,
@@ -235,8 +242,9 @@ mod tests {
             language: None,
             fetched_at: 0,
         };
+        let npm = dep(crate::model::Ecosystem::Node, "left-pad");
         let labels: Vec<String> = r
-            .assess(&fresh_lowstar)
+            .assess(&npm, &fresh_lowstar)
             .iter()
             .map(RiskSignal::label)
             .collect();
@@ -251,6 +259,69 @@ mod tests {
             language: None,
             fetched_at: 0,
         };
-        assert!(r.assess(&healthy).is_empty());
+        assert!(r.assess(&npm, &healthy).is_empty());
+    }
+
+    fn dep(ecosystem: crate::model::Ecosystem, name: &str) -> Dependency {
+        Dependency {
+            name: name.into(),
+            version: "1.0.0".into(),
+            ecosystem,
+            scope: crate::model::Scope::Prod,
+            licenses: Vec::new(),
+            license_source: crate::model::LicenseSource::Unknown,
+            direct: true,
+            resolved_url: None,
+            integrity: None,
+            parents: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn low_stars_bar_is_per_ecosystem_and_can_be_turned_off() {
+        use crate::model::Ecosystem;
+        let mut t = TreeSettings::default();
+        assert_eq!(t.min_stars_for(Ecosystem::Node), Some(20));
+        assert_eq!(t.min_stars_for(Ecosystem::Elixir), Some(5));
+        assert_eq!(t.min_stars_for(Ecosystem::Perl), None);
+        // A lower global bar is not raised back to the niche default.
+        t.min_stars = 3;
+        assert_eq!(t.min_stars_for(Ecosystem::Haskell), Some(3));
+        // The per-ecosystem table wins, and 0 turns it off.
+        t.min_stars_by_ecosystem.insert("perl".into(), 2);
+        t.min_stars_by_ecosystem.insert("node".into(), 0);
+        assert_eq!(t.min_stars_for(Ecosystem::Perl), Some(2));
+        assert_eq!(t.min_stars_for(Ecosystem::Node), None);
+        // `low_stars: false` / `--no-low-stars` silences all of it.
+        t.low_stars = false;
+        assert_eq!(t.min_stars_for(Ecosystem::Perl), None);
+        assert_eq!(t.min_stars_for(Ecosystem::Rust), None);
+    }
+
+    #[test]
+    fn a_julia_jll_is_never_low_stars() {
+        let r = Resolver {
+            agents: crate::settings::NetworkSettings::default().agents(Duration::from_secs(15)),
+            gates: super::net::Gates::new(false),
+            inflight: Default::default(),
+            cache: Cache::open(),
+            tokens: Tokens::default(),
+            endpoints: crate::settings::Endpoints::default(),
+            thresholds: TreeSettings::default(),
+            now: 1_000_000_000,
+            languages: false,
+            want_licenses: false,
+        };
+        let zero = RepoStats {
+            stars: 0,
+            created_at: Some(0),
+            pushed_at: Some(1_000_000_000),
+            archived: false,
+            language: None,
+            fetched_at: 0,
+        };
+        let jl = crate::model::Ecosystem::Julia;
+        assert!(r.assess(&dep(jl, "OpenSSL_jll"), &zero).is_empty());
+        assert_eq!(r.assess(&dep(jl, "Tiny"), &zero).len(), 1);
     }
 }

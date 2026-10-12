@@ -33,6 +33,8 @@ Everything is cached under `~/.postmortem/cache/` - see [Cache](Cache).
 
 - **Reputation** signals come from the source repo's stats vs. your
   [thresholds](Configuration) (`min_stars`, `recent_days`, `stale_days`).
+  The `low-stars` bar is per ecosystem (off for CPAN, 5 for Hex, CRAN,
+  Hackage and Julia) and `--no-low-stars` drops it.
 - **Identity** signals: `typosquat` (see [Typosquatting](Typosquatting) — it
   covers six ecosystems, offline) and `starjacking` (the linked repo doesn't
   declare the package — its stars are borrowed).
