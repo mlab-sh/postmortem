@@ -1,5 +1,8 @@
+pub mod bun;
+pub mod conda;
 pub mod cpp;
 pub mod dart;
+pub mod deno;
 pub mod dotnet;
 pub mod elixir;
 pub mod go;

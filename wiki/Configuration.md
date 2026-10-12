@@ -98,6 +98,7 @@ written back to `config.yml`.
 | `cocoapods` | `https://trunk.cocoapods.org` | CocoaPods |
 | `pub_dev` | `https://pub.dev` | Dart / Flutter |
 | `hex` | `https://hex.pm` | Elixir / Erlang |
+| `jsr` | `https://api.jsr.io` | Deno (JSR) |
 | `hackage` | `https://hackage.haskell.org` | Haskell |
 | `crandb` | `https://crandb.r-pkg.org` | R |
 | `metacpan` | `https://fastapi.metacpan.org` | Perl |

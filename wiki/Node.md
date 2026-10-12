@@ -10,6 +10,7 @@ richest ecosystem - the only one with **identity/provenance** signals.
 | `package-lock.json` | npm; `npm-shrinkwrap.json` treated the same. |
 | `pnpm-lock.yaml` | pnpm (YAML), lockfile v5 / v6 / v9. pnpm ≥ 11 writes two YAML documents (pnpm's own `packageManagerDependencies`, then the project); the project document is the one read. |
 | `yarn.lock` | Yarn v1 (classic) and Berry (v2+). |
+| `bun.lock` | Bun's text lockfile (JSONC, default since Bun 1.2): install paths mirror `node_modules` nesting and resolve like Node does; every workspace's declared deps are the direct set. The binary `bun.lockb` cannot be read: postmortem asks for `bun install --save-text-lockfile`. Advisories: sent to vuln.mlab.sh as npm coordinates. |
 
 Scoped names (`@scope/pkg`) are handled throughout, including cache keys.
 

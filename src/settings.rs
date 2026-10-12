@@ -243,6 +243,9 @@ pub struct Endpoints {
     /// CocoaPods trunk API. Default `https://trunk.cocoapods.org`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cocoapods: Option<String>,
+    /// JSR API (Deno). Default `https://api.jsr.io`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jsr: Option<String>,
     /// Hackage (Haskell). Default `https://hackage.haskell.org`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hackage: Option<String>,
@@ -319,6 +322,9 @@ impl Endpoints {
     }
     pub fn cocoapods(&self) -> String {
         base(&self.cocoapods, "https://trunk.cocoapods.org")
+    }
+    pub fn jsr(&self) -> String {
+        base(&self.jsr, "https://api.jsr.io")
     }
     pub fn hackage(&self) -> String {
         base(&self.hackage, "https://hackage.haskell.org")

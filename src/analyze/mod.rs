@@ -79,7 +79,9 @@ pub fn scans_dependency_code(detected: &[Detected]) -> bool {
         | Detected::Haskell { .. }
         | Detected::R { .. }
         | Detected::Perl { .. }
-        | Detected::Julia { .. } => false,
+        | Detected::Julia { .. }
+        | Detected::Deno { .. }
+        | Detected::Conda { .. } => false,
     })
 }
 
@@ -525,6 +527,16 @@ fn plan<'a>(
             Detected::Scala { .. } | Detected::Clojure { .. } => {}
             // ponytail: no Haskell / R / Julia content analyzer yet.
             Detected::Haskell { .. } | Detected::R { .. } | Detected::Julia { .. } => {}
+            // ponytail: conda packages live in the environment's prefix, and
+            // the project's own Python is scanned when Python is detected.
+            Detected::Conda { .. } => {}
+            // The project's own TypeScript/JavaScript; Deno caches modules
+            // outside the repo.
+            Detected::Deno { root, .. } => {
+                steps.push(Step::new("deno · ioc/obfuscation/sensitive-api", move |f| {
+                    scan_content(list, root, f, Lang::JavaScript)
+                }));
+            }
             // The project's own Perl; CPAN distributions live in local/ or the
             // system's site_perl, which the root walk covers only when vendored.
             Detected::Perl { root, .. } => {

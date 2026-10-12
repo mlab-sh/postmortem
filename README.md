@@ -171,7 +171,7 @@ cd postmortem && cargo build --release
 | [`allowlist`](https://github.com/mlab-sh/postmortem/wiki/Allowlist) | Every suppression the project declares, with how long each has left to run. |
 | [`cache`](https://github.com/mlab-sh/postmortem/wiki/Cache) | Manage the local cache used by the online paths. |
 
-**Ecosystems:** Node (npm / pnpm / yarn), Python, Rust, Ruby, PHP, Go, and
+**Ecosystems:** Node (npm / pnpm / yarn / Bun), Deno, Python, Conda, Rust, Ruby, PHP, Go, and
 Java / Kotlin / Scala / Clojure, .NET (NuGet), Swift / iOS (CocoaPods, SwiftPM), Dart / Flutter, Elixir / Erlang (Hex), C / C++ (Conan, vcpkg), Haskell, R, Perl, Julia. Source-code scanning additionally
 covers C, C++, and Perl.
 

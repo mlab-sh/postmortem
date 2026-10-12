@@ -92,6 +92,8 @@ fn lockfile_hint(ecosystem: &str) -> &'static str {
         "r" | "cran" | "bioconductor" => "renv.lock",
         "perl" | "cpan" => "cpanfile.snapshot",
         "julia" => "Manifest.toml",
+        "jsr" | "deno" => "deno.lock",
+        "conda" => "conda-lock.yml",
         "swift" | "swifturl" => "Package.resolved",
         _ => "lockfile",
     }

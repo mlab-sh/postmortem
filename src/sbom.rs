@@ -33,6 +33,9 @@ fn purl_type(eco: Ecosystem) -> &'static str {
         Ecosystem::R => "cran",
         Ecosystem::Perl => "cpan",
         Ecosystem::Julia => "julia",
+        // No registered purl type for JSR yet.
+        Ecosystem::Jsr => "generic",
+        Ecosystem::Conda => "conda",
         Ecosystem::Brew => "brew",
         Ecosystem::Pacman => "alpm",
         Ecosystem::Apt => "deb",

@@ -334,7 +334,8 @@ fn pin_file(d: &Detected) -> Option<&Path> {
         | Detected::Dart { lockfile, .. }
         | Detected::Elixir { lockfile, .. }
         | Detected::R { lockfile, .. }
-        | Detected::Julia { lockfile, .. } => Some(lockfile),
+        | Detected::Julia { lockfile, .. }
+        | Detected::Deno { lockfile, .. } => Some(lockfile),
         Detected::Python { lockfile, manifest, .. } => Some(lockfile.as_deref().unwrap_or(manifest)),
         Detected::Go { manifest, .. } => Some(manifest),
         Detected::Vcpkg { manifest, .. }
@@ -344,7 +345,8 @@ fn pin_file(d: &Detected) -> Option<&Path> {
         | Detected::Dotnet { lockfile, manifest, .. }
         | Detected::Conan { lockfile, manifest, .. }
         | Detected::Haskell { lockfile, manifest, .. }
-        | Detected::Perl { lockfile, manifest, .. } => {
+        | Detected::Perl { lockfile, manifest, .. }
+        | Detected::Conda { lockfile, manifest, .. } => {
             lockfile.as_deref().or(manifest.as_deref())
         }
     }

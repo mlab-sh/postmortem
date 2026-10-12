@@ -51,8 +51,9 @@ Gemfile, go.sum, pom.xml, gradle.lockfile, packages.lock.json, pubspec.lock, mix
 parsed locally and sent as OSV coordinates (`go.mod` without `go.sum`, a
 `.csproj` alone, SwiftPM's `Package.resolved`, `build.sbt` and `project.clj` as
 `Maven`, Haskell as `Hackage`, `renv.lock` as `CRAN` / `Bioconductor`,
-`Manifest.toml` as `Julia`, Conan as `ConanCenter` - nearly
-empty in OSV). CocoaPods, vcpkg and Perl have no OSV ecosystem: they are reported as
+`Manifest.toml` as `Julia`, the npm / PyPI packages of `bun.lock`, `deno.lock`
+and conda files, Conan as `ConanCenter` - nearly
+empty in OSV). CocoaPods, vcpkg and Perl have no OSV ecosystem (nor do JSR and conda packages): they are reported as
 unassessed.
 
 ```bash

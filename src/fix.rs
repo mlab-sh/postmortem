@@ -248,6 +248,8 @@ pub fn upgrade_command(eco: Ecosystem, name: &str, target: &str) -> Option<Strin
         Ecosystem::Elixir => format!("mix deps.update {name}"),
         // Both pin in the manifest: the override snippet is the remedy.
         Ecosystem::Conan | Ecosystem::Vcpkg | Ecosystem::Haskell => return None,
+        Ecosystem::Jsr => format!("deno add jsr:{name}@^{target}"),
+        Ecosystem::Conda => format!("conda install '{name}>={target}'"),
         Ecosystem::R => format!("Rscript -e 'renv::install(\"{name}@{target}\"); renv::snapshot()'"),
         Ecosystem::Perl => format!("carton install  # after raising {name} to {target} in cpanfile"),
         Ecosystem::Julia => format!("julia --project -e 'using Pkg; Pkg.add(name=\"{name}\", version=\"{target}\")'"),
@@ -315,6 +317,7 @@ pub fn override_snippet(
             ),
         ),
         // A direct reference wins over the transitive one (NuGet "direct wins").
+        Ecosystem::Conda => ("environment.yml", format!("- {name}>={target}")),
         Ecosystem::Haskell => (
             "cabal.project (or stack.yaml extra-deps)",
             format!("constraints: {name} >={target}"),

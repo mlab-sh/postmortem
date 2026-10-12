@@ -37,9 +37,19 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
             lockfile.as_path(),
             match base(lockfile).as_str() {
                 "package-lock.json" | "npm-shrinkwrap.json" => "npm",
+                "bun.lock" => vuln::COORDS_MIXED,
                 _ => "",
             },
         )),
+        // npm (and PyPI) packages of these files; JSR and conda have no OSV
+        // ecosystem and are left out of the coordinates.
+        detect::Detected::Deno { lockfile, .. } => Some((lockfile.as_path(), vuln::COORDS_MIXED)),
+        detect::Detected::Conda {
+            lockfile, manifest, ..
+        } => lockfile
+            .as_deref()
+            .or(manifest.as_deref())
+            .map(|p| (p, vuln::COORDS_MIXED)),
         detect::Detected::Rust { lockfile, .. } => Some((lockfile.as_path(), "cargo")),
         detect::Detected::Php { lockfile, .. } => Some((lockfile.as_path(), "composer")),
         detect::Detected::Ruby { lockfile, .. } => Some((lockfile.as_path(), "gem")),
@@ -233,6 +243,7 @@ fn parse_one(eco: &detect::Detected) -> (Vec<model::Dependency>, Vec<model::Diag
             let parsed = match fname {
                 "pnpm-lock.yaml" => parsers::pnpm::parse(lockfile),
                 "yarn.lock" => parsers::yarn::parse(manifest, lockfile),
+                "bun.lock" => parsers::bun::parse(lockfile),
                 _ => parsers::node::parse_lockfile(lockfile),
             };
             match parsed {
@@ -369,6 +380,51 @@ fn parse_one(eco: &detect::Detected) -> (Vec<model::Dependency>, Vec<model::Diag
                     .into(),
                 );
             }
+        }
+        detect::Detected::Deno { lockfile, .. } => {
+            match parsers::deno::parse(lockfile) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag("deno", "parse_failed", format!("deno.lock parse failed: {e:#}")),
+            }
+            let remote = parsers::deno::remote_count(lockfile);
+            if remote > 0 {
+                diag(
+                    "deno",
+                    "remote_imports",
+                    format!(
+                        "{remote} URL import(s) in deno.lock `remote` (deno.land/x, esm.sh, ...) are not packages of any registry and are not assessed"
+                    ),
+                );
+            }
+            diag(
+                "deno",
+                model::DIAG_INFO,
+                "JSR packages have no OSV ecosystem: --vulns covers the npm packages only".into(),
+            );
+        }
+        detect::Detected::Conda {
+            manifest, lockfile, ..
+        } => {
+            match parsers::conda::parse(manifest.as_deref(), lockfile.as_deref()) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "conda",
+                    "parse_failed",
+                    format!("environment.yml / conda-lock.yml parse failed: {e:#}"),
+                ),
+            }
+            if lockfile.is_none() {
+                diag(
+                    "conda",
+                    "flat_graph",
+                    "conda graph is flat — no conda-lock.yml, so only environment.yml's declared packages are known (mostly unpinned)".into(),
+                );
+            }
+            diag(
+                "conda",
+                model::DIAG_INFO,
+                "conda packages have no OSV ecosystem: --vulns covers the pip packages only".into(),
+            );
         }
         detect::Detected::Haskell {
             manifest, lockfile, ..

@@ -9,7 +9,8 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 
 | Ecosystem | Package managers / lockfiles | Online registry |
 | --- | --- | --- |
-| [**Node**](Node) | npm, pnpm, yarn (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`) | npm registry |
+| [**Node**](Node) | npm, pnpm, yarn, Bun (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`) | npm registry |
+| [**Deno**](Deno) | `deno.lock` (npm + JSR) | npm registry, JSR |
 | [**Python**](Python) | pip, Poetry (`requirements.txt`, `poetry.lock`) | PyPI |
 | [**Rust**](Rust) | Cargo (`Cargo.lock`) | crates.io |
 | [**Ruby**](Ruby) | Bundler (`Gemfile.lock`) | RubyGems |
@@ -22,6 +23,7 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 | [**Dart / Flutter**](Dart) | pub (`pubspec.lock`) | pub.dev |
 | [**Elixir / Erlang**](Elixir) | Hex (`mix.lock`) | hex.pm |
 | [**Conan**](Cpp) | `conan.lock`, `conanfile.txt` / `.py` | conan-center-index recipes |
+| [**Conda**](Conda) | `environment.yml`, `conda-lock.yml` | conda-forge feedstocks |
 | [**Haskell**](Haskell) | Cabal, Stack (`cabal.project.freeze`, `stack.yaml.lock`) | Hackage |
 | [**R**](R) | renv (`renv.lock`) | crandb |
 | [**Perl**](Perl) | Carton (`cpanfile.snapshot`, `cpanfile`) | MetaCPAN |

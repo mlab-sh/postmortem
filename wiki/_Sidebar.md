@@ -26,7 +26,9 @@
 
 **Ecosystems** ([overview](Ecosystems-and-Hosts))
 - [Node](Node)
+- [Deno](Deno)
 - [Python](Python)
+- [Conda](Conda)
 - [Rust](Rust)
 - [Ruby](Ruby)
 - [PHP](PHP)

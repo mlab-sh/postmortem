@@ -53,6 +53,11 @@ pub(super) fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) ->
             urlencode(&dep.version),
         ),
         Ecosystem::R => format!("{}/{}/{}", ep.crandb(), dep.name, urlencode(&dep.version)),
+        // `@std/fs` -> /scopes/std/packages/fs.
+        Ecosystem::Jsr => {
+            let (scope, name) = dep.name.strip_prefix('@')?.split_once('/')?;
+            format!("{}/scopes/{scope}/packages/{name}", ep.jsr())
+        }
         // The latest release's document; a module name (cpanfile without a
         // snapshot) is tried as its distribution's (`Moo::Role` -> `Moo-Role`).
         Ecosystem::Perl => format!("{}/v1/release/{}", ep.metacpan(), dep.name.replace("::", "-")),
@@ -86,6 +91,7 @@ pub(super) fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) ->
         | Ecosystem::Conan
         | Ecosystem::Haskell
         | Ecosystem::Julia
+        | Ecosystem::Conda
         | Ecosystem::Pacman
         | Ecosystem::Apt
         | Ecosystem::Dnf
@@ -341,6 +347,11 @@ pub(super) fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<Stri
         .flatten()
         .collect(),
         Ecosystem::Vcpkg => s(v, "homepage").into_iter().collect(),
+        Ecosystem::Jsr => v
+            .get("githubRepository")
+            .and_then(|g| Some(format!("https://github.com/{}/{}", s(g, "owner")?, s(g, "name")?)))
+            .into_iter()
+            .collect(),
         // `URL` is a comma-separated list; `BugReports` is usually the repo's
         // issue tracker.
         Ecosystem::R => s(v, "URL")
@@ -405,6 +416,7 @@ pub(super) fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<Stri
         | Ecosystem::Conan
         | Ecosystem::Haskell
         | Ecosystem::Julia
+        | Ecosystem::Conda
         | Ecosystem::Pacman
         | Ecosystem::Apt
         | Ecosystem::Dnf

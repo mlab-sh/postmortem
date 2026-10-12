@@ -33,6 +33,10 @@ pub enum Ecosystem {
     Perl,
     /// Julia — General registry packages (`Manifest.toml`).
     Julia,
+    /// JSR — the JavaScript registry Deno resolves `jsr:` imports from.
+    Jsr,
+    /// Conda packages (`environment.yml`, `conda-lock.yml`).
+    Conda,
     /// Homebrew (macOS/Linux) — an OS-level package manager, surfaced by the
     /// `system` command rather than the project-lockfile parsers.
     Brew,
@@ -93,6 +97,8 @@ impl Ecosystem {
             Ecosystem::R => "r",
             Ecosystem::Perl => "perl",
             Ecosystem::Julia => "julia",
+            Ecosystem::Jsr => "jsr",
+            Ecosystem::Conda => "conda",
             Ecosystem::Brew => "brew",
             Ecosystem::Pacman => "pacman",
             Ecosystem::Apt => "apt",

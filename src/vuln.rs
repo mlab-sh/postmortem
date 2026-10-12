@@ -71,6 +71,9 @@ pub const COORDS_MAVEN: &str = "coords:Maven";
 pub const COORDS_HACKAGE: &str = "coords:Hackage";
 pub const COORDS_CRAN: &str = "coords:CRAN";
 pub const COORDS_JULIA: &str = "coords:Julia";
+/// Files mixing registries (deno.lock, bun.lock, conda): each package goes
+/// under its own OSV ecosystem, and one without is left out.
+pub const COORDS_MIXED: &str = "coords:*";
 
 /// The `(OSV ecosystem, name, version)` coordinates of a file mlab cannot read.
 fn coordinates_of(path: &Path, osv_eco: &str) -> Result<Vec<(String, String, String)>> {
@@ -91,6 +94,26 @@ fn coordinates_of(path: &Path, osv_eco: &str) -> Result<Vec<(String, String, Str
         }
         "CRAN" => crate::parsers::r::parse(path, None)?,
         "Julia" => crate::parsers::julia::parse(path, None)?,
+        "*" => {
+            let deps = match path.file_name().and_then(|n| n.to_str()).unwrap_or("") {
+                "deno.lock" => crate::parsers::deno::parse(path)?,
+                "bun.lock" => crate::parsers::bun::parse(path)?,
+                "conda-lock.yml" => crate::parsers::conda::parse(None, Some(path))?,
+                _ => crate::parsers::conda::parse(Some(path), None)?,
+            };
+            return Ok(deps
+                .into_iter()
+                .filter(|d| !d.version.is_empty() && d.version != "managed")
+                .filter_map(|d| {
+                    let eco = match d.ecosystem {
+                        crate::model::Ecosystem::Node => "npm",
+                        crate::model::Ecosystem::Python => "PyPI",
+                        _ => return None,
+                    };
+                    Some((eco.to_string(), d.name, d.version))
+                })
+                .collect());
+        }
         "ConanCenter" => {
             let lock = path.file_name().is_some_and(|n| n == "conan.lock");
             crate::parsers::cpp::parse_conan(lock.then_some(path), (!lock).then_some(path))?

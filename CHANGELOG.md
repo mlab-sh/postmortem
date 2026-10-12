@@ -69,6 +69,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `*_jll` wrappers); Perl has no OSV ecosystem and is unassessed. See
   [Haskell](wiki/Haskell.md), [R](wiki/R.md), [Perl](wiki/Perl.md),
   [Julia](wiki/Julia.md).
+- **Bun, Deno and Conda.** Bun: `bun.lock` (the JSONC text lockfile) joins the
+  Node lockfiles, nesting resolved like `node_modules`; a lone binary
+  `bun.lockb` gets an explicit hint instead of "no supported lockfile".
+  Deno: `deno.lock` v3-v5 - npm packages as `node`, JSR packages as the new
+  `jsr` ecosystem (`--online` through api.jsr.io, new `jsr` endpoint), URL
+  imports counted in a diagnostic. Conda: `conda-lock.yml` (multi-platform
+  graph, pip entries as `python`) and `environment.yml`; `--online` reads
+  conda-forge feedstock recipes. `--vulns` sends the npm and PyPI packages of
+  all three to vuln.mlab.sh (Fresh: 31, Elysia: 46 advisories); JSR and conda
+  packages have no OSV ecosystem. See [Node](wiki/Node.md),
+  [Deno](wiki/Deno.md), [Conda](wiki/Conda.md).
 
 - **`create-issue` in the GitHub Action.** When the gate trips, the action
   opens an issue explaining it: the exceeded thresholds and what each measures,

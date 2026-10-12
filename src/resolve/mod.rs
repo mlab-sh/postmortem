@@ -407,8 +407,19 @@ impl Resolver {
     ///   `source-repository`'s `location:`, `bug-reports:`, and `license:`.
     /// * **Julia** — the General registry's `Package.toml`: `repo = "..."`. The
     ///   registry records no license.
+    /// * **Conda** — the conda-forge feedstock's recipe (`recipe/recipe.yaml`,
+    ///   else the older `recipe/meta.yaml`): `repository` / `dev_url`,
+    ///   `homepage` / `home`, then the source archive `url`, and `license`. A
+    ///   package built by a multi-output feedstock of another name is not
+    ///   found: unchecked.
     fn text_record(&self, dep: &Dependency) -> Result<CachedRepo> {
+        let conda_base = format!(
+            "{}/conda-forge/{}-feedstock/main/recipe",
+            self.endpoints.github_raw(),
+            dep.name
+        );
         let url = match dep.ecosystem {
+            Ecosystem::Conda => format!("{conda_base}/recipe.yaml"),
             // A Stack snapshot package (`managed`): the latest release's.
             Ecosystem::Haskell if dep.version == "managed" => format!(
                 "{}/package/{n}/{n}.cabal",
@@ -432,8 +443,15 @@ impl Resolver {
                 )
             }
         };
-        let Some(body) = self.get_bytes(&url, 1 << 20)? else {
-            return Ok(CachedRepo::default());
+        let body = match self.get_bytes(&url, 1 << 20)? {
+            Some(b) => b,
+            None if dep.ecosystem == Ecosystem::Conda => {
+                match self.get_bytes(&format!("{conda_base}/meta.yaml"), 1 << 20)? {
+                    Some(b) => b,
+                    None => return Ok(CachedRepo::default()),
+                }
+            }
+            None => return Ok(CachedRepo::default()),
         };
         let text = String::from_utf8_lossy(&body);
         // `field: value` (.cabal, any indentation) or `field = "value"` (TOML).
@@ -452,6 +470,20 @@ impl Resolver {
             Ecosystem::Haskell => (
                 [field("location"), field("homepage"), field("bug-reports")].concat(),
                 field("license"),
+            ),
+            Ecosystem::Conda => (
+                // The source archive last: a GitHub release / archive URL names
+                // the repo when `about` names only a homepage.
+                [
+                    field("repository"),
+                    field("dev_url"),
+                    field("homepage"),
+                    field("home"),
+                    field("url"),
+                    field("- url"),
+                ]
+                .concat(),
+                field("license").into_iter().take(1).collect(),
             ),
             _ => (field("repo"), Vec::new()),
         };
@@ -570,7 +602,17 @@ impl Resolver {
         }
         // Hackage publishes the release's .cabal; Julia's General registry the
         // package's Package.toml. Both are text, and both name the repo.
-        if matches!(dep.ecosystem, Ecosystem::Haskell | Ecosystem::Julia) && dep.resolved_url.is_none() {
+        let text_registry = match dep.ecosystem {
+            Ecosystem::Haskell | Ecosystem::Julia => dep.resolved_url.is_none(),
+            // A conda-forge feedstock describes conda-forge's package; another
+            // channel's same-named package is not its to describe.
+            Ecosystem::Conda => dep
+                .resolved_url
+                .as_deref()
+                .is_none_or(|u| u.contains("/conda-forge/")),
+            _ => false,
+        };
+        if text_registry {
             let key = format!("{}:{}@{}", dep.ecosystem.as_str(), dep.name, dep.version);
             if let Some(hit) = self.cache.get::<CachedRepo>("registry", &key) {
                 return Ok(hit);

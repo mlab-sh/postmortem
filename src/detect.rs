@@ -100,6 +100,20 @@ pub enum Detected {
         /// `project.clj`.
         manifest: PathBuf,
     },
+    Deno {
+        root: PathBuf,
+        /// `deno.json` / `deno.jsonc`.
+        manifest: Option<PathBuf>,
+        /// `deno.lock`.
+        lockfile: PathBuf,
+    },
+    Conda {
+        root: PathBuf,
+        /// `environment.yml` / `environment.yaml` — the declared set.
+        manifest: Option<PathBuf>,
+        /// `conda-lock.yml` — the locked, multi-platform graph.
+        lockfile: Option<PathBuf>,
+    },
     Haskell {
         root: PathBuf,
         /// `*.cabal` or hpack's `package.yaml` — the direct set.
@@ -158,6 +172,8 @@ impl Detected {
             Detected::R { .. } => "r",
             Detected::Perl { .. } => "perl",
             Detected::Julia { .. } => "julia",
+            Detected::Deno { .. } => "deno",
+            Detected::Conda { .. } => "conda",
             Detected::Scala { .. } => "scala",
             Detected::Clojure { .. } => "clojure",
         }
@@ -184,6 +200,8 @@ impl Detected {
             | Detected::R { root, .. }
             | Detected::Perl { root, .. }
             | Detected::Julia { root, .. }
+            | Detected::Deno { root, .. }
+            | Detected::Conda { root, .. }
             | Detected::Scala { root, .. }
             | Detected::Clojure { root, .. } => root,
         }
@@ -195,6 +213,7 @@ const NODE_LOCKS: &[&str] = &[
     "npm-shrinkwrap.json",
     "pnpm-lock.yaml",
     "yarn.lock",
+    "bun.lock",
 ];
 
 const PY_LOCKS: &[&str] = &["poetry.lock", "uv.lock", "Pipfile.lock"];
@@ -208,6 +227,10 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
     if root.join("package.json").is_file() {
         match first_existing(root, NODE_LOCKS) {
             Some(lock) => out.push(node_at(root, lock)),
+            None if root.join("bun.lockb").is_file() => eprintln!(
+                "warn: {}: bun.lockb is binary — run `bun install --save-text-lockfile` (Bun >= 1.1.39) for a readable bun.lock",
+                root.display()
+            ),
             None => eprintln!(
                 "warn: {}: package.json found but no supported lockfile",
                 root.display()
@@ -300,6 +323,12 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
         });
     }
 
+    if let Some(d) = deno_at(root) {
+        out.push(d);
+    }
+    if let Some(d) = conda_at(root) {
+        out.push(d);
+    }
     if let Some(d) = haskell_at(root, None) {
         out.push(d);
     }
@@ -364,7 +393,11 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
         .and_then(|n| n.to_str())
         .unwrap_or_default()
     {
-        "package-lock.json" | "npm-shrinkwrap.json" | "pnpm-lock.yaml" | "yarn.lock" => {
+        "bun.lockb" => anyhow::bail!(
+            "{}: bun.lockb is binary — run `bun install --save-text-lockfile` (Bun >= 1.1.39) and pass bun.lock",
+            target.display()
+        ),
+        "package-lock.json" | "npm-shrinkwrap.json" | "pnpm-lock.yaml" | "yarn.lock" | "bun.lock" => {
             if !root.join("package.json").is_file() {
                 return Err(missing("package.json"));
             }
@@ -423,6 +456,12 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
             other => other,
         },
         "vcpkg.json" => vcpkg_at(root, file),
+        "deno.lock" | "deno.json" | "deno.jsonc" => {
+            deno_at(root).ok_or_else(|| missing("deno.lock"))?
+        }
+        "environment.yml" | "environment.yaml" | "conda-lock.yml" => {
+            conda_at(root).ok_or_else(|| missing("environment.yml"))?
+        }
         "cabal.project.freeze" | "stack.yaml.lock" => {
             haskell_at(root, Some(file)).ok_or_else(|| missing("lockfile"))?
         }
@@ -492,7 +531,8 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
              Package.resolved, Package.swift, pubspec.lock, pubspec.yaml, mix.lock, mix.exs, \
              conan.lock, conanfile.txt, conanfile.py, vcpkg.json, build.sbt, project.clj, \
              cabal.project.freeze, stack.yaml.lock, *.cabal, package.yaml, renv.lock, cpanfile, \
-             cpanfile.snapshot, Manifest.toml, Project.toml"
+             cpanfile.snapshot, Manifest.toml, Project.toml, bun.lock, deno.lock, deno.json, \
+             environment.yml, conda-lock.yml"
         ),
     };
     Ok(vec![detected])
@@ -604,6 +644,24 @@ fn swift_resolved(root: &Path) -> Option<PathBuf> {
             .find(|p| p.is_file())
     };
     in_ext("xcworkspace", "").or_else(|| in_ext("xcodeproj", "project.xcworkspace"))
+}
+
+fn deno_at(root: &Path) -> Option<Detected> {
+    Some(Detected::Deno {
+        root: root.to_path_buf(),
+        manifest: first_existing(root, &["deno.json", "deno.jsonc"]),
+        lockfile: first_existing(root, &["deno.lock"])?,
+    })
+}
+
+fn conda_at(root: &Path) -> Option<Detected> {
+    let manifest = first_existing(root, &["environment.yml", "environment.yaml"]);
+    let lockfile = first_existing(root, &["conda-lock.yml"]);
+    (manifest.is_some() || lockfile.is_some()).then(|| Detected::Conda {
+        root: root.to_path_buf(),
+        manifest,
+        lockfile,
+    })
 }
 
 /// Haskell at `root`: a lock (`cabal.project.freeze`, else `stack.yaml.lock`)
