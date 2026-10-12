@@ -41,8 +41,8 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
                 _ => "",
             },
         )),
-        // npm (and PyPI) packages of these files; JSR and conda have no OSV
-        // ecosystem and are left out of the coordinates.
+        // npm (and PyPI) packages of these files; JSR has no OSV ecosystem and
+        // is left out, conda's native libraries go by their CPE (`crate::cpe`).
         detect::Detected::Deno { lockfile, .. } => Some((lockfile.as_path(), vuln::COORDS_MIXED)),
         detect::Detected::Conda {
             lockfile, manifest, ..
@@ -96,10 +96,9 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
             .map(|p| (p, vuln::COORDS_HACKAGE)),
         detect::Detected::R { lockfile, .. } => Some((lockfile.as_path(), vuln::COORDS_CRAN)),
         detect::Detected::Julia { lockfile, .. } => Some((lockfile.as_path(), vuln::COORDS_JULIA)),
+        detect::Detected::Vcpkg { manifest, .. } => Some((manifest.as_path(), vuln::COORDS_VCPKG)),
         // No OSV ecosystem: no advisory source to ask.
-        detect::Detected::Cocoapods { .. }
-        | detect::Detected::Vcpkg { .. }
-        | detect::Detected::Perl { .. } => None,
+        detect::Detected::Cocoapods { .. } | detect::Detected::Perl { .. } => None,
     }
 }
 
@@ -423,7 +422,7 @@ fn parse_one(eco: &detect::Detected) -> (Vec<model::Dependency>, Vec<model::Diag
             diag(
                 "conda",
                 model::DIAG_INFO,
-                "conda packages have no OSV ecosystem: --vulns covers the pip packages only".into(),
+                "conda packages have no OSV ecosystem: --vulns covers the pip packages and the native libraries with a known NVD CPE (openssl, zlib, sqlite, ...); the rest is unassessed".into(),
             );
         }
         detect::Detected::Haskell {
@@ -542,7 +541,7 @@ fn parse_one(eco: &detect::Detected) -> (Vec<model::Dependency>, Vec<model::Diag
                 diag(
                     "vcpkg",
                     "flat_graph",
-                    "vcpkg graph is flat — no vcpkg_installed/vcpkg/status (build not run), so only vcpkg.json's direct ports are known, versioned by the registry baseline".into(),
+                    "vcpkg graph is flat — no vcpkg_installed/vcpkg/status (build not run), so only vcpkg.json's direct ports are known, versioned by the registry baseline (--vulns reads its versions from microsoft/vcpkg at that commit)".into(),
                 );
             }
         }

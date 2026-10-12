@@ -92,6 +92,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`--vulns` for C/C++ and conda's native libraries, through NVD CPE.** OSV
+  barely covers ConanCenter and has nothing for vcpkg or conda, so these were
+  effectively unassessed. A curated table of 62 native libraries (openssl,
+  zlib, sqlite, curl, libxml2, libssh2, krb5, icu, python, ...), each checked
+  against vuln.mlab.sh, sends them as CPE coordinates (`{"cpe": …}`), matched
+  server-side against NVD's configurations; a library not in the table is
+  never matched by name. Conan keeps its OSV coordinate too (answers merged,
+  each advisory once); vcpkg is assessed once a build pinned real versions.
+  rippled: 0 → 24 advisories (openssl 3.6.3: 22, sqlite 3.53.0: 2);
+  01-ai/Yi (conda): 2 → 15 vulnerable packages.
+- **conda's Python packages are checked against PyPI.** A conda package that
+  depends on `python` (noarch or a compiled extension such as numpy) is a
+  Python distribution, and is now sent as a PyPI coordinate under its PyPI
+  name (`pytorch` → `torch`, `brotli-python` → `brotli`, ...). The pytorch
+  channel's `torchtriton` is never sent: its PyPI namesake is the December
+  2022 dependency-confusion malware. Yi: 15 → 36 vulnerable packages (aiohttp,
+  transformers, urllib3, jinja2, requests, ...). A package declared by two
+  lockfiles of one project (torch in `requirements.txt` and the conda lock)
+  is now reported once.
+- **vcpkg without a build is versioned from its registry baseline** for
+  `--vulns`: microsoft/vcpkg's `versions/baseline.json` at the
+  `builtin-baseline` commit (override wins, `version>=` is a floor), fetched
+  once per commit and cached (`vcpkg-baseline/`). OpenTTD: 0 → 26 advisories.
 - **`low-stars` bar per ecosystem, and a switch to turn it off.** One global
   `min_stars: 20` fired on most of a niche ecosystem: 95 of Mousetrap.jl's
   nodes, 25 of Plausible's, most of CPAN. Defaults are now off for Perl and 5
@@ -115,6 +138,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`postmortem … | head` no longer prints a panic.** Once the reader of
+  stdout exits, the next print failed with a broken pipe and std panicked;
+  postmortem now ends quietly (status 141, like a filter killed by SIGPIPE).
+  Any other stdout write failure still reports.
 - **A renamed GitHub repo no longer ends every repo stat of the run.** GitHub
   answers a renamed repo's API call with a 301; ureq dropped `Authorization` on
   the redirect, the retry went out anonymous, hit the 60/h IP limit, and its 403

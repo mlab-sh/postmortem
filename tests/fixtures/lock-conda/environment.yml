@@ -1,0 +1,11 @@
+name: fixture
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy
+  - requests
+  - pip
+  - pip:
+      - rich==13.9.4
+      - attrs

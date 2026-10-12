@@ -17,6 +17,7 @@ mod cli;
 mod cmd;
 mod color;
 mod config;
+mod cpe;
 mod detect;
 mod diff;
 mod enrich;
@@ -57,6 +58,7 @@ use anyhow::Result;
 use clap::Parser;
 
 fn main() -> Result<()> {
+    quiet_broken_pipe();
     let cli = cli::Cli::parse();
     settings::set_cli_overrides(settings::NetworkOverrides {
         proxy: cli.proxy,
@@ -87,4 +89,23 @@ fn main() -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// `postmortem tree --json | head`: once `head` exits, the next print hits a
+/// closed pipe and std's `print!` panics, dumping a backtrace hint on the
+/// terminal. End quietly instead, with the status a shell gives a process
+/// killed by SIGPIPE. Only a broken stdout pipe: any other write failure (a
+/// full disk under `> file`) still panics with its message.
+fn quiet_broken_pipe() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info.payload().downcast_ref::<String>().map_or("", String::as_str);
+        // os error 32 = EPIPE on Unix, 232 = ERROR_NO_DATA on Windows.
+        if msg.starts_with("failed printing to stdout")
+            && (msg.ends_with("(os error 32)") || msg.ends_with("(os error 232)"))
+        {
+            std::process::exit(141);
+        }
+        default(info);
+    }));
 }

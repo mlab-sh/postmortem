@@ -25,6 +25,7 @@ postmortem cache prune --stale            # drop entries an upgrade invalidated
 | `npm-manifest/` | npm version manifests (`ghost`), immutable once published. |
 | `repo-404/` | declared repos that answered 404 — **kept for one day**, so a dangling repo is not re-asked on every run, but a private repo that goes public is seen again. |
 | `vuln/`, `vuln-scan/` | advisory lookups (`--vulns`), keyed by package and by lockfile content-hash (SipHash-2-4 under fixed keys — stable across Rust releases, unlike the `DefaultHasher` it replaced, so a toolchain upgrade no longer invalidates it). |
+| `vcpkg-baseline/` | `port -> version` of microsoft/vcpkg's `versions/baseline.json` at a commit, read by `--vulns` for an unbuilt vcpkg manifest. A commit's baseline never changes: kept for good. |
 | `vuln-coord/` | `system --vulns` answers per OS-package coordinate, **clean ones included**, kept for 12 hours; only coordinates without a fresh answer are sent. |
 
 Because a published version's metadata never changes, resolutions are cached

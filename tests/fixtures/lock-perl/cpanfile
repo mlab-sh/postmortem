@@ -1,0 +1,5 @@
+requires 'Moo', '2.005';
+requires 'Try::Tiny';
+requires 'Path::Tiny';
+requires 'HTTP::Tiny';
+on 'test' => sub { requires 'Test::Deep'; };

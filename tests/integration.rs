@@ -2869,3 +2869,104 @@ fn no_test_reaches_the_real_network() {
         offenders.join("\n  ")
     );
 }
+
+#[test]
+fn a_closed_stdout_pipe_ends_quietly_not_in_a_panic() {
+    // `postmortem tree --json -o - | head`: the reader is gone before the
+    // first write. Dropping the read end right after spawn makes that certain.
+    let mut child = Command::new(bin())
+        .args(["tree", "--json", "-o", "-", "--no-progress"])
+        .arg(fixture("malicious-node"))
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("ran");
+    drop(child.stdout.take());
+    let out = child.wait_with_output().expect("waited");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!stderr.contains("panicked"), "{stderr}");
+}
+
+// ---------- lockfiles written by the real package managers ----------
+
+/// `(name@version, direct)` nodes and `parent -> child` edges.
+type Graph = (Vec<(String, bool)>, Vec<(String, String)>);
+
+/// Every node and edge of a tree.
+fn graph(report: &Value) -> Graph {
+    fn walk(nodes: &Value, parent: Option<&str>, n: &mut Vec<(String, bool)>, e: &mut Vec<(String, String)>) {
+        for c in nodes.as_array().into_iter().flatten() {
+            let id = format!("{}@{}", c["name"].as_str().unwrap(), c["version"].as_str().unwrap());
+            n.push((id.clone(), c["direct"].as_bool().unwrap()));
+            if let Some(p) = parent {
+                e.push((p.to_string(), id.clone()));
+            }
+            walk(&c["children"], Some(&id), n, e);
+        }
+    }
+    let (mut n, mut e) = (Vec::new(), Vec::new());
+    walk(&report["roots"], None, &mut n, &mut e);
+    n.sort();
+    n.dedup();
+    e.sort();
+    e.dedup();
+    (n, e)
+}
+
+#[test]
+fn real_lockfiles_match_their_package_managers() {
+    // Generated in Docker by the tools themselves (bun 1.4, deno 2.9, dart
+    // 3.13, mix 1.20, dotnet 9, swift 6.4, conan 2.33, julia 1.13, carton,
+    // conda-lock 4, cabal 3.16, renv 1.3), and checked against each tool's
+    // own view of the resolved set (`bun pm ls --all`, `mix deps.tree`,
+    // `Pkg.status`, ...). A format change in a new release shows up here.
+    // (fixture, nodes, direct, edges)
+    let expected = [
+        ("lock-bun", 74, 6, 127),
+        ("lock-bun-workspace", 4, 3, 1),
+        ("lock-conan", 6, 5, 0),
+        ("lock-conda", 56, 6, 105),
+        ("lock-dart", 50, 5, 0),
+        ("lock-deno", 84, 5, 145),
+        ("lock-dotnet", 11, 4, 9),
+        ("lock-dotnet-cpm", 16, 3, 28),
+        ("lock-elixir", 19, 5, 25),
+        ("lock-haskell", 79, 6, 0),
+        ("lock-julia", 9, 4, 6),
+        ("lock-perl", 7, 4, 3),
+        ("lock-r", 20, 0, 8),
+        ("lock-swift", 6, 4, 0),
+    ];
+    let mut wrong = Vec::new();
+    for (name, nodes, direct, edges) in expected {
+        let (_, report) = tree_json(name, &["--no-progress"]);
+        let (n, e) = graph(&report);
+        let got = (n.len(), n.iter().filter(|(_, d)| *d).count(), e.len());
+        if got != (nodes, direct, edges) {
+            wrong.push(format!("{name}: got {got:?}, want {:?}", (nodes, direct, edges)));
+        }
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn real_lockfiles_keep_the_details_that_were_once_wrong() {
+    let node = |f: &str, id: &str| {
+        let (_, r) = tree_json(f, &["--no-progress"]);
+        graph(&r).0.into_iter().find(|(n, _)| n == id).map(|(_, d)| d)
+    };
+    let edge = |f: &str, p: &str, c: &str| {
+        let (_, r) = tree_json(f, &["--no-progress"]);
+        graph(&r).1.contains(&(p.to_string(), c.to_string()))
+    };
+    // renv >= 1.1 writes DESCRIPTION fields, not `Requirements`.
+    assert!(edge("lock-r", "mgcv@1.9-4", "nlme@3.1-169"));
+    assert!(edge("lock-r", "nlme@3.1-169", "lattice@0.22-9"));
+    // Julia >= 1.11 versions its stdlibs: still not registry packages.
+    assert_eq!(node("lock-julia", "Dates@1.11.0"), None);
+    // cpanfile one-line phase block: `on 'test' => sub { requires ...; }`.
+    assert_eq!(node("lock-perl", "Test-Deep@1.205"), Some(true));
+    // Conan `test_requires` / `tool_requires` are direct; spdlog's fmt is not.
+    assert_eq!(node("lock-conan", "gtest@1.15.0"), Some(true));
+    assert_eq!(node("lock-conan", "fmt@10.2.1"), Some(false));
+}

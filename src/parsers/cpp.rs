@@ -293,6 +293,8 @@ struct VcpkgManifest {
     overrides: Vec<Override>,
     #[serde(default, rename = "vcpkg-configuration")]
     configuration: Option<VcpkgConfiguration>,
+    #[serde(default, rename = "builtin-baseline")]
+    builtin_baseline: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -305,6 +307,17 @@ struct Feature {
 struct VcpkgConfiguration {
     #[serde(default, rename = "overlay-ports")]
     overlay_ports: Vec<String>,
+    #[serde(default, rename = "default-registry")]
+    default_registry: Option<VcpkgRegistry>,
+}
+
+#[derive(Deserialize, Default)]
+struct VcpkgRegistry {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    repository: String,
+    baseline: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -387,6 +400,43 @@ fn vcpkg_overlays(dir: &Path, m: &VcpkgManifest) -> HashMap<String, String> {
 /// An overlay port is the project's own recipe, not the registry's: its path is
 /// kept as `resolved_url`, which keeps the resolver from describing it with the
 /// same-named port of microsoft/vcpkg.
+/// The microsoft/vcpkg commit that versions an unbuilt manifest's ports:
+/// `builtin-baseline`, else the `default-registry` baseline of its
+/// configuration when that registry is the official one. `None` for another
+/// registry, whose baseline postmortem cannot read.
+pub fn vcpkg_baseline(manifest: &Path) -> Option<String> {
+    let m: VcpkgManifest = serde_json::from_str(&std::fs::read_to_string(manifest).ok()?).ok()?;
+    if let Some(sha) = m.builtin_baseline {
+        return Some(sha);
+    }
+    let sibling: Option<VcpkgConfiguration> =
+        std::fs::read_to_string(manifest.with_file_name("vcpkg-configuration.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok());
+    let reg = m.configuration.or(sibling)?.default_registry?;
+    let official = reg.kind == "builtin" || reg.repository.contains("github.com/microsoft/vcpkg");
+    official.then_some(reg.baseline).flatten()
+}
+
+/// Version unbuilt ports from the baseline's `port -> version` map, as vcpkg
+/// resolves them: an override wins, a `version>=` is a floor under the
+/// baseline's version, and a port the baseline lacks keeps what it had.
+pub fn vcpkg_apply_baseline(manifest: &Path, deps: &mut [Dependency], baseline: &HashMap<String, String>) {
+    let overridden: Vec<String> = std::fs::read_to_string(manifest)
+        .ok()
+        .and_then(|s| serde_json::from_str::<VcpkgManifest>(&s).ok())
+        .map(|m| m.overrides.into_iter().map(|o| o.name).collect())
+        .unwrap_or_default();
+    for d in deps.iter_mut().filter(|d| !overridden.contains(&d.name)) {
+        let Some(base) = baseline.get(&d.name) else { continue };
+        let floor_wins = d.version != "baseline"
+            && crate::semver::compare(&d.version, base) == Some(std::cmp::Ordering::Greater);
+        if !floor_wins {
+            d.version = base.clone();
+        }
+    }
+}
+
 pub fn parse_vcpkg(manifest: &Path, status: Option<&Path>) -> Result<Vec<Dependency>> {
     let text = std::fs::read_to_string(manifest)
         .with_context(|| format!("reading {}", manifest.display()))?;
@@ -509,6 +559,44 @@ fn vcpkg_deps(m: &VcpkgManifest, status: Option<&Path>) -> Result<Vec<Dependency
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vcpkg_baseline_resolves_like_vcpkg() {
+        let dir = std::env::temp_dir().join(format!("pm-vcpkg-bl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("vcpkg.json");
+        std::fs::write(
+            &manifest,
+            r#"{"dependencies": ["zlib", {"name": "curl", "version>=": "9.0.0"},
+                {"name": "openssl", "version>=": "1.0.0"}, "fmt", "nothere"],
+                "overrides": [{"name": "fmt", "version": "9.1.0"}],
+                "builtin-baseline": "abc123"}"#,
+        )
+        .unwrap();
+        assert_eq!(vcpkg_baseline(&manifest).as_deref(), Some("abc123"));
+        let mut deps = parse_vcpkg(&manifest, None).unwrap();
+        let baseline: HashMap<String, String> = [("zlib", "1.3.1"), ("curl", "8.9.1"), ("openssl", "3.3.2"), ("fmt", "11.0.2")]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        vcpkg_apply_baseline(&manifest, &mut deps, &baseline);
+        let v = |n: &str| deps.iter().find(|d| d.name == n).unwrap().version.clone();
+        assert_eq!(v("zlib"), "1.3.1"); // the baseline's
+        assert_eq!(v("curl"), "9.0.0"); // a floor above the baseline wins
+        assert_eq!(v("openssl"), "3.3.2"); // a floor below it does not
+        assert_eq!(v("fmt"), "9.1.0"); // an override wins, even downward
+        assert_eq!(v("nothere"), "baseline"); // not in the baseline: unchanged
+
+        // The official registry through vcpkg-configuration.json; another one
+        // has a baseline postmortem cannot read.
+        std::fs::write(&manifest, r#"{"dependencies": ["zlib"]}"#).unwrap();
+        let conf = dir.join("vcpkg-configuration.json");
+        std::fs::write(&conf, r#"{"default-registry": {"kind": "git", "repository": "https://github.com/microsoft/vcpkg", "baseline": "def456"}}"#).unwrap();
+        assert_eq!(vcpkg_baseline(&manifest).as_deref(), Some("def456"));
+        std::fs::write(&conf, r#"{"default-registry": {"kind": "git", "repository": "https://example.com/corp/registry", "baseline": "x"}}"#).unwrap();
+        assert_eq!(vcpkg_baseline(&manifest), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn tmp_dir() -> std::path::PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};

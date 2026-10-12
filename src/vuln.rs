@@ -71,9 +71,67 @@ pub const COORDS_MAVEN: &str = "coords:Maven";
 pub const COORDS_HACKAGE: &str = "coords:Hackage";
 pub const COORDS_CRAN: &str = "coords:CRAN";
 pub const COORDS_JULIA: &str = "coords:Julia";
+/// vcpkg ports: no OSV ecosystem, so only their NVD CPE (see [`crate::cpe`]).
+pub const COORDS_VCPKG: &str = "coords:vcpkg";
 /// Files mixing registries (deno.lock, bun.lock, conda): each package goes
 /// under its own OSV ecosystem, and one without is left out.
 pub const COORDS_MIXED: &str = "coords:*";
+
+/// vcpkg ports by their CPE. A build's status file has the installed versions;
+/// without one, the manifest's registry baseline gives them — the one network
+/// read here, of an immutable file, cached by commit.
+fn vcpkg_coordinates(
+    agent: &crate::settings::Agents,
+    cache: &Cache,
+    manifest: &Path,
+) -> Result<Vec<(String, String, String)>> {
+    use crate::parsers::cpp;
+    let status = manifest.with_file_name("vcpkg_installed/vcpkg/status");
+    let status = status.is_file().then_some(status);
+    let mut deps = cpp::parse_vcpkg(manifest, status.as_deref())?;
+    if status.is_none()
+        && let Some(sha) = cpp::vcpkg_baseline(manifest)
+    {
+        cpp::vcpkg_apply_baseline(manifest, &mut deps, &vcpkg_baseline_versions(agent, cache, &sha)?);
+    }
+    Ok(deps
+        .into_iter()
+        .flat_map(|d| {
+            crate::cpe::coordinates(&d.name, &d.version)
+                .into_iter()
+                .map(move |eco| (eco, d.name.clone(), d.version.clone()))
+        })
+        .collect())
+}
+
+/// `port -> version` at a microsoft/vcpkg commit, from its
+/// `versions/baseline.json` (~200 KB, never changes for a commit).
+fn vcpkg_baseline_versions(
+    agent: &crate::settings::Agents,
+    cache: &Cache,
+    sha: &str,
+) -> Result<std::collections::HashMap<String, String>> {
+    if let Some(hit) = cache.get("vcpkg-baseline", sha) {
+        return Ok(hit);
+    }
+    let raw = crate::settings::Settings::load_or_warn().network.endpoints.github_raw();
+    let url = format!("{raw}/microsoft/vcpkg/{sha}/versions/baseline.json");
+    let body = agent
+        .for_url(&url)
+        .get(&url)
+        .call()
+        .with_context(|| format!("fetching the vcpkg baseline {sha}"))?
+        .into_string()?;
+    let doc: serde_json::Value = serde_json::from_str(&body).context("parsing the vcpkg baseline")?;
+    let versions: std::collections::HashMap<String, String> = doc["default"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(port, v)| Some((port.clone(), v["baseline"].as_str()?.to_string())))
+        .collect();
+    cache.put("vcpkg-baseline", sha, &versions);
+    Ok(versions)
+}
 
 /// The `(OSV ecosystem, name, version)` coordinates of a file mlab cannot read.
 fn coordinates_of(path: &Path, osv_eco: &str) -> Result<Vec<(String, String, String)>> {
@@ -101,16 +159,37 @@ fn coordinates_of(path: &Path, osv_eco: &str) -> Result<Vec<(String, String, Str
                 "conda-lock.yml" => crate::parsers::conda::parse(None, Some(path))?,
                 _ => crate::parsers::conda::parse(Some(path), None)?,
             };
+            // A conda package that depends on `python` is a Python distribution
+            // (noarch or a compiled extension, e.g. numpy): PyPI's advisories
+            // are its advisories. The native libraries go by their CPE.
+            let on_python: std::collections::HashSet<String> = deps
+                .iter()
+                .filter(|d| d.ecosystem == crate::model::Ecosystem::Conda && d.name == "python")
+                .flat_map(|d| d.parents.iter().map(|(n, _)| n.clone()))
+                .collect();
             return Ok(deps
                 .into_iter()
                 .filter(|d| !d.version.is_empty() && d.version != "managed")
-                .filter_map(|d| {
+                .flat_map(|d| {
                     let eco = match d.ecosystem {
                         crate::model::Ecosystem::Node => "npm",
                         crate::model::Ecosystem::Python => "PyPI",
-                        _ => return None,
+                        // A native conda package (openssl, libsqlite) by its CPE.
+                        crate::model::Ecosystem::Conda if on_python.contains(&d.name) => {
+                            return crate::parsers::conda::pypi_name(&d.name)
+                                .map(|n| ("PyPI".to_string(), n.to_string(), d.version.clone()))
+                                .into_iter()
+                                .collect();
+                        }
+                        crate::model::Ecosystem::Conda => {
+                            return crate::cpe::coordinates(&d.name, &d.version)
+                                .into_iter()
+                                .map(|eco| (eco, d.name.clone(), d.version.clone()))
+                                .collect();
+                        }
+                        _ => return Vec::new(),
                     };
-                    Some((eco.to_string(), d.name, d.version))
+                    vec![(eco.to_string(), d.name, d.version)]
                 })
                 .collect());
         }
@@ -129,11 +208,20 @@ fn coordinates_of(path: &Path, osv_eco: &str) -> Result<Vec<(String, String, Str
                 && !matches!(d.version.as_str(), "managed" | "system")
                 && !d.version.starts_with('[')
         })
-        .map(|d| {
+        .flat_map(|d| {
             // renv.lock mixes CRAN and Bioconductor; OSV keeps them apart.
             let bioc = d.resolved_url.as_deref().is_some_and(|u| u.contains("bioconductor.org"));
             let eco = if osv_eco == "CRAN" && bioc { "Bioconductor" } else { osv_eco };
-            (eco.to_string(), d.name, d.version)
+            // OSV's ConanCenter is close to empty: the library's NVD CPE too.
+            let cpe: Vec<_> = if osv_eco == "ConanCenter" {
+                crate::cpe::coordinates(&d.name, &d.version)
+                    .into_iter()
+                    .map(|c| (c, d.name.clone(), d.version.clone()))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            std::iter::once((eco.to_string(), d.name, d.version)).chain(cpe)
         })
         .collect())
 }
@@ -149,6 +237,10 @@ pub fn scan(
     format: &str,
     scan_url: &str,
 ) -> Result<Vec<VulnPackage>> {
+    if format == COORDS_VCPKG {
+        let coords = vcpkg_coordinates(agent, cache, lockfile)?;
+        return scan_coordinates(agent, cache, token, &coords, scan_url);
+    }
     if let Some(osv_eco) = format.strip_prefix("coords:") {
         let coords = coordinates_of(lockfile, osv_eco)?;
         return scan_coordinates(agent, cache, token, &coords, scan_url);
@@ -278,19 +370,40 @@ pub(crate) fn scan_coordinates(
         }
     }
 
-    let mut out = Vec::new();
+    let mut out: Vec<VulnPackage> = Vec::new();
     for ((eco, name, version), vulns) in coords.iter().zip(known) {
         let Some(vulns) = vulns.filter(|v| !v.is_empty()) else {
             continue;
         };
-        out.push(VulnPackage {
-            name: name.clone(),
-            version: version.clone(),
-            ecosystem: eco.clone(),
-            vulns,
-        });
+        merge(
+            &mut out,
+            vec![VulnPackage {
+                name: name.clone(),
+                version: version.clone(),
+                ecosystem: crate::cpe::display_ecosystem(eco).to_string(),
+                vulns,
+            }],
+        );
     }
     Ok(out)
+}
+
+/// Append `more` to `into`, a package already there (asked by its OSV
+/// coordinate and its CPE, or declared by two lockfiles of one project) staying
+/// one entry with each advisory once.
+pub fn merge(into: &mut Vec<VulnPackage>, more: Vec<VulnPackage>) {
+    for pkg in more {
+        match into.iter_mut().find(|p| p.name == pkg.name && p.version == pkg.version) {
+            Some(p) => {
+                for v in pkg.vulns {
+                    if !p.vulns.iter().any(|x| x.id == v.id) {
+                        p.vulns.push(v);
+                    }
+                }
+            }
+            None => into.push(pkg),
+        }
+    }
 }
 
 /// One pre-parsed `/api/v2/scan` request: per coordinate, in input order, its
@@ -304,8 +417,9 @@ fn query_coordinates(
 ) -> Result<Vec<Option<Vec<Vuln>>>> {
     let packages: Vec<_> = coords
         .iter()
-        .map(|(eco, name, version)| {
-            serde_json::json!({ "ecosystem": eco, "name": name, "version": version })
+        .map(|(eco, name, version)| match crate::cpe::uri(eco, version) {
+            Some(cpe) => serde_json::json!({ "cpe": cpe }),
+            None => serde_json::json!({ "ecosystem": eco, "name": name, "version": version }),
         })
         .collect();
     let payload = serde_json::to_vec(&serde_json::json!({ "packages": packages }))
@@ -756,6 +870,89 @@ mod tests {
             .expect("answered from the cache alone");
         assert_eq!(out.len(), 1);
         assert_eq!((out[0].name.as_str(), &out[0].vulns), ("curl", &vec![hit]));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_conan_library_is_also_asked_by_its_cpe() {
+        let dir = std::env::temp_dir().join(format!("pm-vuln-conan-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("conan.lock");
+        std::fs::write(
+            &lock,
+            r#"{"version":"0.5","requires":["openssl/3.6.3#ab%1","benchmark/1.9.5#cd%2"]}"#,
+        )
+        .unwrap();
+        let mut coords = coordinates_of(&lock, "ConanCenter").unwrap();
+        coords.sort();
+        let t = |e: &str, n: &str, v: &str| (e.to_string(), n.to_string(), v.to_string());
+        assert_eq!(
+            coords,
+            [
+                // Uncurated: OSV only, never a guessed CPE.
+                t("CPE:openssl:openssl", "openssl", "3.6.3"),
+                t("ConanCenter", "benchmark", "1.9.5"),
+                t("ConanCenter", "openssl", "3.6.3"),
+            ]
+        );
+        assert_eq!(
+            crate::cpe::uri(&coords[0].0, &coords[0].2).as_deref(),
+            Some("cpe:2.3:a:openssl:openssl:3.6.3:*:*:*:*:*:*:*")
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn conda_python_packages_go_to_pypi_and_native_ones_by_cpe() {
+        let lock = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lock-conda/conda-lock.yml");
+        let coords = coordinates_of(&lock, "*").unwrap();
+        let has = |e: &str, n: &str| coords.iter().any(|(ce, cn, _)| ce == e && cn == n);
+        assert!(has("PyPI", "requests") && has("PyPI", "numpy"));
+        assert!(has("PyPI", "brotli"), "brotli-python under its PyPI name");
+        assert!(has("CPE:openssl:openssl", "openssl"));
+        assert!(has("CPE:python:python", "python"));
+        // A metapackage is neither.
+        assert!(!coords.iter().any(|(_, n, _)| n == "cpython"));
+        // A native library outside the CPE table is not sent at all.
+        assert!(!coords.iter().any(|(_, n, _)| n == "libffi"));
+    }
+
+    #[test]
+    fn unbuilt_vcpkg_ports_are_versioned_by_their_baseline() {
+        let dir = std::env::temp_dir().join(format!("pm-vuln-vcpkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join("vcpkg.json");
+        std::fs::write(&manifest, r#"{"dependencies": ["zlib", "breakpad"], "builtin-baseline": "f00d"}"#).unwrap();
+        let cache = Cache::at(dir.join("cache"));
+        let baseline: std::collections::HashMap<String, String> =
+            [("zlib".to_string(), "1.3.1".to_string()), ("breakpad".to_string(), "2024-02-16".to_string())].into();
+        // Cached: nothing listens at the endpoint, a fetch would fail the call.
+        cache.put("vcpkg-baseline", "f00d", &baseline);
+        let agents = crate::settings::NetworkSettings::default().agents(Duration::from_secs(1));
+        let coords = vcpkg_coordinates(&agents, &cache, &manifest).unwrap();
+        // zlib by its CPE at the baseline's version; breakpad has no CPE.
+        assert_eq!(coords, [("CPE:zlib:zlib".to_string(), "zlib".to_string(), "1.3.1".to_string())]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn osv_and_cpe_answers_for_one_package_merge() {
+        let dir = std::env::temp_dir().join(format!("pm-vuln-merge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = Cache::at(dir.clone());
+        let v = |id: &str| Vuln { id: id.into(), severity: Severity::High, summary: String::new(), fixed: None };
+        let coords: Vec<(String, String, String)> = vec![
+            ("ConanCenter".into(), "openssl".into(), "3.6.3".into()),
+            ("CPE:openssl:openssl".into(), "openssl".into(), "3.6.3".into()),
+        ];
+        cache.put("vuln-coord", "ConanCenter|openssl@3.6.3", &vec![v("CVE-1")]);
+        cache.put("vuln-coord", "CPE:openssl:openssl|openssl@3.6.3", &vec![v("CVE-1"), v("CVE-2")]);
+        let agents = crate::settings::NetworkSettings::default().agents(Duration::from_secs(1));
+        let out = scan_coordinates(&agents, &cache, None, &coords, "http://127.0.0.1:9/scan").unwrap();
+        assert_eq!(out.len(), 1, "one package, one entry");
+        let ids: Vec<&str> = out[0].vulns.iter().map(|x| x.id.as_str()).collect();
+        assert_eq!(ids, ["CVE-1", "CVE-2"], "each advisory once");
         let _ = std::fs::remove_dir_all(dir);
     }
 

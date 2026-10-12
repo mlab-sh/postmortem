@@ -138,8 +138,8 @@ pub(crate) fn run_audit(args: cli::AuditArgs) -> Result<()> {
         tree::score(&mut forest);
     }
     if let Some(scans) = lock_vulns {
-        for mut v in scans.into_iter().flatten() {
-            forest.vulnerabilities.append(&mut v);
+        for v in scans.into_iter().flatten() {
+            vuln::merge(&mut forest.vulnerabilities, v);
         }
         // The OS layer of an image, pinned to the release read from the image
         // rather than from this machine.

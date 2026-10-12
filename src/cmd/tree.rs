@@ -309,7 +309,7 @@ pub(crate) fn run_tree(args: cli::TreeArgs) -> Result<()> {
         if let Some((results, loader)) = vulns {
             for (d, result) in detected.iter().zip(results) {
                 match result {
-                    Some(Ok(mut v)) => forest.vulnerabilities.append(&mut v),
+                    Some(Ok(v)) => vuln::merge(&mut forest.vulnerabilities, v),
                     Some(Err(e)) => forest.diagnostics.push(model::Diagnostic {
                         ecosystem: d.name().into(),
                         kind: "vuln_scan_failed".into(),

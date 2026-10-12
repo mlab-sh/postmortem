@@ -17,7 +17,9 @@ package built by a multi-output feedstock of another name (`libgdal-core`
 from `gdal-feedstock`) is not found: **unchecked**.
 
 **Vulnerabilities:** pip packages go to vuln.mlab.sh as OSV `PyPI`
-coordinates. Conda packages have no OSV ecosystem: not assessed (an info
-diagnostic says so).
+coordinates. Conda packages have no OSV ecosystem; the native libraries in the
+curated [CPE table](Cpp#vulnerabilities) (openssl, libcurl, libsqlite, libxml2,
+krb5, python itself, ...) are sent by their NVD CPE, and the rest is not
+assessed. On 01-ai/Yi: 2 vulnerable packages before, 15 with CPE.
 
 **Not covered:** `pixi.lock`, `@EXPLICIT` spec files.

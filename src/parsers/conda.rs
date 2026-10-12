@@ -157,6 +157,30 @@ fn dependency(eco: Ecosystem, name: &str, version: &str, direct: bool, scope: Sc
     }
 }
 
+/// The PyPI name of a conda package that is a Python distribution (it depends
+/// on `python`), or `None` for one PyPI must not be asked about.
+///
+/// Most conda-forge Python packages keep their PyPI name; these do not.
+/// `torchtriton` is the pytorch channel's Triton build, and also the name of
+/// the malicious PyPI package of the December 2022 dependency-confusion
+/// attack: asked as PyPI, it would raise that advisory against a legit build.
+pub fn pypi_name(conda: &str) -> Option<&str> {
+    Some(match conda {
+        "pytorch" => "torch",
+        "brotli-python" => "brotli",
+        "sentencepiece-python" => "sentencepiece",
+        "msgpack-python" => "msgpack",
+        "python-tzdata" => "tzdata",
+        "python-xxhash" => "xxhash",
+        "hjson-py" => "hjson",
+        "matplotlib-base" => "matplotlib",
+        "pytables" => "tables",
+        // Metapackages, and channel builds whose PyPI namesake is another project.
+        "python" | "cpython" | "python-gil" | "python_abi" | "torchtriton" => return None,
+        other => other,
+    })
+}
+
 pub fn parse(manifest: Option<&Path>, lockfile: Option<&Path>) -> Result<Vec<Dependency>> {
     let declared = match manifest {
         Some(m) => declared(m)?,
@@ -240,6 +264,18 @@ pub fn parse(manifest: Option<&Path>, lockfile: Option<&Path>) -> Result<Vec<Dep
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn conda_python_packages_map_to_their_pypi_names() {
+        assert_eq!(pypi_name("requests"), Some("requests"));
+        assert_eq!(pypi_name("pytorch"), Some("torch"));
+        assert_eq!(pypi_name("python-tzdata"), Some("tzdata"));
+        // `python-dateutil` is its PyPI name: no prefix rule.
+        assert_eq!(pypi_name("python-dateutil"), Some("python-dateutil"));
+        // The PyPI `torchtriton` is the 2022 dependency-confusion malware.
+        assert_eq!(pypi_name("torchtriton"), None);
+        assert_eq!(pypi_name("cpython"), None);
+    }
 
     fn tmp_dir() -> std::path::PathBuf {
         use std::sync::atomic::{AtomicU64, Ordering};

@@ -46,10 +46,25 @@ its SPDX `license` (the current port's).
 
 Through vuln.mlab.sh, as coordinates:
 
-- **Conan** - sent as OSV `ConanCenter`. **That ecosystem is nearly empty in
-  OSV today**: an empty answer does not mean the C/C++ code is clean.
-- **vcpkg** - no OSV ecosystem exists: reported as **unassessed** (`fix` and
-  `audit` say so).
+- **NVD CPE** - a library in postmortem's curated table (62 of them: openssl,
+  zlib, sqlite, curl, libpng, libxml2, expat, xz, freetype, libtiff, libwebp,
+  pcre, libssh2, nghttp2, c-ares, grpc, boost, libarchive, mbedtls, ffmpeg,
+  icu, ...) is also sent by its CPE (`cpe:2.3:a:openssl:openssl:3.6.3`), and
+  vuln.mlab.sh matches it against NVD's configurations. The table is curated
+  on purpose: a name is not a CPE (`benchmark` is a Tanium product in NVD,
+  `zlib` has three vendors), so a library missing from it is never matched by
+  name. A version that is not a release (`cci.20210118`, vcpkg's `baseline`)
+  is not sent. NVD records no fixed version, so these advisories show no fix.
+- **Conan** - also sent as OSV `ConanCenter`, which is nearly empty today.
+  On rippled: 0 advisories through OSV, 24 through CPE (openssl 3.6.3: 22,
+  sqlite 3.53.0: 2).
+- **vcpkg** - no OSV ecosystem: CPE only. Versions come from the build's
+  `vcpkg_installed/vcpkg/status`; without a build, `--vulns` reads them as
+  vcpkg would: `versions/baseline.json` of microsoft/vcpkg at the manifest's
+  `builtin-baseline` (or the official `default-registry` baseline of
+  `vcpkg-configuration`), an `override` winning and a `version>=` acting as a
+  floor. One ~200 KB download per commit, cached for good. A custom registry's
+  baseline is not read. OpenTTD (unbuilt): 0 → 26 advisories (curl 8.20.0).
 
 ## Not covered yet
 
