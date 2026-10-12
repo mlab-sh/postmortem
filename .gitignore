@@ -45,3 +45,5 @@ tests/system/reports/
 /target-musl
 todo.md
 .inkdex/
+
+.mlab

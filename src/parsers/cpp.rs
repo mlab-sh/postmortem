@@ -839,10 +839,11 @@ Package: gone\nVersion: 1.0\nArchitecture: arm64-osx\nMulti-Arch: same\nStatus: 
         std::fs::write(dir.join("ports/curl/portfile.cmake"), "").unwrap();
         let deps = parse_vcpkg(&m, None).unwrap();
         let curl = deps.iter().find(|d| d.name == "curl").unwrap();
+        // By path components: Windows writes the overlay as `...\ports\curl`.
         assert!(
             curl.resolved_url
                 .as_deref()
-                .is_some_and(|u| u.ends_with("ports/curl"))
+                .is_some_and(|u| Path::new(u).ends_with("ports/curl"))
         );
         assert!(
             deps.iter()

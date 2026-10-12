@@ -100,9 +100,10 @@ fn quiet_broken_pipe() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let msg = info.payload().downcast_ref::<String>().map_or("", String::as_str);
-        // os error 32 = EPIPE on Unix, 232 = ERROR_NO_DATA on Windows.
+        // os error 32 = EPIPE on Unix; 232 = ERROR_NO_DATA and
+        // 109 = ERROR_BROKEN_PIPE on Windows (std maps all three to BrokenPipe).
         if msg.starts_with("failed printing to stdout")
-            && (msg.ends_with("(os error 32)") || msg.ends_with("(os error 232)"))
+            && ["(os error 32)", "(os error 232)", "(os error 109)"].iter().any(|c| msg.ends_with(c))
         {
             std::process::exit(141);
         }
