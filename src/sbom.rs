@@ -19,6 +19,7 @@ fn purl_type(eco: Ecosystem) -> &'static str {
         Ecosystem::Php => "composer",
         Ecosystem::Go => "golang",
         Ecosystem::Java => "maven",
+        Ecosystem::Dotnet => "nuget",
         Ecosystem::Brew => "brew",
         Ecosystem::Pacman => "alpm",
         Ecosystem::Apt => "deb",

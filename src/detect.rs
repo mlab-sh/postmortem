@@ -50,6 +50,14 @@ pub enum Detected {
         /// `gradle.lockfile` if present — the full resolved Gradle set.
         lockfile: Option<PathBuf>,
     },
+    Dotnet {
+        root: PathBuf,
+        /// `*.csproj` / `*.fsproj` / `*.vbproj` if present — direct
+        /// `<PackageReference>`s, used only when there is no lockfile.
+        manifest: Option<PathBuf>,
+        /// `packages.lock.json` if present — the full resolved NuGet graph.
+        lockfile: Option<PathBuf>,
+    },
 }
 
 impl Detected {
@@ -62,6 +70,7 @@ impl Detected {
             Detected::Php { .. } => "php",
             Detected::Go { .. } => "go",
             Detected::Java { .. } => "java",
+            Detected::Dotnet { .. } => "dotnet",
         }
     }
 
@@ -74,7 +83,8 @@ impl Detected {
             | Detected::Ruby { root, .. }
             | Detected::Php { root, .. }
             | Detected::Go { root, .. }
-            | Detected::Java { root, .. } => root,
+            | Detected::Java { root, .. }
+            | Detected::Dotnet { root, .. } => root,
         }
     }
 }
@@ -141,6 +151,18 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
         out.push(maven_at(root, pom));
     } else if gradle_lock.is_file() {
         out.push(gradle_at(root, gradle_lock));
+    }
+
+    // .NET: `packages.lock.json` is the full graph; a project file alone still
+    // gives the direct references.
+    let nuget_lock = root.join("packages.lock.json");
+    let project = dotnet_project(root);
+    if nuget_lock.is_file() || project.is_some() {
+        out.push(Detected::Dotnet {
+            root: root.to_path_buf(),
+            manifest: project,
+            lockfile: nuget_lock.is_file().then_some(nuget_lock),
+        });
     }
 
     Ok(out)
@@ -215,12 +237,25 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
         }
         "pom.xml" => maven_at(root, file),
         "gradle.lockfile" => gradle_at(root, file),
+        "packages.lock.json" => Detected::Dotnet {
+            root: root.to_path_buf(),
+            manifest: dotnet_project(root),
+            lockfile: Some(file),
+        },
+        name if is_dotnet_project(name) => {
+            let lock = root.join("packages.lock.json");
+            Detected::Dotnet {
+                root: root.to_path_buf(),
+                manifest: Some(file),
+                lockfile: lock.is_file().then_some(lock),
+            }
+        }
         other => anyhow::bail!(
             "{other}: not a recognised manifest or lockfile — expected one of \
              package.json, package-lock.json, npm-shrinkwrap.json, pnpm-lock.yaml, yarn.lock, \
              pyproject.toml, setup.py, Pipfile, Pipfile.lock, poetry.lock, uv.lock, requirements*.txt, \
              Cargo.toml, Cargo.lock, Gemfile.lock, composer.lock, go.mod, go.sum, pom.xml, \
-             gradle.lockfile"
+             gradle.lockfile, packages.lock.json, *.csproj, *.fsproj, *.vbproj"
         ),
     };
     Ok(vec![detected])
@@ -300,6 +335,24 @@ fn gradle_at(root: &Path, lockfile: PathBuf) -> Detected {
             .find(|p| p.is_file()),
         lockfile: Some(lockfile),
     }
+}
+
+fn is_dotnet_project(name: &str) -> bool {
+    [".csproj", ".fsproj", ".vbproj"]
+        .iter()
+        .any(|ext| name.ends_with(ext))
+}
+
+/// First .NET project file at `root` (sorted, so the pick is stable).
+fn dotnet_project(root: &Path) -> Option<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.file_name().and_then(|n| n.to_str()).is_some_and(is_dotnet_project))
+        .collect();
+    found.sort();
+    found.into_iter().next()
 }
 
 /// The Python manifest at `root`, preferring a real manifest over the bare

@@ -82,6 +82,7 @@ fn lockfile_hint(ecosystem: &str) -> &'static str {
         "composer" | "packagist" | "php" => "composer.lock",
         "go" | "golang" => "go.sum",
         "maven" | "java" => "pom.xml",
+        "nuget" | "dotnet" => "packages.lock.json",
         _ => "lockfile",
     }
 }

@@ -11,6 +11,8 @@ pub enum Ecosystem {
     Php,
     Go,
     Java,
+    /// .NET — NuGet packages (`packages.lock.json` / `*.csproj`).
+    Dotnet,
     /// Homebrew (macOS/Linux) — an OS-level package manager, surfaced by the
     /// `system` command rather than the project-lockfile parsers.
     Brew,
@@ -60,6 +62,7 @@ impl Ecosystem {
             Ecosystem::Php => "php",
             Ecosystem::Go => "go",
             Ecosystem::Java => "java",
+            Ecosystem::Dotnet => "dotnet",
             Ecosystem::Brew => "brew",
             Ecosystem::Pacman => "pacman",
             Ecosystem::Apt => "apt",

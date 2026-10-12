@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **.NET / NuGet ecosystem.** `packages.lock.json` gives the full graph (edges
+  resolved per target framework, frameworks merged, project-reference children
+  counted as direct, `contentHash` kept as integrity); without it the
+  `*.csproj` / `*.fsproj` / `*.vbproj` `<PackageReference>`s are read, with
+  versions from the nearest `Directory.Packages.props`, and a `flat_graph`
+  diagnostic. `--online` resolves repos and licenses through deps.dev; `sbom`
+  emits `pkg:nuget/…`; `fix` suggests `dotnet add package`. No C# content
+  scan, typosquat corpus or `--vulns` yet. See [.NET](wiki/DotNet.md).
 - **`create-issue` in the GitHub Action.** When the gate trips, the action
   opens an issue explaining it: the exceeded thresholds and what each measures,
   the vulnerable and risky packages (from the SARIF), how to fix or allowlist

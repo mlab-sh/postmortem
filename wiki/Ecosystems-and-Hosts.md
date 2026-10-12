@@ -16,6 +16,7 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 | [**PHP**](PHP) | Composer (`composer.lock`) | Packagist |
 | [**Go**](Go) | modules (`go.mod`, `go.sum`) | *(none - the module path is the repo)* |
 | [**Java**](Java) | Maven, Gradle (`pom.xml`, `build.gradle`) | deps.dev |
+| [**.NET**](DotNet) | NuGet (`packages.lock.json`, `*.csproj`) | deps.dev |
 | [**Homebrew**](Homebrew) | via [`system`](System) | formulae.brew.sh |
 | [**pacman**](Pacman) | via [`system`](System) | AUR RPC *(+ homepage → repo)* |
 | [**apt / dpkg**](Apt) | via [`system`](System) | *(none - homepage → repo)* |
@@ -23,7 +24,7 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 | [**Nix**](Nix) | via [`system`](System) | *(none - store closure + signatures)* |
 | [**apk**](Apk) | via [`system`](System) | *(none - homepage → repo)* |
 
-> Go and Java are **flat-graph** ecosystems offline (transitive parent edges
+> Go and Java (and .NET without `packages.lock.json`) are **flat-graph** ecosystems offline (transitive parent edges
 > can't be reconstructed without the toolchain). postmortem emits a
 > **diagnostic** when the graph is incomplete, so a small result is never
 > silently read as "clean".
@@ -46,7 +47,7 @@ what its lockfile records:
 | --- | --- | --- |
 | **Complete** (transitives included) | PHP, Python (pipenv), Java (Gradle) | The lockfile resolves the dev tree itself. |
 | **Seeded** (direct deps, then propagated) | Node, Rust, Python (poetry), Ruby, Java (Maven) | The manifest classifies direct deps; the graph does the rest. |
-| **None** | Go, Python (`requirements.txt`) | No distinction exists in the format. |
+| **None** | Go, Python (`requirements.txt`), .NET | No distinction exists in the format. |
 
 ## Code hosts
 

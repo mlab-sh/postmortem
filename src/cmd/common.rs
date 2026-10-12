@@ -54,7 +54,9 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
                 None
             }
         }
-        detect::Detected::Go { .. } | detect::Detected::Java { .. } => None,
+        detect::Detected::Go { .. }
+        | detect::Detected::Java { .. }
+        | detect::Detected::Dotnet { .. } => None,
     }
 }
 
@@ -288,6 +290,25 @@ fn parse_one(eco: &detect::Detected) -> (Vec<model::Dependency>, Vec<model::Diag
                 "flat_graph",
                 "JVM graph is flat — Maven lists direct deps only and Gradle locks carry no edges (no transitive closure offline)".into(),
             );
+        }
+        detect::Detected::Dotnet {
+            manifest, lockfile, ..
+        } => {
+            match parsers::dotnet::parse(manifest.as_deref(), lockfile.as_deref()) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "dotnet",
+                    "parse_failed",
+                    format!("NuGet lockfile/project parse failed: {e:#}"),
+                ),
+            }
+            if lockfile.is_none() {
+                diag(
+                    "dotnet",
+                    "flat_graph",
+                    "dotnet graph is flat — no packages.lock.json, so only the project's direct PackageReferences are known (enable RestorePackagesWithLockFile)".into(),
+                );
+            }
         }
     }
     (deps, diags)

@@ -238,6 +238,7 @@ pub fn upgrade_command(eco: Ecosystem, name: &str, target: &str) -> Option<Strin
         Ecosystem::Php => format!("composer require {name}:^{target}"),
         Ecosystem::Go => format!("go get {name}@v{}", target.trim_start_matches('v')),
         Ecosystem::Java => return None, // no single canonical CLI; the pin is the edit
+        Ecosystem::Dotnet => format!("dotnet add package {name} --version {target}"),
         // OS packages are the distro's to move, not a manifest edit.
         Ecosystem::Brew => format!("brew upgrade {name}"),
         Ecosystem::Pacman => format!("pacman -Syu {name}"),
@@ -298,6 +299,11 @@ pub fn override_snippet(
         Ecosystem::Java => (
             "pom.xml",
             format!("<dependencyManagement> pins {name} to {target}"),
+        ),
+        // A direct reference wins over the transitive one (NuGet "direct wins").
+        Ecosystem::Dotnet => (
+            "*.csproj (or Directory.Packages.props)",
+            format!("<PackageReference Include=\"{name}\" Version=\"{target}\" />"),
         ),
         // Go resolves to the highest required version, so requiring it directly
         // *is* the override.

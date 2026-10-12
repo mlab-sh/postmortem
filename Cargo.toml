@@ -1,6 +1,6 @@
 [package]
 name = "postmortem"
-version = "2.7.2"
+version = "2.8.0"
 edition = "2024"
 description = "Supply-chain scanner. Flags malicious install code, typosquats, and shady provenance across your dependencies and your OS packages."
 license = "Apache-2.0"

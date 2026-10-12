@@ -38,6 +38,12 @@ pub(super) fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) ->
             urlencode(&dep.name),
             urlencode(&dep.version),
         ),
+        Ecosystem::Dotnet => format!(
+            "{}/v3/systems/nuget/packages/{}/versions/{}",
+            ep.deps_dev(),
+            urlencode(&dep.name),
+            urlencode(&dep.version),
+        ),
         // Homebrew: the formula JSON carries `homepage` (often a GitHub repo).
         // The name can contain `@` (`openssl@3`); the API path takes it verbatim.
         Ecosystem::Brew => format!("{}/api/formula/{}.json", ep.brew(), dep.name),
@@ -161,7 +167,7 @@ pub(super) fn raw_licenses_from(dep: &Dependency, v: &serde_json::Value) -> Vec<
                 .unwrap_or_default()
         }
         // deps.dev is already version-pinned and returns SPDX identifiers.
-        Ecosystem::Java | Ecosystem::Go => arr_at(v, "licenses"),
+        Ecosystem::Java | Ecosystem::Dotnet | Ecosystem::Go => arr_at(v, "licenses"),
         // OS packages: licensing is a distro concern, not resolved here.
         _ => Vec::new(),
     }
@@ -242,7 +248,7 @@ pub(super) fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<Stri
             .and_then(|p| s(p, "repository"))
             .into_iter()
             .collect(),
-        Ecosystem::Java => v
+        Ecosystem::Java | Ecosystem::Dotnet => v
             .get("links")
             .and_then(|l| l.as_array())
             .map(|links| {

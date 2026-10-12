@@ -64,7 +64,10 @@ pub fn scans_dependency_code(detected: &[Detected]) -> bool {
         // Composer vendors in-tree; the walk covers it when it is there.
         Detected::Php { root, .. } => root.join("vendor").is_dir(),
         Detected::Go { root, .. } => root.join("vendor").is_dir(),
-        Detected::Rust { .. } | Detected::Ruby { .. } | Detected::Java { .. } => false,
+        Detected::Rust { .. }
+        | Detected::Ruby { .. }
+        | Detected::Java { .. }
+        | Detected::Dotnet { .. } => false,
     })
 }
 
@@ -496,6 +499,9 @@ fn plan<'a>(
                     move |f| scan_content(list, root, f, Lang::Java),
                 ));
             }
+            // ponytail: no C# content analyzer yet (needs Lang::CSharp patterns);
+            // NuGet packages live in ~/.nuget/packages, never in-repo.
+            Detected::Dotnet { .. } => {}
         }
     }
 
