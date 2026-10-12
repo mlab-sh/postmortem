@@ -56,6 +56,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to **Clojars** (new `clojars` endpoint) when deps.dev has no record, and
   resolves **JitPack** coordinates (`com.github.<user>.<repo>`) to their GitHub
   repo: lichess goes from 18 unchecked packages to 2. See [JVM](wiki/Java.md).
+- **Haskell, R, Perl, Julia.** Haskell: `cabal.project.freeze` or
+  `stack.yaml.lock` (extra-deps; snapshot packages `managed`), direct set from
+  `*.cabal` / `package.yaml`. R: `renv.lock` (edges from `Requirements`,
+  CRAN / Bioconductor / git remotes), direct set from `DESCRIPTION`. Perl:
+  Carton's `cpanfile.snapshot` (distribution graph through `provides`) and
+  `cpanfile` phases. Julia: `Manifest.toml` v1 / v2 with `Project.toml`,
+  stdlibs left out. `--online` through Hackage, crandb, MetaCPAN (new
+  `hackage`, `crandb`, `metacpan` endpoints) and the General registry.
+  `--vulns` sends OSV `Hackage`, `CRAN` / `Bioconductor` and `Julia`
+  coordinates to vuln.mlab.sh (SciMLBenchmarks: 104 JLSEC advisories in
+  `*_jll` wrappers); Perl has no OSV ecosystem and is unassessed. See
+  [Haskell](wiki/Haskell.md), [R](wiki/R.md), [Perl](wiki/Perl.md),
+  [Julia](wiki/Julia.md).
 
 - **`create-issue` in the GitHub Action.** When the gate trips, the action
   opens an issue explaining it: the exceeded thresholds and what each measures,

@@ -247,7 +247,10 @@ pub fn upgrade_command(eco: Ecosystem, name: &str, target: &str) -> Option<Strin
         // Moves within mix.exs's requirement; past it, the requirement is the edit.
         Ecosystem::Elixir => format!("mix deps.update {name}"),
         // Both pin in the manifest: the override snippet is the remedy.
-        Ecosystem::Conan | Ecosystem::Vcpkg => return None,
+        Ecosystem::Conan | Ecosystem::Vcpkg | Ecosystem::Haskell => return None,
+        Ecosystem::R => format!("Rscript -e 'renv::install(\"{name}@{target}\"); renv::snapshot()'"),
+        Ecosystem::Perl => format!("carton install  # after raising {name} to {target} in cpanfile"),
+        Ecosystem::Julia => format!("julia --project -e 'using Pkg; Pkg.add(name=\"{name}\", version=\"{target}\")'"),
         // OS packages are the distro's to move, not a manifest edit.
         Ecosystem::Brew => format!("brew upgrade {name}"),
         Ecosystem::Pacman => format!("pacman -Syu {name}"),
@@ -312,6 +315,11 @@ pub fn override_snippet(
             ),
         ),
         // A direct reference wins over the transitive one (NuGet "direct wins").
+        Ecosystem::Haskell => (
+            "cabal.project (or stack.yaml extra-deps)",
+            format!("constraints: {name} >={target}"),
+        ),
+        Ecosystem::Julia => ("Project.toml", format!("[compat]\n{name} = \"{target}\"")),
         Ecosystem::Conan => (
             "conanfile.txt / conanfile.py",
             format!("self.requires(\"{name}/{target}\", override=True)"),

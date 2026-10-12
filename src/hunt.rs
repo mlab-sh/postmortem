@@ -332,7 +332,9 @@ fn pin_file(d: &Detected) -> Option<&Path> {
         | Detected::Cocoapods { lockfile, .. }
         | Detected::Swift { lockfile, .. }
         | Detected::Dart { lockfile, .. }
-        | Detected::Elixir { lockfile, .. } => Some(lockfile),
+        | Detected::Elixir { lockfile, .. }
+        | Detected::R { lockfile, .. }
+        | Detected::Julia { lockfile, .. } => Some(lockfile),
         Detected::Python { lockfile, manifest, .. } => Some(lockfile.as_deref().unwrap_or(manifest)),
         Detected::Go { manifest, .. } => Some(manifest),
         Detected::Vcpkg { manifest, .. }
@@ -340,7 +342,9 @@ fn pin_file(d: &Detected) -> Option<&Path> {
         | Detected::Clojure { manifest, .. } => Some(manifest),
         Detected::Java { lockfile, manifest, .. }
         | Detected::Dotnet { lockfile, manifest, .. }
-        | Detected::Conan { lockfile, manifest, .. } => {
+        | Detected::Conan { lockfile, manifest, .. }
+        | Detected::Haskell { lockfile, manifest, .. }
+        | Detected::Perl { lockfile, manifest, .. } => {
             lockfile.as_deref().or(manifest.as_deref())
         }
     }

@@ -75,7 +75,11 @@ pub fn scans_dependency_code(detected: &[Detected]) -> bool {
         | Detected::Conan { .. }
         | Detected::Vcpkg { .. }
         | Detected::Scala { .. }
-        | Detected::Clojure { .. } => false,
+        | Detected::Clojure { .. }
+        | Detected::Haskell { .. }
+        | Detected::R { .. }
+        | Detected::Perl { .. }
+        | Detected::Julia { .. } => false,
     })
 }
 
@@ -519,6 +523,15 @@ fn plan<'a>(
             // ponytail: no Scala / Clojure content analyzer yet (Lang::Java
             // covers .java/.kt only).
             Detected::Scala { .. } | Detected::Clojure { .. } => {}
+            // ponytail: no Haskell / R / Julia content analyzer yet.
+            Detected::Haskell { .. } | Detected::R { .. } | Detected::Julia { .. } => {}
+            // The project's own Perl; CPAN distributions live in local/ or the
+            // system's site_perl, which the root walk covers only when vendored.
+            Detected::Perl { root, .. } => {
+                steps.push(Step::new("perl · ioc/obfuscation/sensitive-api", move |f| {
+                    scan_content(list, root, f, Lang::Perl)
+                }));
+            }
             // The project's own C/C++ source; dependencies live in the Conan
             // cache / vcpkg_installed, outside the walk's reach.
             Detected::Conan { root, .. } | Detected::Vcpkg { root, .. } => {

@@ -243,6 +243,15 @@ pub struct Endpoints {
     /// CocoaPods trunk API. Default `https://trunk.cocoapods.org`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cocoapods: Option<String>,
+    /// Hackage (Haskell). Default `https://hackage.haskell.org`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hackage: Option<String>,
+    /// crandb, the CRAN metadata API (R). Default `https://crandb.r-pkg.org`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crandb: Option<String>,
+    /// MetaCPAN API (Perl). Default `https://fastapi.metacpan.org`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metacpan: Option<String>,
     /// Clojars API (Clojure). Default `https://clojars.org`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clojars: Option<String>,
@@ -310,6 +319,15 @@ impl Endpoints {
     }
     pub fn cocoapods(&self) -> String {
         base(&self.cocoapods, "https://trunk.cocoapods.org")
+    }
+    pub fn hackage(&self) -> String {
+        base(&self.hackage, "https://hackage.haskell.org")
+    }
+    pub fn crandb(&self) -> String {
+        base(&self.crandb, "https://crandb.r-pkg.org")
+    }
+    pub fn metacpan(&self) -> String {
+        base(&self.metacpan, "https://fastapi.metacpan.org")
     }
     pub fn clojars(&self) -> String {
         base(&self.clojars, "https://clojars.org")

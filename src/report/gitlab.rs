@@ -88,6 +88,10 @@ fn lockfile_hint(ecosystem: &str) -> &'static str {
         "elixir" | "hex" => "mix.lock",
         "conan" | "conancenter" => "conan.lock",
         "vcpkg" => "vcpkg.json",
+        "haskell" | "hackage" => "cabal.project.freeze",
+        "r" | "cran" | "bioconductor" => "renv.lock",
+        "perl" | "cpan" => "cpanfile.snapshot",
+        "julia" => "Manifest.toml",
         "swift" | "swifturl" => "Package.resolved",
         _ => "lockfile",
     }

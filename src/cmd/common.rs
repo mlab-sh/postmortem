@@ -78,8 +78,18 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
         detect::Detected::Scala { manifest, .. } | detect::Detected::Clojure { manifest, .. } => {
             Some((manifest.as_path(), vuln::COORDS_MAVEN))
         }
+        detect::Detected::Haskell {
+            lockfile, manifest, ..
+        } => lockfile
+            .as_deref()
+            .or(manifest.as_deref())
+            .map(|p| (p, vuln::COORDS_HACKAGE)),
+        detect::Detected::R { lockfile, .. } => Some((lockfile.as_path(), vuln::COORDS_CRAN)),
+        detect::Detected::Julia { lockfile, .. } => Some((lockfile.as_path(), vuln::COORDS_JULIA)),
         // No OSV ecosystem: no advisory source to ask.
-        detect::Detected::Cocoapods { .. } | detect::Detected::Vcpkg { .. } => None,
+        detect::Detected::Cocoapods { .. }
+        | detect::Detected::Vcpkg { .. }
+        | detect::Detected::Perl { .. } => None,
     }
 }
 
@@ -360,6 +370,76 @@ fn parse_one(eco: &detect::Detected) -> (Vec<model::Dependency>, Vec<model::Diag
                 );
             }
         }
+        detect::Detected::Haskell {
+            manifest, lockfile, ..
+        } => {
+            match parsers::haskell::parse(manifest.as_deref(), lockfile.as_deref()) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "haskell",
+                    "parse_failed",
+                    format!("Haskell freeze/lock parse failed: {e:#}"),
+                ),
+            }
+            let stack = lockfile
+                .as_deref()
+                .is_some_and(|l| l.file_name().is_some_and(|n| n == "stack.yaml.lock"));
+            diag(
+                "haskell",
+                "flat_graph",
+                match (lockfile, stack) {
+                    (Some(_), false) => "haskell graph is flat — cabal.project.freeze pins every package but records no edges",
+                    (Some(_), true) => "haskell graph is flat — stack.yaml.lock pins only extra-deps; the snapshot's packages are `managed` (not resolved offline)",
+                    (None, _) => "haskell graph is flat — no cabal.project.freeze / stack.yaml.lock, so only the declared build-depends are known",
+                }
+                .into(),
+            );
+        }
+        detect::Detected::R {
+            manifest, lockfile, ..
+        } => {
+            match parsers::r::parse(lockfile, manifest.as_deref()) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag("r", "parse_failed", format!("renv.lock parse failed: {e:#}")),
+            }
+            let edges = std::fs::read_to_string(lockfile).is_ok_and(|s| s.contains("\"Requirements\""));
+            if !edges {
+                diag(
+                    "r",
+                    "flat_graph",
+                    "r graph is flat — this renv.lock predates `Requirements` (renv < 1.0), so it records no edges".into(),
+                );
+            }
+        }
+        detect::Detected::Perl {
+            manifest, lockfile, ..
+        } => {
+            match parsers::perl::parse(manifest.as_deref(), lockfile.as_deref()) {
+                Ok(mut d) => deps.append(&mut d),
+                Err(e) => diag(
+                    "perl",
+                    "parse_failed",
+                    format!("cpanfile / cpanfile.snapshot parse failed: {e:#}"),
+                ),
+            }
+            if lockfile.is_none() {
+                diag(
+                    "perl",
+                    "flat_graph",
+                    "perl graph is flat — no cpanfile.snapshot (Carton), so only cpanfile's declared modules are known".into(),
+                );
+            }
+        }
+        detect::Detected::Julia {
+            manifest, lockfile, ..
+        } => match parsers::julia::parse(lockfile, manifest.as_deref()) {
+            Ok(mut d) => deps.append(&mut d),
+            Err(e) => diag(
+                "julia",
+                "parse_failed",
+                format!("Manifest.toml parse failed: {e:#}"),
+            ),
+        },
         detect::Detected::Scala { manifest, .. } => {
             match parsers::sbt::parse(manifest) {
                 Ok(mut d) => deps.append(&mut d),

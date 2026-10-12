@@ -22,6 +22,10 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 | [**Dart / Flutter**](Dart) | pub (`pubspec.lock`) | pub.dev |
 | [**Elixir / Erlang**](Elixir) | Hex (`mix.lock`) | hex.pm |
 | [**Conan**](Cpp) | `conan.lock`, `conanfile.txt` / `.py` | conan-center-index recipes |
+| [**Haskell**](Haskell) | Cabal, Stack (`cabal.project.freeze`, `stack.yaml.lock`) | Hackage |
+| [**R**](R) | renv (`renv.lock`) | crandb |
+| [**Perl**](Perl) | Carton (`cpanfile.snapshot`, `cpanfile`) | MetaCPAN |
+| [**Julia**](Julia) | Pkg (`Manifest.toml`) | General registry |
 | [**vcpkg**](Cpp) | `vcpkg.json`, `vcpkg_installed/vcpkg/status` | microsoft/vcpkg ports |
 | [**Homebrew**](Homebrew) | via [`system`](System) | formulae.brew.sh |
 | [**pacman**](Pacman) | via [`system`](System) | AUR RPC *(+ homepage → repo)* |

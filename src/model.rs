@@ -25,6 +25,14 @@ pub enum Ecosystem {
     Conan,
     /// C / C++ — vcpkg (`vcpkg.json`, `vcpkg_installed/vcpkg/status`).
     Vcpkg,
+    /// Haskell — Hackage packages (`cabal.project.freeze`, `stack.yaml.lock`).
+    Haskell,
+    /// R — CRAN / Bioconductor packages (`renv.lock`).
+    R,
+    /// Perl — CPAN distributions (`cpanfile.snapshot`, `cpanfile`).
+    Perl,
+    /// Julia — General registry packages (`Manifest.toml`).
+    Julia,
     /// Homebrew (macOS/Linux) — an OS-level package manager, surfaced by the
     /// `system` command rather than the project-lockfile parsers.
     Brew,
@@ -81,6 +89,10 @@ impl Ecosystem {
             Ecosystem::Elixir => "elixir",
             Ecosystem::Conan => "conan",
             Ecosystem::Vcpkg => "vcpkg",
+            Ecosystem::Haskell => "haskell",
+            Ecosystem::R => "r",
+            Ecosystem::Perl => "perl",
+            Ecosystem::Julia => "julia",
             Ecosystem::Brew => "brew",
             Ecosystem::Pacman => "pacman",
             Ecosystem::Apt => "apt",

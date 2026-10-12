@@ -100,6 +100,34 @@ pub enum Detected {
         /// `project.clj`.
         manifest: PathBuf,
     },
+    Haskell {
+        root: PathBuf,
+        /// `*.cabal` or hpack's `package.yaml` — the direct set.
+        manifest: Option<PathBuf>,
+        /// `cabal.project.freeze` or `stack.yaml.lock`.
+        lockfile: Option<PathBuf>,
+    },
+    R {
+        root: PathBuf,
+        /// `DESCRIPTION` if present — the direct set.
+        manifest: Option<PathBuf>,
+        /// `renv.lock`.
+        lockfile: PathBuf,
+    },
+    Perl {
+        root: PathBuf,
+        /// `cpanfile`.
+        manifest: Option<PathBuf>,
+        /// `cpanfile.snapshot` (Carton).
+        lockfile: Option<PathBuf>,
+    },
+    Julia {
+        root: PathBuf,
+        /// `Project.toml` — the direct set.
+        manifest: Option<PathBuf>,
+        /// `Manifest.toml` (or `JuliaManifest.toml`).
+        lockfile: PathBuf,
+    },
     Vcpkg {
         root: PathBuf,
         /// `vcpkg.json`.
@@ -126,6 +154,10 @@ impl Detected {
             Detected::Elixir { .. } => "elixir",
             Detected::Conan { .. } => "conan",
             Detected::Vcpkg { .. } => "vcpkg",
+            Detected::Haskell { .. } => "haskell",
+            Detected::R { .. } => "r",
+            Detected::Perl { .. } => "perl",
+            Detected::Julia { .. } => "julia",
             Detected::Scala { .. } => "scala",
             Detected::Clojure { .. } => "clojure",
         }
@@ -148,6 +180,10 @@ impl Detected {
             | Detected::Elixir { root, .. }
             | Detected::Conan { root, .. }
             | Detected::Vcpkg { root, .. }
+            | Detected::Haskell { root, .. }
+            | Detected::R { root, .. }
+            | Detected::Perl { root, .. }
+            | Detected::Julia { root, .. }
             | Detected::Scala { root, .. }
             | Detected::Clojure { root, .. } => root,
         }
@@ -264,6 +300,19 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
         });
     }
 
+    if let Some(d) = haskell_at(root, None) {
+        out.push(d);
+    }
+    if let Some(d) = r_at(root, None) {
+        out.push(d);
+    }
+    if let Some(d) = perl_at(root) {
+        out.push(d);
+    }
+    if let Some(d) = julia_at(root, None) {
+        out.push(d);
+    }
+
     let vcpkg_json = root.join("vcpkg.json");
     if vcpkg_json.is_file() {
         out.push(vcpkg_at(root, vcpkg_json));
@@ -374,6 +423,24 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
             other => other,
         },
         "vcpkg.json" => vcpkg_at(root, file),
+        "cabal.project.freeze" | "stack.yaml.lock" => {
+            haskell_at(root, Some(file)).ok_or_else(|| missing("lockfile"))?
+        }
+        name if name.ends_with(".cabal") || name == "package.yaml" => match haskell_at(root, None) {
+            Some(Detected::Haskell { root, lockfile, .. }) => Detected::Haskell {
+                root,
+                manifest: Some(file),
+                lockfile,
+            },
+            _ => unreachable!("a manifest was found"),
+        },
+        "renv.lock" => r_at(root, Some(file)).ok_or_else(|| missing("renv.lock"))?,
+        "cpanfile" | "cpanfile.snapshot" => perl_at(root).ok_or_else(|| missing("cpanfile"))?,
+        "Manifest.toml" | "JuliaManifest.toml" => {
+            julia_at(root, Some(file)).ok_or_else(|| missing("Manifest.toml"))?
+        }
+        "Project.toml" | "JuliaProject.toml" => julia_at(root, None)
+            .ok_or_else(|| anyhow::anyhow!("{}: no Manifest.toml alongside it", target.display()))?,
         "build.sbt" => Detected::Scala {
             root: root.to_path_buf(),
             manifest: file,
@@ -423,7 +490,9 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
              Cargo.toml, Cargo.lock, Gemfile.lock, composer.lock, go.mod, go.sum, pom.xml, \
              gradle.lockfile, packages.lock.json, *.csproj, *.fsproj, *.vbproj, Podfile.lock, \
              Package.resolved, Package.swift, pubspec.lock, pubspec.yaml, mix.lock, mix.exs, \
-             conan.lock, conanfile.txt, conanfile.py, vcpkg.json, build.sbt, project.clj"
+             conan.lock, conanfile.txt, conanfile.py, vcpkg.json, build.sbt, project.clj, \
+             cabal.project.freeze, stack.yaml.lock, *.cabal, package.yaml, renv.lock, cpanfile, \
+             cpanfile.snapshot, Manifest.toml, Project.toml"
         ),
     };
     Ok(vec![detected])
@@ -535,6 +604,67 @@ fn swift_resolved(root: &Path) -> Option<PathBuf> {
             .find(|p| p.is_file())
     };
     in_ext("xcworkspace", "").or_else(|| in_ext("xcodeproj", "project.xcworkspace"))
+}
+
+/// Haskell at `root`: a lock (`cabal.project.freeze`, else `stack.yaml.lock`)
+/// and/or a package manifest (`*.cabal`, else hpack's `package.yaml`).
+fn haskell_at(root: &Path, lockfile: Option<PathBuf>) -> Option<Detected> {
+    // A freeze file with no `constraints:` (only an `index-state`) pins
+    // nothing; a Stack lock beside it is then the better source.
+    let freeze = root.join("cabal.project.freeze");
+    let pins = std::fs::read_to_string(&freeze).is_ok_and(|s| s.contains("constraints:"));
+    let lockfile = lockfile
+        .or_else(|| pins.then_some(freeze))
+        .or_else(|| first_existing(root, &["stack.yaml.lock"]));
+    let manifest = first_with_ext(root, "cabal").or_else(|| {
+        let p = root.join("package.yaml");
+        p.is_file().then_some(p)
+    });
+    (lockfile.is_some() || manifest.is_some()).then(|| Detected::Haskell {
+        root: root.to_path_buf(),
+        manifest,
+        lockfile,
+    })
+}
+
+fn r_at(root: &Path, lockfile: Option<PathBuf>) -> Option<Detected> {
+    let lockfile = lockfile.or_else(|| first_existing(root, &["renv.lock"]))?;
+    Some(Detected::R {
+        root: root.to_path_buf(),
+        manifest: first_existing(root, &["DESCRIPTION"]),
+        lockfile,
+    })
+}
+
+fn perl_at(root: &Path) -> Option<Detected> {
+    let manifest = first_existing(root, &["cpanfile"]);
+    let lockfile = first_existing(root, &["cpanfile.snapshot"]);
+    (manifest.is_some() || lockfile.is_some()).then(|| Detected::Perl {
+        root: root.to_path_buf(),
+        manifest,
+        lockfile,
+    })
+}
+
+fn julia_at(root: &Path, lockfile: Option<PathBuf>) -> Option<Detected> {
+    let lockfile = lockfile.or_else(|| first_existing(root, &["Manifest.toml", "JuliaManifest.toml"]))?;
+    Some(Detected::Julia {
+        root: root.to_path_buf(),
+        manifest: first_existing(root, &["Project.toml", "JuliaProject.toml"]),
+        lockfile,
+    })
+}
+
+/// First file at `root` with extension `ext` (sorted, so the pick is stable).
+fn first_with_ext(root: &Path, ext: &str) -> Option<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().and_then(|e| e.to_str()) == Some(ext))
+        .collect();
+    found.sort();
+    found.into_iter().next()
 }
 
 fn conan_at(root: &Path, lockfile: Option<PathBuf>) -> Detected {

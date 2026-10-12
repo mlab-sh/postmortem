@@ -37,6 +37,10 @@
 - [Dart / Flutter](Dart)
 - [Elixir / Hex](Elixir)
 - [C / C++](Cpp)
+- [Haskell](Haskell)
+- [R](R)
+- [Perl](Perl)
+- [Julia](Julia)
 
 **System managers**
 - [Homebrew](Homebrew)

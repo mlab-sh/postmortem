@@ -50,8 +50,9 @@ as is (npm, yarn, pnpm, Cargo, poetry, uv, Pipfile, requirements, composer,
 Gemfile, go.sum, pom.xml, gradle.lockfile, packages.lock.json, pubspec.lock, mix.lock); the rest are
 parsed locally and sent as OSV coordinates (`go.mod` without `go.sum`, a
 `.csproj` alone, SwiftPM's `Package.resolved`, `build.sbt` and `project.clj` as
-`Maven`, Conan as `ConanCenter` - nearly
-empty in OSV). CocoaPods and vcpkg have no OSV ecosystem: they are reported as
+`Maven`, Haskell as `Hackage`, `renv.lock` as `CRAN` / `Bioconductor`,
+`Manifest.toml` as `Julia`, Conan as `ConanCenter` - nearly
+empty in OSV). CocoaPods, vcpkg and Perl have no OSV ecosystem: they are reported as
 unassessed.
 
 ```bash

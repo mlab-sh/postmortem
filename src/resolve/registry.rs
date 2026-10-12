@@ -52,6 +52,10 @@ pub(super) fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) ->
             urlencode(dep.name.split('/').next().unwrap_or(&dep.name)),
             urlencode(&dep.version),
         ),
+        Ecosystem::R => format!("{}/{}/{}", ep.crandb(), dep.name, urlencode(&dep.version)),
+        // The latest release's document; a module name (cpanfile without a
+        // snapshot) is tried as its distribution's (`Moo::Role` -> `Moo-Role`).
+        Ecosystem::Perl => format!("{}/v1/release/{}", ep.metacpan(), dep.name.replace("::", "-")),
         // The port's own manifest on the default registry's master: its
         // `homepage` and SPDX `license` (the current port's, not the baseline's).
         Ecosystem::Vcpkg => format!(
@@ -74,11 +78,14 @@ pub(super) fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) ->
         // The name can contain `@` (`openssl@3`); the API path takes it verbatim.
         Ecosystem::Brew => format!("{}/api/formula/{}.json", ep.brew(), dep.name),
         // Go's module path and Pacman's package URL resolve without a registry
-        // call (repo parsed from the name / `resolved_url`). Conan's recipe is
-        // read by the resolver itself (`conan_record`).
+        // call (repo parsed from the name / `resolved_url`). Conan's recipe,
+        // Hackage's .cabal and Julia's registry entry are text, read by the
+        // resolver itself.
         Ecosystem::Go
         | Ecosystem::Swift
         | Ecosystem::Conan
+        | Ecosystem::Haskell
+        | Ecosystem::Julia
         | Ecosystem::Pacman
         | Ecosystem::Apt
         | Ecosystem::Dnf
@@ -211,6 +218,8 @@ pub(super) fn raw_licenses_from(dep: &Dependency, v: &serde_json::Value) -> Vec<
         Ecosystem::Java | Ecosystem::Dotnet | Ecosystem::Go => arr_at(v, "licenses"),
         Ecosystem::Elixir => v.get("meta").map(|m| arr_at(m, "licenses")).unwrap_or_default(),
         Ecosystem::Vcpkg => str_at(v, "license").into_iter().collect(),
+        Ecosystem::R => str_at(v, "License").into_iter().collect(),
+        Ecosystem::Perl => arr_at(v, "license"),
         // A podspec's `license` is `"MIT"` or `{"type": "MIT", "file": ...}`.
         Ecosystem::Cocoapods => npm_licenses(v.get("license"), None),
         // OS packages: licensing is a distro concern, not resolved here.
@@ -332,6 +341,32 @@ pub(super) fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<Stri
         .flatten()
         .collect(),
         Ecosystem::Vcpkg => s(v, "homepage").into_iter().collect(),
+        // `URL` is a comma-separated list; `BugReports` is usually the repo's
+        // issue tracker.
+        Ecosystem::R => s(v, "URL")
+            .into_iter()
+            .flat_map(|u| {
+                u.split([',', ' ', '\n'])
+                    .filter(|x| !x.is_empty())
+                    .map(String::from)
+                    .collect::<Vec<_>>()
+            })
+            .chain(s(v, "BugReports"))
+            .collect(),
+        Ecosystem::Perl => v
+            .get("resources")
+            .map(|r| {
+                let repo = r.get("repository");
+                [
+                    repo.and_then(|x| s(x, "web")),
+                    repo.and_then(|x| s(x, "url")),
+                    s(r, "homepage"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect()
+            })
+            .unwrap_or_default(),
         // `meta.links` is free-form (`{"GitHub": url, "Docs": url}`): the
         // repo-looking labels first, then any link that parses as a repo.
         Ecosystem::Elixir => v
@@ -368,6 +403,8 @@ pub(super) fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<Stri
         Ecosystem::Go
         | Ecosystem::Swift
         | Ecosystem::Conan
+        | Ecosystem::Haskell
+        | Ecosystem::Julia
         | Ecosystem::Pacman
         | Ecosystem::Apt
         | Ecosystem::Dnf

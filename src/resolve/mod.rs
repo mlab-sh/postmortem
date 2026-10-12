@@ -401,6 +401,67 @@ impl Resolver {
     /// `history` is the worker's history-document slot (see
     /// [`Self::version_meta`]): where the registry record and the release
     /// history live in one document, it is fetched once for both.
+    /// A registry entry that is text, not JSON.
+    ///
+    /// * **Hackage** — the release's `.cabal`: `homepage:`, a
+    ///   `source-repository`'s `location:`, `bug-reports:`, and `license:`.
+    /// * **Julia** — the General registry's `Package.toml`: `repo = "..."`. The
+    ///   registry records no license.
+    fn text_record(&self, dep: &Dependency) -> Result<CachedRepo> {
+        let url = match dep.ecosystem {
+            // A Stack snapshot package (`managed`): the latest release's.
+            Ecosystem::Haskell if dep.version == "managed" => format!(
+                "{}/package/{n}/{n}.cabal",
+                self.endpoints.hackage(),
+                n = dep.name
+            ),
+            Ecosystem::Haskell => format!(
+                "{}/package/{n}-{v}/{n}.cabal",
+                self.endpoints.hackage(),
+                n = dep.name,
+                v = dep.version
+            ),
+            _ => {
+                let first = dep.name.chars().next().map(|c| c.to_ascii_uppercase()).unwrap_or('_');
+                // Binary wrappers (`Arpack_jll`) live under `jll/` in General.
+                let jll = if dep.name.ends_with("_jll") { "jll/" } else { "" };
+                format!(
+                    "{}/JuliaRegistries/General/master/{jll}{first}/{}/Package.toml",
+                    self.endpoints.github_raw(),
+                    dep.name
+                )
+            }
+        };
+        let Some(body) = self.get_bytes(&url, 1 << 20)? else {
+            return Ok(CachedRepo::default());
+        };
+        let text = String::from_utf8_lossy(&body);
+        // `field: value` (.cabal, any indentation) or `field = "value"` (TOML).
+        let field = |name: &str| -> Vec<String> {
+            text.lines()
+                .filter_map(|l| {
+                    let l = l.trim();
+                    let rest = l.get(..name.len()).filter(|h| h.eq_ignore_ascii_case(name)).map(|_| &l[name.len()..])?;
+                    let v = rest.trim_start().strip_prefix([':', '='])?;
+                    Some(v.trim().trim_matches('"').to_string())
+                })
+                .filter(|v| !v.is_empty())
+                .collect()
+        };
+        let (repos, licenses) = match dep.ecosystem {
+            Ecosystem::Haskell => (
+                [field("location"), field("homepage"), field("bug-reports")].concat(),
+                field("license"),
+            ),
+            _ => (field("repo"), Vec::new()),
+        };
+        Ok(CachedRepo {
+            repo: repos.iter().find_map(|u| parse_repo(u)),
+            licenses,
+            ..Default::default()
+        })
+    }
+
     /// A ConanCenter recipe, read from conan-center-index: `config.yml` maps
     /// the version to its recipe folder, whose `conanfile.py` declares
     /// `homepage` and `license`. A homepage that is not a repo (`zlib.net`)
@@ -507,6 +568,17 @@ impl Resolver {
             self.cache.put("registry", &key, &record);
             return Ok(record);
         }
+        // Hackage publishes the release's .cabal; Julia's General registry the
+        // package's Package.toml. Both are text, and both name the repo.
+        if matches!(dep.ecosystem, Ecosystem::Haskell | Ecosystem::Julia) && dep.resolved_url.is_none() {
+            let key = format!("{}:{}@{}", dep.ecosystem.as_str(), dep.name, dep.version);
+            if let Some(hit) = self.cache.get::<CachedRepo>("registry", &key) {
+                return Ok(hit);
+            }
+            let record = self.text_record(dep)?;
+            self.cache.put("registry", &key, &record);
+            return Ok(record);
+        }
         // A SwiftPM package is named by its repository path: no registry exists.
         if dep.ecosystem == Ecosystem::Swift {
             return Ok(CachedRepo {
@@ -520,7 +592,12 @@ impl Resolver {
         // pub.dev's to describe, and resolves to no repo rather than a stranger's.
         if matches!(
             dep.ecosystem,
-            Ecosystem::Cocoapods | Ecosystem::Dart | Ecosystem::Elixir | Ecosystem::Vcpkg
+            Ecosystem::Cocoapods
+                | Ecosystem::Dart
+                | Ecosystem::Elixir
+                | Ecosystem::Vcpkg
+                | Ecosystem::R
+                | Ecosystem::Julia
         )
             && let Some(url) = &dep.resolved_url
         {

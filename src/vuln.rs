@@ -68,6 +68,9 @@ pub const COORDS_NUGET: &str = "coords:NuGet";
 pub const COORDS_SWIFT: &str = "coords:SwiftURL";
 pub const COORDS_CONAN: &str = "coords:ConanCenter";
 pub const COORDS_MAVEN: &str = "coords:Maven";
+pub const COORDS_HACKAGE: &str = "coords:Hackage";
+pub const COORDS_CRAN: &str = "coords:CRAN";
+pub const COORDS_JULIA: &str = "coords:Julia";
 
 /// The `(OSV ecosystem, name, version)` coordinates of a file mlab cannot read.
 fn coordinates_of(path: &Path, osv_eco: &str) -> Result<Vec<(String, String, String)>> {
@@ -80,6 +83,14 @@ fn coordinates_of(path: &Path, osv_eco: &str) -> Result<Vec<(String, String, Str
             crate::parsers::lein::parse(path)?
         }
         "Maven" => crate::parsers::sbt::parse(path)?,
+        "Hackage" => {
+            let lock = path
+                .file_name()
+                .is_some_and(|n| n == "cabal.project.freeze" || n == "stack.yaml.lock");
+            crate::parsers::haskell::parse((!lock).then_some(path), lock.then_some(path))?
+        }
+        "CRAN" => crate::parsers::r::parse(path, None)?,
+        "Julia" => crate::parsers::julia::parse(path, None)?,
         "ConanCenter" => {
             let lock = path.file_name().is_some_and(|n| n == "conan.lock");
             crate::parsers::cpp::parse_conan(lock.then_some(path), (!lock).then_some(path))?
@@ -95,7 +106,12 @@ fn coordinates_of(path: &Path, osv_eco: &str) -> Result<Vec<(String, String, Str
                 && !matches!(d.version.as_str(), "managed" | "system")
                 && !d.version.starts_with('[')
         })
-        .map(|d| (osv_eco.to_string(), d.name, d.version))
+        .map(|d| {
+            // renv.lock mixes CRAN and Bioconductor; OSV keeps them apart.
+            let bioc = d.resolved_url.as_deref().is_some_and(|u| u.contains("bioconductor.org"));
+            let eco = if osv_eco == "CRAN" && bioc { "Bioconductor" } else { osv_eco };
+            (eco.to_string(), d.name, d.version)
+        })
         .collect())
 }
 
