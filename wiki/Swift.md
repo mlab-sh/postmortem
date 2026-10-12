@@ -7,14 +7,15 @@ separately: `cocoapods` and `swift`.
 
 | File | Notes |
 | --- | --- |
-| `Podfile.lock` | CocoaPods - every pod (subspecs included) with its own dependencies: **full graph**. `DEPENDENCIES` is the direct set. |
+| `Podfile.lock` | CocoaPods - every pod (subspecs folded into it) with its own dependencies: **full graph**. `DEPENDENCIES` is the direct set. |
 | `Package.resolved` | SwiftPM (v1, v2, v3) - every pin, **no edges**. Found at the root, in `X.xcworkspace/xcshareddata/swiftpm/`, or in `X.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/`. |
 | `Package.swift` | Its `.package(url:)` calls give the direct set, when the resolved file is the package's own (at the root). |
 
 ## Identity
 
-- **CocoaPods** - the pod name; a subspec (`Firebase/Core`) is its own node,
-  as CocoaPods lists it.
+- **CocoaPods** - the pod name. A subspec (`Firebase/Core`) is folded into its
+  pod: one node per pod and version, whose edges are the union of its
+  subspecs' (purl `pkg:cocoapods/Firebase@10.0.0`).
 - **SwiftPM** - the repository path, case kept (`github.com/apple/swift-nio`),
   like a Go module. It is the package's identity, its purl
   (`pkg:swift/github.com/apple/swift-nio@2.65.0`) and its source repo. A pin

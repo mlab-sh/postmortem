@@ -63,7 +63,13 @@ fn purl_type(eco: Ecosystem) -> &'static str {
 /// A dependency's package URL, e.g. `pkg:npm/left-pad@1.3.0`. Doubles as the
 /// component's stable `bom-ref`.
 pub fn purl(dep: &Dependency) -> String {
-    let base = format!("pkg:{}/{}", purl_type(dep.ecosystem), dep.name);
+    // Maven coordinates are carried as `group:artifact`; the purl spec puts the
+    // group in the namespace segment: `pkg:maven/group/artifact`.
+    let name = match dep.ecosystem {
+        Ecosystem::Java => dep.name.replacen(':', "/", 1),
+        _ => dep.name.clone(),
+    };
+    let base = format!("pkg:{}/{name}", purl_type(dep.ecosystem));
     if dep.version.is_empty() {
         base
     } else {
@@ -222,6 +228,9 @@ mod tests {
         let mut d = dep("hello", "", true, &[]);
         d.ecosystem = Ecosystem::Nix;
         assert_eq!(purl(&d), "pkg:nix/hello"); // empty version → no @
+        let mut m = dep("com.google.guava:guava", "33.0.0-jre", true, &[]);
+        m.ecosystem = Ecosystem::Java;
+        assert_eq!(purl(&m), "pkg:maven/com.google.guava/guava@33.0.0-jre");
     }
 
     #[test]

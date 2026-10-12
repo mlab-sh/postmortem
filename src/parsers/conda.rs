@@ -51,6 +51,21 @@ fn eco(manager: &str) -> Ecosystem {
     }
 }
 
+/// PEP 503: lowercase, runs of `-` / `_` / `.` -> `-`.
+fn pep503(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if "-_.".contains(c) {
+            if !out.ends_with('-') {
+                out.push('-');
+            }
+        } else {
+            out.push(c.to_ascii_lowercase());
+        }
+    }
+    out
+}
+
 /// One `environment.yml` entry: (ecosystem, name, exact version?).
 fn spec(entry: &str, pip: bool) -> Option<(Ecosystem, String, Option<String>)> {
     let entry = entry.split('#').next()?.trim();
@@ -70,12 +85,19 @@ fn spec(entry: &str, pip: bool) -> Option<(Ecosystem, String, Option<String>)> {
         });
         return Some((Ecosystem::Python, entry[..name_end].to_lowercase(), version));
     }
-    // `conda-forge::numpy==1.26.4`, `numpy=1.26.4=py311h...`, `python>=3.11`.
+    // `conda-forge::numpy==1.26.4`, `numpy=1.26.4=py311h...`, `python>=3.11`,
+    // `numpy[version='>=1.26']`.
     let entry = entry.rsplit("::").next()?;
     let name_end = entry
-        .find(|c: char| "=<>!~ ".contains(c))
+        .find(|c: char| "=<>!~[ ".contains(c))
         .unwrap_or(entry.len());
     let rest = entry[name_end..].trim();
+    let bracket = rest.strip_prefix('[').and_then(|b| {
+        b.split(',')
+            .find_map(|kv| kv.trim().strip_prefix("version="))
+            .map(|v| v.trim_end_matches(']').trim_matches(['\'', '"']))
+    });
+    let rest = bracket.unwrap_or_else(|| rest.split('[').next().unwrap_or_default());
     let version = if let Some(v) = rest.strip_prefix("==") {
         Some(v.trim().to_string())
     } else if let Some(v) = rest.strip_prefix('=') {
@@ -159,7 +181,7 @@ pub fn parse(manifest: Option<&Path>, lockfile: Option<&Path>) -> Result<Vec<Dep
             (
                 *e,
                 if *e == Ecosystem::Python {
-                    n.to_lowercase()
+                    pep503(n)
                 } else {
                     n.clone()
                 },
@@ -176,7 +198,7 @@ pub fn parse(manifest: Option<&Path>, lockfile: Option<&Path>) -> Result<Vec<Dep
         let id = (e, p.name.clone(), p.version.clone());
         let i = *index.entry(id).or_insert_with(|| {
             let key = if e == Ecosystem::Python {
-                p.name.to_lowercase()
+                pep503(&p.name)
             } else {
                 p.name.clone()
             };
@@ -298,5 +320,23 @@ mod tests {
         );
         assert_eq!(get("pytest").scope, Scope::Dev);
         assert_eq!(get("numpy").integrity.as_deref(), Some("sha256-bb"));
+    }
+
+    #[test]
+    fn pep503_and_bracket_specs() {
+        assert_eq!(spec("numpy[version='>=1.26']", false), Some((Ecosystem::Conda, "numpy".into(), None)));
+        assert_eq!(
+            spec("scipy[version='==1.11.4']", false),
+            Some((Ecosystem::Conda, "scipy".into(), Some("1.11.4".into())))
+        );
+        let dir = tmp_dir();
+        let (env, lock) = (dir.join("environment.yml"), dir.join("conda-lock.yml"));
+        std::fs::write(&env, "dependencies:\n - pip:\n   - typing_extensions==4.9.0\n").unwrap();
+        std::fs::write(
+            &lock,
+            "package:\n- name: typing-extensions\n  version: 4.9.0\n  manager: pip\n  platform: linux-64\n",
+        )
+        .unwrap();
+        assert!(parse(Some(&env), Some(&lock)).unwrap()[0].direct);
     }
 }

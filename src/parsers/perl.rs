@@ -21,10 +21,11 @@ use crate::model::{Dependency, Ecosystem, LicenseSource, Scope};
 
 fn requires_re() -> &'static Regex {
     // requires 'Moo', '2.0';  test_requires "X";  requires 'Y' => '1';
+    // also after `sub {` / `;` on one line: `on 'test' => sub { requires 'Z'; };`
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| {
         Regex::new(
-            r#"(?m)^\s*(requires|test_requires|author_requires|build_requires|configure_requires)\s*\(?\s*['"]([\w:]+)['"]\s*(?:(?:,|=>)\s*['"]?([^'";\s)]+)['"]?)?"#,
+            r#"(?m)(?:^|[{;])\s*(requires|test_requires|author_requires|build_requires|configure_requires)\s*\(?\s*['"]([\w:]+)['"]\s*(?:(?:,|=>)\s*['"]?([^'";\s)]+)['"]?)?"#,
         )
         .unwrap()
     })
@@ -43,7 +44,7 @@ fn cpanfile_modules(src: &str) -> HashMap<String, (Option<String>, bool)> {
             phase = Some(c[1].to_string());
             depth = 0;
         }
-        if let Some(c) = requires_re().captures(code) {
+        for c in requires_re().captures_iter(code) {
             let dev = &c[1] != "requires" || phase.as_deref().is_some_and(|p| p != "runtime");
             let e = out
                 .entry(c[2].to_string())
@@ -80,6 +81,9 @@ struct Dist {
 fn snapshot(src: &str) -> Vec<Dist> {
     let mut out: Vec<Dist> = Vec::new();
     let mut section = "";
+    // The open distribution: `None` after an unparsable one, so its lines are
+    // not credited to the previous distribution.
+    let mut current: Option<usize> = None;
     for line in src.lines() {
         let indent = line.len() - line.trim_start().len();
         let t = line.trim();
@@ -88,19 +92,21 @@ fn snapshot(src: &str) -> Vec<Dist> {
         }
         match indent {
             2 => {
-                if let Some((n, v)) = split_dist(t) {
+                // `Foo-Bar-1.01-TRIAL`: a developer release.
+                current = split_dist(t.strip_suffix("-TRIAL").unwrap_or(t)).map(|(n, v)| {
                     out.push(Dist {
                         name: n.to_string(),
                         version: v.to_string(),
                         provides: Vec::new(),
                         requires: Vec::new(),
                     });
-                }
+                    out.len() - 1
+                });
                 section = "";
             }
             4 => section = t.trim_end_matches(':'),
             _ => {
-                let Some(d) = out.last_mut() else { continue };
+                let Some(d) = current.map(|i| &mut out[i]) else { continue };
                 let module = t.split_whitespace().next().unwrap_or("").to_string();
                 match section {
                     "provides" => d.provides.push(module),
@@ -239,5 +245,31 @@ mod tests {
                 ("Test::More", "0.96", Scope::Dev),
             ]
         );
+    }
+
+    #[test]
+    fn trial_dist_and_unparsable_dist() {
+        let dists = snapshot(
+            "DISTRIBUTIONS\n  Moo-2.005005\n    provides:\n      Moo 2.005005\n  Foo-Bar-1.01-TRIAL\n    provides:\n      Foo::Bar 1.01\n    requirements:\n      Moo 2\n  weird\n    provides:\n      Weird 1\n",
+        );
+        let got: Vec<(&str, &str, &[String])> = dists
+            .iter()
+            .map(|d| (d.name.as_str(), d.version.as_str(), d.provides.as_slice()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("Moo", "2.005005", &["Moo".to_string()][..]),
+                ("Foo-Bar", "1.01", &["Foo::Bar".to_string()][..]),
+            ]
+        );
+    }
+
+    #[test]
+    fn one_line_phase_block() {
+        let m = cpanfile_modules("requires 'Moo';\non 'test' => sub { requires 'Test::Deep'; requires 'Test::Fatal'; };\n");
+        assert_eq!(m["Test::Deep"], (None, true));
+        assert_eq!(m["Test::Fatal"], (None, true));
+        assert_eq!(m["Moo"], (None, false));
     }
 }

@@ -126,8 +126,10 @@ pub(super) fn registry_url_fallback(
         Ecosystem::Python => format!("{}/pypi/{}/json", ep.pypi(), dep.name),
         Ecosystem::Ruby => format!("{}/api/v1/gems/{}.json", ep.rubygems(), dep.name),
         // Clojure libraries mostly live on Clojars alone, which deps.dev does
-        // not index. Its artifact document is the latest release's.
-        Ecosystem::Java => {
+        // not index. Its artifact document is the latest release's. Only for
+        // a project.clj dependency: any other coordinate is not Clojars' to
+        // describe, and a private one must not be sent there.
+        Ecosystem::Java if dep.resolved_url.as_deref() == Some(crate::parsers::lein::CLOJARS_REPO) => {
             let (group, artifact) = dep.name.split_once(':')?;
             format!("{}/api/artifacts/{group}/{artifact}", ep.clojars())
         }
@@ -490,6 +492,29 @@ pub fn apply_licenses(deps: &mut [Dependency], resolutions: &HashMap<DepRef, Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clojars_fallback_only_for_project_clj_deps() {
+        let ep = crate::settings::Endpoints::default();
+        let mut dep = Dependency {
+            name: "com.acme.internal:secret-lib".into(),
+            version: "1.0".into(),
+            ecosystem: Ecosystem::Java,
+            direct: true,
+            scope: Default::default(),
+            licenses: Vec::new(),
+            license_source: Default::default(),
+            resolved_url: None,
+            integrity: None,
+            parents: Vec::new(),
+        };
+        assert_eq!(registry_url_fallback(&dep, &ep), None, "a Maven/Gradle/sbt coordinate");
+        dep.resolved_url = Some(crate::parsers::lein::CLOJARS_REPO.into());
+        assert_eq!(
+            registry_url_fallback(&dep, &ep).as_deref(),
+            Some("https://clojars.org/api/artifacts/com.acme.internal/secret-lib")
+        );
+    }
 
     #[test]
     fn normalize_languages_percentages_and_other() {

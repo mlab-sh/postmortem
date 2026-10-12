@@ -522,7 +522,13 @@ impl NetworkSettings {
                     .timeout_connect(timeout.min(std::time::Duration::from_secs(5)))
                     .timeout_read(timeout)
                     .timeout_write(timeout)
-                    .max_idle_connections_per_host(16),
+                    .max_idle_connections_per_host(16)
+                    // A renamed GitHub repo answers its API call with a 301 to the
+                    // new name. ureq drops `Authorization` on any redirect by
+                    // default, so the retry went out anonymous, hit the 60/h IP
+                    // limit, and its 403 read as the token being spent — ending
+                    // every repo stat of the run.
+                    .redirect_auth_headers(ureq::RedirectAuthHeaders::SameHost),
                 tls.clone(),
             )
         };
@@ -1040,6 +1046,31 @@ mod tests {
         assert_eq!(body, "ok");
         let body = net.apply(ureq::AgentBuilder::new()).build().get(&url).call().unwrap().into_string().unwrap();
         assert_eq!(body, "ok");
+    }
+
+    #[test]
+    fn a_same_host_redirect_keeps_the_authorization_header() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut sock in listener.incoming().flatten() {
+                let mut buf = [0u8; 2048];
+                let n = sock.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_ascii_lowercase();
+                let resp = if req.starts_with("get /old") {
+                    "HTTP/1.1 301 Moved\r\nlocation: /new\r\ncontent-length: 0\r\n\r\n".to_string()
+                } else {
+                    let auth = req.contains("authorization: bearer t");
+                    format!("HTTP/1.1 200 OK\r\ncontent-length: 1\r\nconnection: close\r\n\r\n{}", auth as u8)
+                };
+                let _ = sock.write_all(resp.as_bytes());
+            }
+        });
+        let url = format!("http://127.0.0.1:{port}/old");
+        let agents = NetworkSettings::default().agents(std::time::Duration::from_secs(5));
+        let body = agents.for_url(&url).get(&url).set("Authorization", "Bearer t").call().unwrap().into_string().unwrap();
+        assert_eq!(body, "1");
     }
 
 }

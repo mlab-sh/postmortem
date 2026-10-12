@@ -152,7 +152,9 @@ pub fn discover(roots: &[PathBuf]) -> (Vec<PathBuf>, usize) {
                     }
                     Some(t) if t.is_file() => {
                         let name = e.file_name().to_string_lossy();
-                        if MARKERS.contains(&name.as_ref())
+                        if (MARKERS.contains(&name.as_ref())
+                            || crate::detect::LOCKFILES.contains(&name.as_ref())
+                            || crate::detect::PIN_MANIFESTS.contains(&name.as_ref()))
                             && let Some(p) = e.path().parent()
                         {
                             found.lock().unwrap().push(p.to_path_buf());

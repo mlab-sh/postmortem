@@ -175,17 +175,7 @@ pub fn scan(
         req = req.set("Authorization", &format!("Bearer {t}"));
     }
 
-    let body = match req.send_bytes(&bytes) {
-        Ok(resp) => resp.into_string()?,
-        Err(ureq::Error::Status(429, _)) => anyhow::bail!("mlab rate limit reached (try a token)"),
-        Err(ureq::Error::Status(code, resp)) => {
-            anyhow::bail!(
-                "mlab scan failed ({code}): {}",
-                resp.into_string().unwrap_or_default()
-            )
-        }
-        Err(e) => return Err(e.into()),
-    };
+    let body = send(req, &bytes)?;
 
     let doc: serde_json::Value = serde_json::from_str(&body).context("parsing mlab response")?;
     let out = parse_response(&doc);
@@ -213,7 +203,10 @@ pub fn scan_many(
     let out: Vec<std::sync::Mutex<Option<Result<Vec<VulnPackage>>>>> =
         targets.iter().map(|_| Default::default()).collect();
     std::thread::scope(|s| {
-        for _ in 0..targets.len().min(4) {
+        // Anonymous callers get one scan per ~10 s: parallel uploads would
+        // only queue on 429s, so they go one at a time.
+        let workers = if token.is_some() { 4 } else { 1 };
+        for _ in 0..targets.len().min(workers) {
             s.spawn(|| {
                 loop {
                     let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -235,6 +228,10 @@ pub fn scan_many(
 /// re-asking for all of it made every run one large request — so it has to
 /// expire: an advisory published tomorrow must reach tomorrow's run.
 const COORDINATE_TTL: Duration = Duration::from_secs(12 * 3600);
+
+/// Coordinates per pre-parsed request: mlab's anonymous `max_packages`, the
+/// lowest tier, so the same chunking holds with or without a token.
+const COORDINATE_CHUNK: usize = 512;
 
 /// Scan a pre-resolved coordinate set — `(ecosystem, name, version)` — through
 /// mlab's `/api/v2/scan` in its **pre-parsed** mode (`{"packages":[…]}`). Used by
@@ -263,10 +260,13 @@ pub(crate) fn scan_coordinates(
     if !unknown.is_empty() {
         let sent: Vec<(String, String, String)> =
             unknown.iter().map(|&i| coords[i].clone()).collect();
-        for (i, answer) in unknown
-            .iter()
-            .zip(query_coordinates(agent, token, &sent, scan_url)?)
-        {
+        // The service answers at most `max_packages` coordinates per request
+        // (512 anonymous) and silently drops the rest, so ask in chunks.
+        let mut answers = Vec::with_capacity(sent.len());
+        for chunk in sent.chunks(COORDINATE_CHUNK) {
+            answers.extend(query_coordinates(agent, token, chunk, scan_url)?);
+        }
+        for (i, answer) in unknown.iter().zip(answers) {
             if let Some(vulns) = &answer {
                 cache.put("vuln-coord", &key(&coords[*i]), vulns);
                 if !vulns.is_empty() {
@@ -319,8 +319,27 @@ fn query_coordinates(
     if let Some(t) = token {
         req = req.set("Authorization", &format!("Bearer {t}"));
     }
-    let body = match req.send_bytes(&payload) {
-        Ok(resp) => resp.into_string()?,
+    let body = send(req, &payload)?;
+
+    let doc: serde_json::Value = serde_json::from_str(&body).context("parsing mlab response")?;
+    Ok(parse_coordinate_results(coords, &doc))
+}
+
+/// POST one scan. A 429 that says when the window reopens (anonymous callers
+/// get one scan per ~10 s) is waited out once rather than failing the scan.
+fn send(req: ureq::Request, body: &[u8]) -> Result<String> {
+    let sent = match req.clone().send_bytes(body) {
+        Err(ureq::Error::Status(429, resp)) => match crate::resolve::rate_limit_wait(&resp) {
+            Some(wait) => {
+                std::thread::sleep(wait);
+                req.send_bytes(body)
+            }
+            None => Err(ureq::Error::Status(429, resp)),
+        },
+        sent => sent,
+    };
+    match sent {
+        Ok(resp) => Ok(resp.into_string()?),
         Err(ureq::Error::Status(429, _)) => anyhow::bail!("mlab rate limit reached (try a token)"),
         Err(ureq::Error::Status(code, resp)) => {
             anyhow::bail!(
@@ -328,11 +347,8 @@ fn query_coordinates(
                 resp.into_string().unwrap_or_default()
             )
         }
-        Err(e) => return Err(e.into()),
-    };
-
-    let doc: serde_json::Value = serde_json::from_str(&body).context("parsing mlab response")?;
-    Ok(parse_coordinate_results(coords, &doc))
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Zip the coordinates we sent against the pre-parsed scan's `results` (aligned

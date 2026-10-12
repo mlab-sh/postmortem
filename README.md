@@ -19,7 +19,7 @@
 Modern software is mostly other people's code. postmortem inspects that code the
 way an attacker's payload actually reaches you: through install hooks, typosquats,
 hijacked maintainer accounts, and freshly-transferred repos. It reads your
-lockfiles across seven language ecosystems, reconstructs the full dependency
+lockfiles across twenty language ecosystems, reconstructs the full dependency
 graph, and flags what real compromises look like.
 
 ## Why postmortem
@@ -34,8 +34,8 @@ graph, and flags what real compromises look like.
   advisory lookups — and even then only sends the package coordinates being
   queried.
 * **Finds attacks, not just CVEs.** Malicious install scripts, obfuscated
-  payloads, embedded IOCs (IPs, domains, wallets), typosquats across six
-  ecosystems (npm, PyPI, crates.io, RubyGems, Packagist, Go — offline, each
+  payloads, embedded IOCs (IPs, domains, wallets), typosquats across seven
+  ecosystems (npm, PyPI, crates.io, RubyGems, Packagist, Go, Maven — offline, each
   against its own corpus), and provenance
   anomalies (new publisher, dormant release, an install script that appeared out
   of nowhere).

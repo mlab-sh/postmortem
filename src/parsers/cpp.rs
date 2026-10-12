@@ -107,6 +107,9 @@ struct GraphLock {
 struct Node {
     #[serde(default)]
     r#ref: Option<String>,
+    /// Set on the consumer only (its conanfile's path).
+    #[serde(default)]
+    path: Option<String>,
     #[serde(default)]
     requires: Vec<String>,
     #[serde(default)]
@@ -138,10 +141,12 @@ pub fn parse_conan(lockfile: Option<&Path>, manifest: Option<&Path>) -> Result<V
     let mut index = HashMap::new();
 
     if let Some(graph) = lock.graph_lock {
-        // v1: walk the node graph. Node "0" is the consumer itself.
+        // v1: walk the node graph. Node "0" (the one with a `path`) is the
+        // consumer itself — even when its `ref` names the project.
         let refs: HashMap<&str, &str> = graph
             .nodes
             .iter()
+            .filter(|(id, n)| id.as_str() != "0" && n.path.is_none())
             .filter_map(|(id, n)| {
                 let r = n.r#ref.as_deref()?;
                 conan_ref(r).map(|_| (id.as_str(), r))
@@ -210,8 +215,9 @@ fn quoted_ref_re() -> &'static Regex {
 }
 
 /// Declared references: name -> (the reference as written, build-time only).
-fn conan_declared(path: &Path, src: &str) -> HashMap<String, (String, bool)> {
-    let mut out = HashMap::new();
+/// Sorted, so a lockless run reports them in a stable order.
+fn conan_declared(path: &Path, src: &str) -> BTreeMap<String, (String, bool)> {
+    let mut out = BTreeMap::new();
     let mut add = |r: &str, build: bool| {
         if let Some((n, _)) = conan_ref(r) {
             out.entry(n.to_string())
@@ -222,19 +228,37 @@ fn conan_declared(path: &Path, src: &str) -> HashMap<String, (String, bool)> {
         for c in conanfile_py_re().captures_iter(src) {
             add(&c[2], &c[1] != "requires");
         }
-        // Class attributes: `requires = "a/1", "b/2"` / `tool_requires = [...]`.
-        for line in src.lines() {
+        // Class attributes: `requires = "a/1", "b/2"` / `tool_requires = [...]`,
+        // a `[`/`(` value running to its closer over the lines below.
+        let mut lines = src.lines();
+        while let Some(line) = lines.next() {
             let t = line.trim_start();
-            for (attr, build) in [
+            let Some(&(_, build)) = [
                 ("requires", false),
                 ("tool_requires", true),
                 ("build_requires", true),
-            ] {
-                if t.starts_with(attr) && t[attr.len()..].trim_start().starts_with('=') {
-                    for c in quoted_ref_re().captures_iter(t) {
-                        add(&c[1], build);
+                ("test_requires", true),
+                ("python_requires", true),
+            ]
+            .iter()
+            .find(|(attr, _)| t.starts_with(attr) && t[attr.len()..].trim_start().starts_with('='))
+            else {
+                continue;
+            };
+            let mut value = t.to_string();
+            if let Some(o) = t.find(['[', '(']) {
+                let close = if t.as_bytes()[o] == b'[' { ']' } else { ')' };
+                while !value[o..].contains(close) {
+                    let Some(next) = lines.next().map(str::trim_start) else {
+                        break;
+                    };
+                    if !next.starts_with('#') {
+                        value.push_str(next);
                     }
                 }
+            }
+            for c in quoted_ref_re().captures_iter(&value) {
+                add(&c[1], build);
             }
         }
     } else {
@@ -286,13 +310,21 @@ struct VcpkgConfiguration {
 #[derive(Deserialize)]
 struct Override {
     name: String,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "version-semver",
+        alias = "version-date",
+        alias = "version-string"
+    )]
     version: Option<String>,
 }
 
-/// The manifest's dependencies: name -> (host tool, `version>=`).
+/// The manifest's dependencies: name -> (host tool, `version>=`). The first
+/// declaration wins: a top-level entry over a feature's plain name.
 fn vcpkg_declared(m: &VcpkgManifest) -> HashMap<String, (bool, Option<String>)> {
-    m.dependencies
+    let mut out = HashMap::new();
+    for (name, v) in m
+        .dependencies
         .iter()
         .chain(m.features.values().flat_map(|f| &f.dependencies))
         .filter_map(|d| match d {
@@ -308,7 +340,10 @@ fn vcpkg_declared(m: &VcpkgManifest) -> HashMap<String, (bool, Option<String>)> 
             )),
             _ => None,
         })
-        .collect()
+    {
+        out.entry(name).or_insert(v);
+    }
+    out
 }
 
 /// `vcpkg-cmake:x64-osx` / `curl[core,ssl]` / `zlib (!windows)` -> the port name.
@@ -485,6 +520,91 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn conan_v1_consumer_with_a_real_ref() {
+        let dir = tmp_dir();
+        let lock = dir.join("conan.lock");
+        std::fs::write(
+            &lock,
+            r#"{"graph_lock":{"nodes":{
+  "0":{"ref":"user-management/1.0.0-dev.1","path":"conanfile.py","requires":["1"]},
+  "1":{"ref":"fmt/10.2.1#r1","requires":["2"]},
+  "2":{"ref":"zlib/1.3.1#r2"}}},"version":"0.4"}"#,
+        )
+        .unwrap();
+        let deps = parse_conan(Some(&lock), None).unwrap();
+        let get = |n: &str| deps.iter().find(|d| d.name == n).unwrap();
+        assert_eq!(deps.len(), 2, "the project is not its own dependency");
+        assert!(get("fmt").direct && get("fmt").parents.is_empty());
+        assert_eq!(get("zlib").parents, vec![("fmt".to_string(), "10.2.1".to_string())]);
+    }
+
+    #[test]
+    fn conanfile_py_multiline_attributes() {
+        let src = r#"class App(ConanFile):
+    requires = [
+        "fmt/10.2.1",
+        # "commented/1.0",
+        "spdlog/1.13.0",
+    ]
+    test_requires = ("gtest/1.14.0",
+                     "catch2/3.5.0")
+    python_requires = "pyreq/0.1"
+    tool_requires = "cmake/3.28.1"
+"#;
+        let got: Vec<(String, bool)> = conan_declared(Path::new("conanfile.py"), src)
+            .into_iter()
+            .map(|(n, (_, build))| (n, build))
+            .collect();
+        let want = [
+            ("catch2", true),
+            ("cmake", true),
+            ("fmt", false),
+            ("gtest", true),
+            ("pyreq", true),
+            ("spdlog", false),
+        ];
+        assert_eq!(
+            got,
+            want.iter().map(|(n, b)| (n.to_string(), *b)).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn conan_without_lock_is_sorted() {
+        let dir = tmp_dir();
+        let txt = dir.join("conanfile.txt");
+        std::fs::write(&txt, "[requires]\nzlib/1\nboost/2\nmsgpack/3\nabseil/4\nfmt/5\n").unwrap();
+        let names: Vec<String> = parse_conan(None, Some(&txt))
+            .unwrap()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(names, ["abseil", "boost", "fmt", "msgpack", "zlib"]);
+    }
+
+    #[test]
+    fn vcpkg_top_level_wins_and_override_version_variants() {
+        let m: VcpkgManifest = serde_json::from_str(
+            r#"{"dependencies":[{"name":"openssl","version>=":"3.0.8"},"fmt"],
+  "features":{"tls":{"dependencies":["openssl"]}},
+  "overrides":[{"name":"fmt","version-semver":"9.1.0"}]}"#,
+        )
+        .unwrap();
+        let got: Vec<(String, String)> = vcpkg_deps(&m, None)
+            .unwrap()
+            .into_iter()
+            .map(|d| (d.name, d.version))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("fmt".to_string(), "9.1.0".to_string()),
+                ("openssl".to_string(), "3.0.8".to_string())
+            ]
+        );
     }
 
     #[test]

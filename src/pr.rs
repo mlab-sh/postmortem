@@ -29,6 +29,14 @@ use crate::settings::{Endpoints, Settings};
 /// Manifests are included alongside lockfiles because several parsers need both:
 /// yarn reads `package.json` for the direct set, Cargo reads `Cargo.toml` for
 /// dev/build scopes, Bundler reads `Gemfile` for groups.
+fn wanted(name: &str) -> bool {
+    WANTED.contains(&name)
+        || crate::detect::LOCKFILES.contains(&name)
+        || crate::detect::PIN_MANIFESTS.contains(&name)
+        || crate::detect::MANIFESTS.contains(&name)
+        || crate::detect::is_manifest_ext(name)
+}
+
 const WANTED: &[&str] = &[
     "package.json",
     "package-lock.json",
@@ -392,7 +400,7 @@ fn list_manifests(
         let Some(blob) = e.get("sha").and_then(|x| x.as_str()) else {
             continue;
         };
-        if WANTED.contains(&name) {
+        if wanted(name) {
             out.push((path.to_string(), blob.to_string()));
         }
     }
@@ -514,6 +522,14 @@ mod tests {
         ] {
             assert!(WANTED.contains(&name), "{name} is not fetched");
         }
+    }
+
+    #[test]
+    fn the_later_ecosystems_are_fetched_too() {
+        for name in ["mix.lock", "bun.lock", "deno.lock", "build.sbt", "Api.csproj", "app.cabal"] {
+            assert!(wanted(name), "{name} is not fetched");
+        }
+        assert!(!wanted("README.md"));
     }
 
     #[test]

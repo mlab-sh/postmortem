@@ -47,7 +47,12 @@ impl Term {
 struct Reader<'a> {
     s: &'a [u8],
     i: usize,
+    /// Open `[` / `{` / `%{` — bounded, or a hostile lock overflows the stack.
+    depth: usize,
 }
+
+/// Far deeper than any real mix.lock nests.
+const MAX_DEPTH: usize = 128;
 
 impl Reader<'_> {
     fn ws(&mut self) {
@@ -136,6 +141,19 @@ impl Reader<'_> {
 
     fn term(&mut self) -> Result<Term> {
         self.ws();
+        if !matches!(self.s.get(self.i), Some(b'[' | b'{' | b'%')) {
+            return self.term_inner();
+        }
+        if self.depth >= MAX_DEPTH {
+            bail!("nested deeper than {MAX_DEPTH} at byte {}", self.i);
+        }
+        self.depth += 1;
+        let t = self.term_inner();
+        self.depth -= 1;
+        t
+    }
+
+    fn term_inner(&mut self) -> Result<Term> {
         match self.s.get(self.i) {
             Some(b'"') => Ok(Term::Str(self.string()?)),
             Some(b':') => {
@@ -242,6 +260,7 @@ pub fn parse_lockfile(path: &Path, manifest: Option<&Path>) -> Result<Vec<Depend
     let mut reader = Reader {
         s: text.as_bytes(),
         i: 0,
+        depth: 0,
     };
     let Term::Map(pairs) = reader
         .term()
@@ -250,10 +269,7 @@ pub fn parse_lockfile(path: &Path, manifest: Option<&Path>) -> Result<Vec<Depend
         bail!("{}: not a map", path.display());
     };
 
-    let declared = manifest
-        .and_then(|m| std::fs::read_to_string(m).ok())
-        .map(|s| mix_exs_deps(&s))
-        .unwrap_or_default();
+    let declared = manifest.map(declared_deps).unwrap_or_default();
 
     let entries: Vec<(String, Entry)> = pairs
         .iter()
@@ -313,12 +329,88 @@ fn dep_tuple_re() -> &'static Regex {
     R.get_or_init(|| Regex::new(r"\{\s*:([a-z0-9_]+)\s*,([^{}]*)\}").unwrap())
 }
 
+fn apps_path_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r#"apps_path:\s*"([^"]+)""#).unwrap())
+}
+
+/// Declared deps of the project at `manifest`. An umbrella's root `mix.exs`
+/// (`apps_path:`) declares none itself: its apps' `mix.exs` do.
+fn declared_deps(manifest: &Path) -> HashMap<String, bool> {
+    let Ok(src) = std::fs::read_to_string(manifest) else {
+        return HashMap::new();
+    };
+    let mut out = mix_exs_deps(&src);
+    if src.contains("apps_path") {
+        let apps = apps_path_re()
+            .captures(&src)
+            .and_then(|c| c.get(1))
+            .map_or("apps", |m| m.as_str());
+        let dir = manifest.parent().unwrap_or(Path::new(".")).join(apps);
+        for app in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let Ok(s) = std::fs::read_to_string(app.path().join("mix.exs")) else {
+                continue;
+            };
+            for (name, dev) in mix_exs_deps(&s) {
+                // Production in any app wins.
+                out.entry(name).and_modify(|d| *d &= dev).or_insert(dev);
+            }
+        }
+    }
+    out
+}
+
+fn deps_fn_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"\bdefp?\s+deps\b").unwrap())
+}
+
+fn next_def_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"\n\s*(?:defp?|defmacrop?)\s").unwrap())
+}
+
+fn deps_kw_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"\bdeps:\s*\[").unwrap())
+}
+
+/// Where the dependency tuples are: the `deps` function (up to the next
+/// `def`), else an inline `deps: [...]` list. Anything else in the file — a
+/// release's `{:runtime_tools, :permanent}` — is not a dependency.
+fn deps_body(src: &str) -> Option<&str> {
+    if let Some(m) = deps_fn_re().find(src) {
+        let rest = &src[m.start()..];
+        let end = next_def_re().find(rest).map_or(rest.len(), |n| n.start());
+        return Some(&rest[..end]);
+    }
+    let start = deps_kw_re().find(src)?.end() - 1;
+    let mut depth = 0usize;
+    for (i, c) in src[start..].char_indices() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[start..=start + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Declared deps in `mix.exs`, app -> dev/test only. `only:` without `:prod`
-/// keeps a dependency out of the production release.
+/// keeps a dependency out of the production release. An `in_umbrella: true`
+/// sibling is the project's own code, not a Hex dependency.
 fn mix_exs_deps(src: &str) -> HashMap<String, bool> {
-    let body = src.find("defp deps").map_or(src, |i| &src[i..]);
+    let Some(body) = deps_body(src) else {
+        return HashMap::new();
+    };
     dep_tuple_re()
         .captures_iter(body)
+        .filter(|c| !c[2].contains("in_umbrella:"))
         .map(|c| {
             let dev_only = c[2].split_once("only:").is_some_and(|(_, only)| {
                 let only = only.trim_start();
@@ -392,5 +484,58 @@ mod tests {
             Some("https://github.com/aerosol/con_cache")
         );
         assert!(get("acme/billing").direct);
+    }
+
+    #[test]
+    fn deep_nesting_is_an_error_not_a_stack_overflow() {
+        let hostile = "[".repeat(200_000);
+        let mut r = Reader {
+            s: hostile.as_bytes(),
+            i: 0,
+            depth: 0,
+        };
+        assert!(r.term().unwrap_err().to_string().contains("nested deeper"));
+    }
+
+    #[test]
+    fn umbrella_apps_declare_the_direct_set() {
+        let dir = std::env::temp_dir().join(format!(
+            "postmortem-elixir-umbrella-test-{}",
+            std::process::id()
+        ));
+        let web = dir.join("services").join("web");
+        std::fs::create_dir_all(&web).unwrap();
+        let (lock, exs) = (dir.join("mix.lock"), dir.join("mix.exs"));
+        std::fs::write(&lock, LOCK).unwrap();
+        std::fs::write(
+            &exs,
+            r#"def project do
+    [apps_path: "services", deps: []]
+  end"#,
+        )
+        .unwrap();
+        std::fs::write(
+            web.join("mix.exs"),
+            r#"defp deps do
+    [{:plug_cowboy, "~> 2.7"}, {:core, in_umbrella: true}]
+  end"#,
+        )
+        .unwrap();
+        let deps = parse_lockfile(&lock, Some(&exs)).unwrap();
+        let get = |n: &str| deps.iter().find(|d| d.name == n).unwrap();
+        assert!(get("plug_cowboy").direct);
+        assert!(!get("credo").direct);
+    }
+
+    #[test]
+    fn tuples_outside_deps_are_not_direct() {
+        // No `defp deps`: a release's `{:runtime_tools, :permanent}` is not one.
+        let src = r#"def project do
+    [deps: [{:jason, "~> 1.4"}], releases: [app: [applications: [{:runtime_tools, :permanent}]]]]
+  end"#;
+        let got = mix_exs_deps(src);
+        assert_eq!(got.len(), 1);
+        assert!(got.contains_key("jason"));
+        assert!(mix_exs_deps("releases: [{:runtime_tools, :permanent}]").is_empty());
     }
 }

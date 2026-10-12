@@ -165,6 +165,7 @@ fn parse_project(path: &Path) -> Result<Vec<Dependency>> {
             .or_else(|| attr(attrs, "VersionOverride"))
             .or_else(|| central.get(&name.to_lowercase()).cloned())
             .unwrap_or_else(|| "managed".to_string());
+        let version = expand_property(version, &text, path.parent());
         out.push(Dependency {
             name,
             version: strip_exact(&version),
@@ -212,11 +213,39 @@ fn strip_exact(v: &str) -> String {
     }
 }
 
+fn attr_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r#"\b(\w+)\s*=\s*["']([^"']*)["']"#).unwrap())
+}
+
 /// The value of `name="..."` (or `'...'`) in an attribute list.
 fn attr(attrs: &str, name: &str) -> Option<String> {
-    let re = Regex::new(&format!(r#"\b{name}\s*=\s*["']([^"']*)["']"#)).ok()?;
-    let v = re.captures(attrs)?[1].trim().to_string();
+    let c = attr_re().captures_iter(attrs).find(|c| &c[1] == name)?;
+    let v = c[2].trim().to_string();
     (!v.is_empty()).then_some(v)
+}
+
+/// `$(Prop)` -> `<Prop>` as the project, else the nearest
+/// `Directory.Build.props` / `Directory.Packages.props`, defines it. A
+/// property it cannot resolve is an unknown version: "managed".
+fn expand_property(v: String, project: &str, dir: Option<&Path>) -> String {
+    if !v.contains("$(") {
+        return v;
+    }
+    let Some(prop) = v.strip_prefix("$(").and_then(|s| s.strip_suffix(')')) else {
+        return "managed".to_string();
+    };
+    child(project, prop)
+        .or_else(|| {
+            ["Directory.Build.props", "Directory.Packages.props"]
+                .iter()
+                .find_map(|f| {
+                    let p = dir?.ancestors().map(|d| d.join(f)).find(|p| p.is_file())?;
+                    child(&std::fs::read_to_string(p).ok()?, prop)
+                })
+        })
+        .filter(|v| !v.contains("$("))
+        .unwrap_or_else(|| "managed".to_string())
 }
 
 /// The trimmed text of `<name>...</name>` inside `body`.
@@ -338,5 +367,30 @@ mod tests {
             ]
         );
         assert!(deps.iter().all(|d| d.direct));
+    }
+
+    #[test]
+    fn csproj_expands_msbuild_properties() {
+        let root = tmp_dir();
+        let proj = root.join("src");
+        std::fs::create_dir_all(&proj).unwrap();
+        std::fs::write(
+            root.join("Directory.Build.props"),
+            "<Project><PropertyGroup><SerilogVersion>3.1.1</SerilogVersion></PropertyGroup></Project>",
+        )
+        .unwrap();
+        let csproj = proj.join("App.csproj");
+        std::fs::write(
+            &csproj,
+            r#"<Project><PropertyGroup><JsonVersion>13.0.3</JsonVersion></PropertyGroup><ItemGroup>
+  <PackageReference Include="Newtonsoft.Json" Version="$(JsonVersion)" />
+  <PackageReference Include="Serilog" Version="$(SerilogVersion)" />
+  <PackageReference Include="Polly" Version="$(Undefined)" />
+</ItemGroup></Project>"#,
+        )
+        .unwrap();
+        let deps = parse(Some(&csproj), None).unwrap();
+        let got: Vec<&str> = deps.iter().map(|d| d.version.as_str()).collect();
+        assert_eq!(got, vec!["13.0.3", "3.1.1", "managed"]);
     }
 }

@@ -29,6 +29,7 @@
 
 mod history;
 mod net;
+pub(crate) use net::rate_limit_wait;
 mod registry;
 mod repo;
 mod signal;
@@ -286,6 +287,23 @@ impl Resolver {
             crate::gochi::Mood::Happy
         };
         bar.finish(mood, format!("resolved {} package(s)", out.len()));
+        // Otherwise these only show up as "unchecked" in the recap, which reads
+        // like packages without a repo rather than a run cut short.
+        let failed = out
+            .values()
+            .filter(|r| r.signals.iter().any(|s| s == "stats-failed"))
+            .count();
+        if failed > 0 {
+            let why = if self.github_spent() {
+                "the GitHub API rate limit is spent"
+            } else {
+                "the host API did not answer"
+            };
+            eprintln!(
+                "warn: {failed} package(s) have no repo stats because {why} — \
+                 rerun later (answers already fetched are cached)"
+            );
+        }
         out
     }
 
@@ -820,6 +838,11 @@ impl Resolver {
 fn jitpack_repo(name: &str) -> Option<RepoRef> {
     let (group, artifact) = name.split_once(':')?;
     let rest = group.strip_prefix("com.github.")?;
+    // `lib_2.13` -> `lib`: the Scala binary suffix is sbt's, not the repo's.
+    let artifact = match artifact.rsplit_once('_') {
+        Some((a, "2.10" | "2.11" | "2.12" | "2.13" | "3")) => a,
+        _ => artifact,
+    };
     let (user, repo) = match rest.split_once('.') {
         Some((user, repo)) => (user, repo),
         None => (rest, artifact),
@@ -846,6 +869,14 @@ mod tests {
             Some("lenguyenthanh/scala-probabilistic-data-structures")
         );
         assert_eq!(slug("org.typelevel:cats-core_3"), None);
+    }
+
+    #[test]
+    fn jitpack_repo_drops_the_scala_binary_suffix() {
+        let slug = |n: &str| jitpack_repo(n).map(|r| format!("{}/{}", r.owner, r.name));
+        assert_eq!(slug("com.github.user:lib_2.13").as_deref(), Some("user/lib"));
+        assert_eq!(slug("com.github.user:lib_3").as_deref(), Some("user/lib"));
+        assert_eq!(slug("com.github.user:my_lib").as_deref(), Some("user/my_lib"));
     }
 
     #[test]

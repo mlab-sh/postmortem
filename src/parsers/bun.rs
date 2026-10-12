@@ -28,8 +28,10 @@ fn strip_trailing_commas(src: &str) -> String {
         let c = b[i];
         if in_str {
             if c == b'\\' {
-                out.push_str(&src[i..(i + 2).min(b.len())]);
-                i += 2;
+                // The backslash and the whole (maybe multibyte) char it escapes.
+                let n = 1 + src[i + 1..].chars().next().map_or(0, char::len_utf8);
+                out.push_str(&src[i..i + n]);
+                i += n;
                 continue;
             }
             if c == b'"' {
@@ -60,7 +62,7 @@ fn strip_trailing_commas(src: &str) -> String {
 
 /// `@babel/core@7.24.0` -> (`@babel/core`, `7.24.0`).
 fn split_ident(id: &str) -> Option<(&str, &str)> {
-    let at = id[1..].find('@')? + 1;
+    let at = id.get(1..)?.find('@')? + 1;
     Some((&id[..at], &id[at + 1..]))
 }
 
@@ -209,6 +211,14 @@ pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_input_does_not_panic() {
+        assert_eq!(split_ident(""), None);
+        assert_eq!(split_ident("é@1"), None);
+        assert_eq!(strip_trailing_commas(r#""\é""#), r#""\é""#);
+        assert_eq!(strip_trailing_commas(r#"{"x":[""],}"#), r#"{"x":[""]}"#);
+    }
 
     #[test]
     fn nested_paths_workspaces_and_scopes() {

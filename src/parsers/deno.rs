@@ -12,10 +12,12 @@
 //! * `remote` — URL imports (`https://deno.land/x/...`): not packages of any
 //!   registry, counted rather than reported (see [`remote_count`]).
 //!
-//! v3 nests `specifiers` / `jsr` / `npm` under `packages`.
+//! v3 nests `specifiers` / `jsr` / `npm` under `packages`; v2 has only npm,
+//! its `specifiers` (the direct set, bare keys) and `packages` under `npm`.
 
 use anyhow::{Context, Result};
 use serde_json::Value;
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -50,11 +52,26 @@ pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
     let lock: Value = serde_json::from_slice(&bytes)
         .with_context(|| format!("parsing {} as deno.lock", path.display()))?;
     let s = sections(&lock);
-    let obj = |k: &str| s.get(k).and_then(|v| v.as_object());
-    let specifiers: HashMap<&str, &str> = obj("specifiers")
+    let v2 = lock.get("npm").and_then(|n| n.get("packages")).filter(|p| p.is_object());
+    let obj = |k: &str| match (k, v2) {
+        ("npm", Some(p)) => p.as_object(),
+        ("specifiers", Some(_)) => lock["npm"].get("specifiers").and_then(|v| v.as_object()),
+        _ => s.get(k).and_then(|v| v.as_object()),
+    };
+    // specifier -> resolved version. v4+ values are versions; v2/v3 ones are
+    // `[npm:|jsr:]name@version`.
+    let specifiers: HashMap<String, String> = obj("specifiers")
         .into_iter()
         .flatten()
-        .filter_map(|(k, v)| Some((k.as_str(), v.as_str()?)))
+        .filter_map(|(k, v)| {
+            let v = v.as_str()?;
+            let k = if v2.is_some() { format!("npm:{k}") } else { k.clone() };
+            if v.starts_with(|c: char| c.is_ascii_digit()) {
+                return Some((k, v.to_string()));
+            }
+            let v = v.split_once(':').map_or(v, |(_, r)| r);
+            Some((k, split(v).map_or(v, |(_, ver)| ver).to_string()))
+        })
         .collect();
 
     let mut out: Vec<Dependency> = Vec::new();
@@ -126,29 +143,42 @@ pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
         {
             return Some(i);
         }
+        // A bare name: its one locked version; if several, the highest one a
+        // specifier resolves to, else the highest.
         let name = split(bare).map_or(bare, |(n, _)| n);
-        match versions.get(&(eco, name.to_string())).map(Vec::as_slice) {
-            Some([only]) => index.get(&(eco, name.to_string(), only.clone())).copied(),
-            _ => None,
-        }
+        let locked = versions.get(&(eco, name.to_string()))?;
+        let specified: Vec<&String> = locked
+            .iter()
+            .filter(|v| {
+                specifiers.iter().any(|(k, sv)| {
+                    k.strip_prefix(prefix)
+                        .is_some_and(|r| split(r).map_or(r, |(n, _)| n) == name)
+                        && sv.split('_').next() == Some(v.as_str())
+                })
+            })
+            .collect();
+        let pool = if specified.is_empty() { locked.iter().collect() } else { specified };
+        let best = pool
+            .into_iter()
+            .max_by(|a, b| crate::semver::compare(a, b).unwrap_or(Ordering::Equal))?;
+        index.get(&(eco, name.to_string(), best.clone())).copied()
     };
 
     for (pi, entry) in entries {
         let default = out[pi].ecosystem;
-        let refs: Vec<String> = match entry.get("dependencies") {
-            Some(Value::Array(a)) => a
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(String::from)
-                .collect(),
-            // v3 npm: name -> `name@version`.
-            Some(Value::Object(m)) => m
-                .values()
-                .filter_map(|v| v.as_str())
-                .map(String::from)
-                .collect(),
-            _ => Vec::new(),
-        };
+        let mut refs: Vec<String> = Vec::new();
+        for field in ["dependencies", "optionalDependencies"] {
+            match entry.get(field) {
+                Some(Value::Array(a)) => {
+                    refs.extend(a.iter().filter_map(|v| v.as_str()).map(String::from))
+                }
+                // v2/v3 npm: name -> `name@version`.
+                Some(Value::Object(m)) => {
+                    refs.extend(m.values().filter_map(|v| v.as_str()).map(String::from))
+                }
+                _ => {}
+            }
+        }
         let parent = (out[pi].name.clone(), out[pi].version.clone());
         for r in refs {
             if let Some(ci) = lookup(&r, default)
@@ -165,16 +195,14 @@ pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
     let mut direct: Vec<String> = Vec::new();
     if let Some(ws) = lock.get("workspace") {
         let mut collect = |v: &Value| {
-            for key in ["dependencies"] {
-                direct.extend(
-                    v.get(key)
-                        .and_then(|d| d.as_array())
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|x| x.as_str())
-                        .map(String::from),
-                );
-            }
+            direct.extend(
+                v.get("dependencies")
+                    .and_then(|d| d.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|x| x.as_str())
+                    .map(String::from),
+            );
             if let Some(pj) = v.get("packageJson") {
                 direct.extend(
                     pj.get("dependencies")
@@ -195,6 +223,9 @@ pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
         {
             collect(m.1);
         }
+    }
+    if v2.is_some() {
+        direct.extend(specifiers.keys().cloned());
     }
     for spec in direct {
         if let Some(i) = lookup(&spec, Ecosystem::Node) {
@@ -262,5 +293,71 @@ mod tests {
         );
         assert_eq!(get("@std/path").integrity.as_deref(), Some("sha256-def"));
         assert_eq!(remote_count(&p), 1);
+    }
+
+    #[test]
+    fn optional_deps_are_edges() {
+        let dir = std::env::temp_dir().join(format!("postmortem-deno-opt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("deno.lock");
+        std::fs::write(
+            &p,
+            r#"{"version": "5", "npm": {
+  "esbuild@0.25.7": { "integrity": "a", "optionalDependencies": ["@esbuild/linux-x64@0.25.7"] },
+  "@esbuild/linux-x64@0.25.7": { "integrity": "b" }
+}}"#,
+        )
+        .unwrap();
+        let deps = parse(&p).unwrap();
+        let x = deps.iter().find(|d| d.name == "@esbuild/linux-x64").unwrap();
+        assert_eq!(x.parents, vec![("esbuild".to_string(), "0.25.7".to_string())]);
+    }
+
+    #[test]
+    fn ambiguous_bare_jsr_prefers_specified_then_highest() {
+        let dir = std::env::temp_dir().join(format!("postmortem-deno-amb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("deno.lock");
+        std::fs::write(
+            &p,
+            r#"{"version": "5",
+  "specifiers": { "jsr:@std/path@0.9": "0.9.0" },
+  "jsr": {
+    "@std/fs@1.0.0": { "integrity": "a", "dependencies": ["jsr:@std/path", "jsr:@std/internal"] },
+    "@std/path@0.9.0": { "integrity": "b" },
+    "@std/path@1.1.0": { "integrity": "c" },
+    "@std/internal@1.0.9": { "integrity": "d" },
+    "@std/internal@1.0.10": { "integrity": "e" }
+  }}"#,
+        )
+        .unwrap();
+        let deps = parse(&p).unwrap();
+        let has_parent = |n: &str, v: &str| {
+            !deps.iter().find(|d| d.name == n && d.version == v).unwrap().parents.is_empty()
+        };
+        assert!(has_parent("@std/path", "0.9.0") && !has_parent("@std/path", "1.1.0"));
+        assert!(has_parent("@std/internal", "1.0.10") && !has_parent("@std/internal", "1.0.9"));
+    }
+
+    #[test]
+    fn v2_nested_npm() {
+        let dir = std::env::temp_dir().join(format!("postmortem-deno-v2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("deno.lock");
+        std::fs::write(
+            &p,
+            r#"{"version": "2", "remote": {}, "npm": {
+  "specifiers": { "koa-router": "koa-router@12.0.0" },
+  "packages": {
+    "koa-router@12.0.0": { "integrity": "sha512-a", "dependencies": { "ms": "ms@2.1.3" } },
+    "ms@2.1.3": { "integrity": "sha512-b", "dependencies": {} }
+  }}}"#,
+        )
+        .unwrap();
+        let deps = parse(&p).unwrap();
+        let get = |n: &str| deps.iter().find(|d| d.name == n).unwrap();
+        assert_eq!(deps.len(), 2);
+        assert!(get("koa-router").direct && !get("ms").direct);
+        assert_eq!(get("ms").parents, vec![("koa-router".to_string(), "12.0.0".to_string())]);
     }
 }

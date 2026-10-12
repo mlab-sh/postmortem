@@ -458,7 +458,12 @@ fn parse_one(eco: &detect::Detected) -> (Vec<model::Dependency>, Vec<model::Diag
                 Ok(mut d) => deps.append(&mut d),
                 Err(e) => diag("r", "parse_failed", format!("renv.lock parse failed: {e:#}")),
             }
-            let edges = std::fs::read_to_string(lockfile).is_ok_and(|s| s.contains("\"Requirements\""));
+            // renv 1.0 writes `Requirements`; renv >= 1.1 the DESCRIPTION fields.
+            let edges = std::fs::read_to_string(lockfile).is_ok_and(|s| {
+                ["\"Requirements\"", "\"Depends\"", "\"Imports\"", "\"LinkingTo\""]
+                    .iter()
+                    .any(|k| s.contains(k))
+            });
             if !edges {
                 diag(
                     "r",

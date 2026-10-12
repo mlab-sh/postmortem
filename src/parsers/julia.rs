@@ -3,7 +3,8 @@
 //! The manifest lists every package with its `version`, `uuid` and the names
 //! it `deps` on — the full graph. Format 2.0 nests them under `[[deps.Name]]`;
 //! format 1 puts `[[Name]]` at the top level. A standard library has no
-//! `version` (it ships with Julia): it is not reported, like an SDK.
+//! `git-tree-sha1`, `repo-url` or `path` (it ships with Julia; since 1.11 it
+//! does carry a `version`): it is not reported, like an SDK.
 //!
 //! `Project.toml` `[deps]` is the direct set; `[extras]` named by
 //! `[targets] test` are development.
@@ -14,8 +15,10 @@ use std::path::Path;
 
 use crate::model::{Dependency, Ecosystem, LicenseSource, Scope};
 
-/// The manifest's entries: name -> (version?, dep names, repo-url?).
-fn entries(v: &toml::Value) -> Vec<(String, Option<String>, Vec<String>, Option<String>)> {
+/// A manifest entry: name, version (`None` for a stdlib), dep names, repo-url.
+type Entry = (String, Option<String>, Vec<String>, Option<String>);
+
+fn entries(v: &toml::Value) -> Vec<Entry> {
     let table = match v.get("deps").and_then(|d| d.as_table()) {
         Some(t) if v.get("manifest_format").is_some() => t,
         // Format 1: every top-level array of tables is a package.
@@ -39,9 +42,15 @@ fn entries(v: &toml::Value) -> Vec<(String, Option<String>, Vec<String>, Option<
                 Some(toml::Value::Table(t)) => t.keys().cloned().collect(),
                 _ => Vec::new(),
             };
+            let stdlib = ["git-tree-sha1", "repo-url", "path"]
+                .iter()
+                .all(|k| e.get(k).is_none());
             out.push((
                 name.clone(),
-                e.get("version").and_then(|x| x.as_str()).map(String::from),
+                e.get("version")
+                    .and_then(|x| x.as_str())
+                    .filter(|_| !stdlib)
+                    .map(String::from),
                 deps,
                 e.get("repo-url").and_then(|x| x.as_str()).map(String::from),
             ));
@@ -136,16 +145,19 @@ mod tests {
 manifest_format = "2.0"
 
 [[deps.JSON]]
+git-tree-sha1 = "0000000000000000000000000000000000000000"
 deps = ["Dates", "Mmap", "Parsers", "Unicode"]
 uuid = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 version = "0.21.4"
 
 [[deps.Parsers]]
+git-tree-sha1 = "0000000000000000000000000000000000000000"
 deps = ["Dates", "PrecompileTools"]
 uuid = "69de0a69-1ddd-5017-9359-2bf0b02dc9f0"
 version = "2.8.1"
 
 [[deps.PrecompileTools]]
+git-tree-sha1 = "0000000000000000000000000000000000000000"
 deps = ["Preferences"]
 uuid = "aea7be01-6a6a-4083-8856-8a6e6704d82a"
 version = "1.2.1"
@@ -161,6 +173,7 @@ uuid = "11111111-1111-1111-1111-111111111111"
 version = "0.1.0"
 
 [[deps.Aqua]]
+git-tree-sha1 = "0000000000000000000000000000000000000000"
 uuid = "4c88cf16-eb10-579e-8560-4a9242c79595"
 version = "0.8.9"
 "#,
@@ -188,7 +201,7 @@ version = "0.8.9"
         // Format 1.
         std::fs::write(
             &m,
-            "[[JSON]]\ndeps = [\"Parsers\"]\nuuid = \"682c\"\nversion = \"0.21.0\"\n\n[[Parsers]]\nuuid = \"69de\"\nversion = \"2.0.0\"\n",
+            "[[JSON]]\ndeps = [\"Parsers\"]\ngit-tree-sha1 = \"aa\"\nuuid = \"682c\"\nversion = \"0.21.0\"\n\n[[Parsers]]\ngit-tree-sha1 = \"bb\"\nuuid = \"69de\"\nversion = \"2.0.0\"\n",
         )
         .unwrap();
         let deps = parse(&m, None).unwrap();
@@ -197,5 +210,20 @@ version = "0.8.9"
             deps.iter().find(|d| d.name == "Parsers").unwrap().parents,
             vec![("JSON".to_string(), "0.21.0".to_string())]
         );
+    }
+
+    #[test]
+    fn versioned_stdlib_is_not_reported() {
+        let dir = std::env::temp_dir().join(format!("postmortem-jl-std-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let m = dir.join("Manifest.toml");
+        std::fs::write(
+            &m,
+            "manifest_format = \"2.0\"\n\n[[deps.Dates]]\ndeps = [\"Printf\"]\nuuid = \"ade2\"\nversion = \"1.11.0\"\n\n[[deps.Local]]\ndeps = [\"Dates\"]\npath = \"dev/Local\"\nuuid = \"1111\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        let deps = parse(&m, None).unwrap();
+        assert_eq!(deps.len(), 1, "Julia 1.11+ stdlibs carry a version");
+        assert_eq!(deps[0].name, "Local");
     }
 }

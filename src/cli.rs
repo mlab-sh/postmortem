@@ -36,8 +36,8 @@ impl OmitSet {
 #[command(
     name = "postmortem",
     version,
-    about = "Supply-chain security scanner for the code you depend on. Seven ecosystems \
-plus your machine's OS packages. No telemetry; offline unless you pass --online or --vulns.",
+    about = "Supply-chain security scanner for the code you depend on. Twenty language \
+ecosystems plus your machine's OS packages. No telemetry; offline unless you pass --online or --vulns.",
     after_help = "Run `postmortem help` for an overview grouped by what each command answers.",
     subcommand_required = true,
     arg_required_else_help = true,
@@ -125,8 +125,11 @@ pub enum Command {
     /// rules, skips — with how long each has left to run.
     Allowlist(AllowlistArgs),
 
-    /// Manage the on-disk cache (~/.postmortem/cache) used by `tree --online`.
+    /// Print a ready-to-commit pipeline for GitLab CI, Azure DevOps, Jenkins
+    /// or GitHub Actions.
     Ci(CiArgs),
+
+    /// Manage the on-disk cache (~/.postmortem/cache) used by `tree --online`.
     Cache(CacheArgs),
 
     /// Audit the machine's OS-level package managers (Homebrew, pacman/AUR,

@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emits `pkg:nuget/…`; `fix` suggests `dotnet add package`. No C# content
   scan or typosquat corpus yet. See [.NET](wiki/DotNet.md).
 - **Swift / iOS: CocoaPods and SwiftPM.** `Podfile.lock` gives the full graph
-  (subspecs as nodes, `DEPENDENCIES` as the direct set); a pod from `:git:`
+  (subspecs folded into their pod, `DEPENDENCIES` as the direct set); a pod from `:git:`
   resolves to that repo, not to the same-named trunk pod. `Package.resolved`
   (v1-v3, at the root or inside an `.xcworkspace` / `.xcodeproj`) gives a flat
   pin list named by repo path (`github.com/apple/swift-nio`), direct set from
@@ -106,6 +106,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A renamed GitHub repo no longer ends every repo stat of the run.** GitHub
+  answers a renamed repo's API call with a 301; ureq dropped `Authorization` on
+  the redirect, the retry went out anonymous, hit the 60/h IP limit, and its 403
+  read as the token being spent. Auth headers now follow same-host redirects.
+  On Plausible, 361 of 385 nodes had no stats; now 1. When the quota really is
+  spent, a warning now says how many packages were left unchecked.
+- **`--vulns` coordinate scans past 512 packages.** vuln.mlab.sh answers at most
+  512 coordinates per request and drops the rest, which then read as clean;
+  coordinates are now sent in chunks of 512. A 429 with `Retry-After` is waited
+  out once, and anonymous runs upload one lockfile at a time (the anonymous
+  cooldown is ~10 s).
+- **Crashes on hostile lockfiles.** A deeply nested `mix.lock` or `project.clj`
+  overflowed the stack (process abort); a malformed `bun.lock` could panic on
+  a char boundary. Both readers now fail with a parse error.
+- **Parser fixes from real lockfiles** (checked against files generated in
+  Docker by bun 1.4, deno 2.9, dart 3.13, mix 1.20, dotnet 9, swift 6.4,
+  conan 2.33, julia 1.13, carton 1.0, conda-lock 4, cabal 3.16, renv 1.3):
+  - renv ≥ 1.1 writes `Depends` / `Imports` / `LinkingTo` instead of
+    `Requirements`: these now give the edges (was a flat graph and a wrong
+    "renv < 1.0" diagnostic).
+  - Julia ≥ 1.11 records stdlib versions: stdlibs are now recognized by the
+    absence of `git-tree-sha1` / `repo-url` / `path` (20 stdlibs were reported
+    as General packages on a 1.9 manifest). `Manifest-vX.Y.toml` is detected.
+  - deno: `optionalDependencies` edges (109 false roots on denoland/fresh),
+    an ambiguous bare `jsr:` name picks the specified version, v2 locks parse.
+  - Conan 1.x lock whose root node has a real `ref` (was 0 direct, no edges);
+    multi-line `requires` / `test_requires` / `tool_requires` in
+    `conanfile.py` (rippled: 11 → 22 direct); `tree conanfile.txt` was parsed
+    as a Python requirements file; stable output order without a lock.
+  - vcpkg: a feature's plain entry no longer overrides the top-level
+    `version>=`; overrides accept `version-semver` / `-date` / `-string`.
+  - sbt: `scalaVersion in ThisBuild`, `crossScalaVersions` and `x.head` forms
+    (was a wrong `_2.12` suffix); a `'"'` char literal no longer breaks
+    comment stripping; `val` resolution was quadratic (8 000 deps: 34 s →
+    0.03 s).
+  - Leiningen: `#?(:clj …)` reader conditionals, composite profiles. The
+    Clojars fallback is limited to `project.clj` deps — Maven, Gradle and sbt
+    coordinates missing on deps.dev were being sent to clojars.org. JitPack
+    repos drop the Scala binary suffix.
+  - Haskell: git / url `extra-deps` in `stack.yaml.lock` were dropped;
+    `if` / `else` lines in a `.cabal` became dependencies; `pkg:sublib`
+    continuations ended the block.
+  - Perl: one-line phase blocks (`on 'test' => sub { requires …; }`),
+    `-TRIAL` dists.
+  - conda: pip names are PEP 503-normalized for the direct set;
+    `numpy[version='>=1.26']` specs.
+  - CocoaPods subspecs are folded into one node per pod (were N nodes and an
+    invalid purl); SwiftPM registry pins are named by their identity.
+  - Dart: `pub.dartlang.org` (pre-2023 locks) is pub.dev, not a private server.
+  - Elixir: umbrella apps' deps are the direct set; tuples outside the `deps`
+    list are no longer taken as direct deps.
+  - .NET: `Version="$(Prop)"` is expanded from the csproj or the nearest
+    `Directory.Build.props` / `Directory.Packages.props`.
+- **`hunt`, `watch`, `diff --pr` and image scans see the new ecosystems.** Their
+  filename lists still had only the original seven.
+- **`sbom`: Maven purls are `pkg:maven/group/artifact`** (were
+  `pkg:maven/group:artifact`).
+- **GitLab report: file hint for every ecosystem** (mlab's `NuGet` / `PyPI` /
+  `Hex` spelling missed the lowercase match; all but npm fell back to
+  `lockfile`).
+- **A hex.pm 429 wait no longer holds a slot** of the pool shared with npm,
+  PyPI and deps.dev.
+- `--help`: "Twenty language ecosystems"; `ci` had `cache`'s description.
 - **GitHub Action: SARIF is now uploaded when the gate trips.** The upload step
   lacked `always()`, so a failing gate skipped it and Code Scanning never saw
   the findings of exactly the run that needed them.

@@ -19,6 +19,16 @@ use std::path::Path;
 
 use crate::model::{Dependency, Ecosystem, LicenseSource, Scope};
 
+/// Leiningen resolves from Maven Central **and** Clojars: carried as the
+/// `resolved_url` of every project.clj dependency, it is what lets the
+/// resolver look one up on Clojars — and only these, never a Maven/Gradle/sbt
+/// coordinate (a private one must not leak there).
+pub const CLOJARS_REPO: &str = "https://repo.clojars.org/";
+
+/// Deeper nesting than any real project.clj: past it the reader stops rather
+/// than overflow the stack.
+const MAX_DEPTH: usize = 256;
+
 #[derive(Debug, Clone, PartialEq)]
 enum Form {
     /// Symbols, keywords (with their `:`), numbers, booleans.
@@ -47,6 +57,7 @@ impl Form {
 struct Reader<'a> {
     s: &'a [u8],
     i: usize,
+    depth: usize,
 }
 
 impl Reader<'_> {
@@ -85,6 +96,16 @@ impl Reader<'_> {
 
     /// One form; `None` for one that reads as nothing (`#_ x`).
     fn form(&mut self) -> Result<Option<Form>> {
+        if self.depth >= MAX_DEPTH {
+            bail!("nested deeper than {MAX_DEPTH} forms");
+        }
+        self.depth += 1;
+        let f = self.form_at();
+        self.depth -= 1;
+        f
+    }
+
+    fn form_at(&mut self) -> Result<Option<Form>> {
         self.ws();
         let Some(&c) = self.s.get(self.i) else {
             bail!("unexpected end of input");
@@ -129,6 +150,16 @@ impl Reader<'_> {
                 Some(b'(') => {
                     self.i += 1;
                     Form::Seq(self.seq(b')')?)
+                }
+                // Reader conditional `#?(:clj x :cljs y)`: the JVM branch, else
+                // `:default`. ponytail: `#?@` is not spliced — its vector is the form.
+                Some(b'?') => {
+                    self.i += 1;
+                    if self.s.get(self.i) == Some(&b'@') {
+                        self.i += 1;
+                    }
+                    let branches = self.form()?;
+                    return Ok(branches.and_then(|b| b.get(":clj").or(b.get(":default")).cloned()));
                 }
                 // `#"regex"`, a tagged literal: the next form.
                 _ => return self.form(),
@@ -183,6 +214,7 @@ pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
     let mut reader = Reader {
         s: text.as_bytes(),
         i: 0,
+        depth: 0,
     };
     // The file may hold other top-level forms; `defproject` is the one.
     let project = loop {
@@ -209,7 +241,14 @@ pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
     if let Some(Form::Map(profiles)) = project.get(":profiles") {
         for pair in profiles.chunks(2) {
             if let [Form::Atom(name), profile] = pair {
-                sets.push((profile.get(":dependencies"), name != ":provided"));
+                let dev = name != ":provided";
+                match profile {
+                    // A composite profile `[:base {:dependencies [...]}]`: its maps.
+                    Form::Seq(parts) => {
+                        sets.extend(parts.iter().map(|p| (p.get(":dependencies"), dev)))
+                    }
+                    _ => sets.push((profile.get(":dependencies"), dev)),
+                }
             }
         }
     }
@@ -239,7 +278,7 @@ pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
                     scope,
                     licenses: Vec::new(),
                     license_source: LicenseSource::Unknown,
-                    resolved_url: None,
+                    resolved_url: Some(CLOJARS_REPO.to_string()),
                     integrity: None,
                     parents: Vec::new(),
                 }),
@@ -252,6 +291,50 @@ pub fn parse(path: &Path) -> Result<Vec<Dependency>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_src(src: &str) -> Result<Vec<Dependency>> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "postmortem-lein-src-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("project.clj");
+        std::fs::write(&p, src).unwrap();
+        parse(&p)
+    }
+
+    #[test]
+    fn deep_nesting_is_an_error_not_a_stack_overflow() {
+        let src = format!("(defproject x \"1\" :dependencies {})", "[".repeat(100_000));
+        let err = parse_src(&src).unwrap_err();
+        assert!(format!("{err:#}").contains("nested deeper"), "{err:#}");
+    }
+
+    #[test]
+    fn reader_conditionals_and_composite_profiles() {
+        let deps = parse_src(
+            r#"(defproject x "1"
+  :dependencies [[a/b "1.0"] #?(:clj [c/d "2.0"] :cljs [no/js "9"]) #?(:cljs [no/js "9"])]
+  :profiles {:dev [:base {:dependencies [[midje "1.9"]]}]})"#,
+        )
+        .unwrap();
+        let got: Vec<(&str, &str, Scope)> = deps
+            .iter()
+            .map(|d| (d.name.as_str(), d.version.as_str(), d.scope))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("a:b", "1.0", Scope::Prod),
+                ("c:d", "2.0", Scope::Prod),
+                ("midje:midje", "1.9", Scope::Dev),
+            ]
+        );
+        assert!(deps.iter().all(|d| d.resolved_url.as_deref() == Some(CLOJARS_REPO)));
+    }
 
     #[test]
     fn dependencies_profiles_and_managed_versions() {

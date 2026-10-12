@@ -139,7 +139,7 @@ pub enum Detected {
         root: PathBuf,
         /// `Project.toml` — the direct set.
         manifest: Option<PathBuf>,
-        /// `Manifest.toml` (or `JuliaManifest.toml`).
+        /// `Manifest.toml` (or `JuliaManifest.toml`, `Manifest-vX.Y.toml`).
         lockfile: PathBuf,
     },
     Vcpkg {
@@ -206,6 +206,59 @@ impl Detected {
             | Detected::Clojure { root, .. } => root,
         }
     }
+}
+
+/// Pin files of the ecosystems added after `hunt`, `watch`, `diff --pr` and
+/// image scans grew their own name lists. Those lists keep the original seven;
+/// these are appended to each, so a new ecosystem is added here once.
+pub const LOCKFILES: &[&str] = &[
+    "bun.lock",
+    "deno.lock",
+    "packages.lock.json",
+    "Podfile.lock",
+    "Package.resolved",
+    "pubspec.lock",
+    "mix.lock",
+    "conan.lock",
+    "cabal.project.freeze",
+    "stack.yaml.lock",
+    "renv.lock",
+    "cpanfile.snapshot",
+    "Manifest.toml",
+    "conda-lock.yml",
+];
+
+/// Manifests that are a project's only pin file: these ecosystems have no
+/// lockfile (vcpkg, sbt, Leiningen) or often go without one (Conan).
+pub const PIN_MANIFESTS: &[&str] = &[
+    "vcpkg.json",
+    "build.sbt",
+    "project.clj",
+    "conanfile.txt",
+    "conanfile.py",
+];
+
+/// The other manifests of the same ecosystems, read beside their lockfile.
+pub const MANIFESTS: &[&str] = &[
+    "deno.json",
+    "deno.jsonc",
+    "Podfile",
+    "Package.swift",
+    "pubspec.yaml",
+    "mix.exs",
+    "Directory.Packages.props",
+    "cabal.project",
+    "stack.yaml",
+    "cpanfile",
+    "Project.toml",
+    "environment.yml",
+];
+
+/// Manifests named by extension rather than by a fixed name.
+pub fn is_manifest_ext(name: &str) -> bool {
+    [".csproj", ".fsproj", ".vbproj", ".cabal"]
+        .iter()
+        .any(|e| name.ends_with(e))
 }
 
 const NODE_LOCKS: &[&str] = &[
@@ -411,6 +464,15 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
             let m = py_manifest(root).ok_or_else(|| missing("pyproject.toml/setup.py/Pipfile"))?;
             python_at(root, m, Some(file))
         }
+        // Before the `*.txt` arm: conanfile.txt is not a requirements file.
+        "conanfile.txt" | "conanfile.py" => match conan_at(root, None) {
+            Detected::Conan { root, lockfile, .. } => Detected::Conan {
+                root,
+                manifest: Some(file),
+                lockfile,
+            },
+            other => other,
+        },
         // A requirements file is its own manifest and its own pinned set — any
         // name (`requirements/base.txt`, `constraints.txt`) once it is named.
         name if name.ends_with(".txt") => python_at(root, file.clone(), Some(file)),
@@ -447,14 +509,6 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
         },
         "Package.resolved" => swift_at(root, file),
         "conan.lock" => conan_at(root, Some(file)),
-        "conanfile.txt" | "conanfile.py" => match conan_at(root, None) {
-            Detected::Conan { root, lockfile, .. } => Detected::Conan {
-                root,
-                manifest: Some(file),
-                lockfile,
-            },
-            other => other,
-        },
         "vcpkg.json" => vcpkg_at(root, file),
         "deno.lock" | "deno.json" | "deno.jsonc" => {
             deno_at(root).ok_or_else(|| missing("deno.lock"))?
@@ -475,7 +529,10 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
         },
         "renv.lock" => r_at(root, Some(file)).ok_or_else(|| missing("renv.lock"))?,
         "cpanfile" | "cpanfile.snapshot" => perl_at(root).ok_or_else(|| missing("cpanfile"))?,
-        "Manifest.toml" | "JuliaManifest.toml" => {
+        name if name == "Manifest.toml"
+            || name == "JuliaManifest.toml"
+            || (name.starts_with("Manifest-v") && name.ends_with(".toml")) =>
+        {
             julia_at(root, Some(file)).ok_or_else(|| missing("Manifest.toml"))?
         }
         "Project.toml" | "JuliaProject.toml" => julia_at(root, None)
@@ -705,12 +762,34 @@ fn perl_at(root: &Path) -> Option<Detected> {
 }
 
 fn julia_at(root: &Path, lockfile: Option<PathBuf>) -> Option<Detected> {
-    let lockfile = lockfile.or_else(|| first_existing(root, &["Manifest.toml", "JuliaManifest.toml"]))?;
+    let lockfile = lockfile
+        .or_else(|| first_existing(root, &["Manifest.toml", "JuliaManifest.toml"]))
+        .or_else(|| versioned_manifest(root))?;
     Some(Detected::Julia {
         root: root.to_path_buf(),
         manifest: first_existing(root, &["Project.toml", "JuliaProject.toml"]),
         lockfile,
     })
+}
+
+/// The highest `Manifest-vX.Y.toml` at `root` (Julia >= 1.10.8 / 1.11).
+fn versioned_manifest(root: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(root)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let v: Vec<u32> = name
+                .strip_prefix("Manifest-v")?
+                .strip_suffix(".toml")?
+                .split('.')
+                .map(|n| n.parse().ok())
+                .collect::<Option<_>>()?;
+            Some((v, e.path()))
+        })
+        .filter(|(_, p)| p.is_file())
+        .max()
+        .map(|(_, p)| p)
 }
 
 /// First file at `root` with extension `ext` (sorted, so the pick is stable).
@@ -823,4 +902,44 @@ fn find_site_packages(root: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conanfile_txt_target_is_conan_not_python() {
+        let dir = std::env::temp_dir().join(format!("postmortem-detect-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let txt = dir.join("conanfile.txt");
+        std::fs::write(&txt, "[requires]\nzlib/1.3.1\n").unwrap();
+        let found = detect_target(&txt).unwrap();
+        assert!(
+            matches!(found.as_slice(), [Detected::Conan { manifest: Some(m), .. }] if *m == txt),
+            "{:?}",
+            found.iter().map(Detected::name).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn julia_versioned_manifest_highest_wins() {
+        let dir = std::env::temp_dir().join(format!("postmortem-detect-jl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["Project.toml", "Manifest-v1.9.toml", "Manifest-v1.11.toml", "Manifest-vx.toml"] {
+            std::fs::write(dir.join(f), "").unwrap();
+        }
+        match julia_at(&dir, None) {
+            Some(Detected::Julia { lockfile, .. }) => {
+                assert_eq!(lockfile, dir.join("Manifest-v1.11.toml"))
+            }
+            _ => panic!("versioned manifest not detected"),
+        }
+        std::fs::write(dir.join("Manifest.toml"), "").unwrap();
+        match julia_at(&dir, None) {
+            Some(Detected::Julia { lockfile, .. }) => assert_eq!(lockfile, dir.join("Manifest.toml")),
+            _ => panic!(),
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

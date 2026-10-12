@@ -348,7 +348,11 @@ pub fn projects(root: &Path) -> Vec<PathBuf> {
 
 /// True when `dir` holds any file that marks a project root.
 fn has_marker(dir: &Path) -> bool {
-    MARKERS.iter().any(|m| dir.join(m).is_file())
+    MARKERS
+        .iter()
+        .chain(crate::detect::LOCKFILES)
+        .chain(crate::detect::PIN_MANIFESTS)
+        .any(|m| dir.join(m).is_file())
 }
 
 /// `os/arch` the reference resolves to on this daemon, and its declared runtime

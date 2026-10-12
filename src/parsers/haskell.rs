@@ -101,7 +101,8 @@ pub fn declared(manifest: &Path) -> HashMap<String, bool> {
     // .cabal: stanzas start at column 0; `build-depends:` may continue on
     // more-indented lines.
     let mut dev = false;
-    let mut in_deps = false;
+    // Indent of the open `build-depends:` line, if any.
+    let mut in_deps: Option<usize> = None;
     for line in src.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with("--") {
@@ -110,17 +111,25 @@ pub fn declared(manifest: &Path) -> HashMap<String, bool> {
         if !line.starts_with([' ', '\t']) {
             let head = trimmed.to_lowercase();
             dev = head.starts_with("test-suite") || head.starts_with("benchmark");
-            in_deps = false;
+            in_deps = None;
             continue;
         }
-        let rest = match trimmed.to_lowercase().strip_prefix("build-depends:") {
+        let indent = line.len() - line.trim_start().len();
+        let lower = trimmed.to_lowercase();
+        let rest = match lower.strip_prefix("build-depends:") {
             Some(_) => {
-                in_deps = true;
+                in_deps = Some(indent);
                 &trimmed["build-depends:".len()..]
             }
-            None if in_deps && !trimmed.contains(':') => trimmed,
+            // A continuation is indented deeper; `if os(...)` / `else` is not one.
+            None if in_deps.is_some_and(|d| indent > d)
+                && !lower.starts_with("if ")
+                && lower != "else" =>
+            {
+                trimmed
+            }
             None => {
-                in_deps = false;
+                in_deps = None;
                 continue;
             }
         };
@@ -149,7 +158,8 @@ pub fn parse(manifest: Option<&Path>, lockfile: Option<&Path>) -> Result<Vec<Dep
         declared.remove(own);
     }
 
-    let mut pinned: BTreeMap<String, String> = BTreeMap::new();
+    // name -> (version, source URL of a git / url / archive entry).
+    let mut pinned: BTreeMap<String, (String, Option<String>)> = BTreeMap::new();
     if let Some(lock) = lockfile {
         let text =
             std::fs::read_to_string(lock).with_context(|| format!("reading {}", lock.display()))?;
@@ -162,17 +172,24 @@ pub fn parse(manifest: Option<&Path>, lockfile: Option<&Path>) -> Result<Vec<Dep
                 .into_iter()
                 .flatten()
             {
-                let id = p
-                    .get("completed")
-                    .and_then(|c| c.get("hackage"))
-                    .and_then(|h| h.as_str());
-                if let Some((n, ver)) = id.and_then(split_pkgid) {
-                    pinned.insert(n.to_string(), ver.to_string());
+                let Some(c) = p.get("completed") else {
+                    continue;
+                };
+                let field = |k: &str| c.get(k).and_then(|h| h.as_str());
+                if let Some((n, ver)) = field("hackage").and_then(split_pkgid) {
+                    pinned.insert(n.to_string(), (ver.to_string(), None));
+                } else if let Some(n) = field("name") {
+                    // A git / url / archive source: not from Hackage.
+                    let ver = field("version")
+                        .or_else(|| field("commit").map(|c| c.get(..12).unwrap_or(c)))
+                        .unwrap_or("unknown");
+                    let url = field("git").or_else(|| field("url")).map(String::from);
+                    pinned.insert(n.to_string(), (ver.to_string(), url));
                 }
             }
         } else {
             for c in freeze_re().captures_iter(&text) {
-                pinned.insert(c[1].to_string(), c[2].to_string());
+                pinned.insert(c[1].to_string(), (c[2].to_string(), None));
             }
         }
     }
@@ -191,9 +208,12 @@ pub fn parse(manifest: Option<&Path>, lockfile: Option<&Path>) -> Result<Vec<Dep
     };
     let mut out: Vec<Dependency> = pinned
         .iter()
-        .map(|(n, v)| {
+        .map(|(n, (v, url))| {
             let decl = declared.get(n);
-            dep(n, v, decl.is_some(), decl.copied().unwrap_or(false))
+            Dependency {
+                resolved_url: url.clone(),
+                ..dep(n, v, decl.is_some(), decl.copied().unwrap_or(false))
+            }
         })
         .collect();
     // Declared but not pinned (a Stack snapshot package): the version is the
@@ -283,5 +303,42 @@ mod tests {
                 ("hspec", "managed", Scope::Dev),
             ]
         );
+    }
+
+    #[test]
+    fn stack_lock_keeps_git_and_url_sources() {
+        let dir = tmp_dir();
+        let lock = dir.join("stack.yaml.lock");
+        std::fs::write(
+            &lock,
+            "packages:\n- completed:\n    commit: 7a8cf00\n    git: https://github.com/evil/bar\n    name: bar\n    version: 0.1.0\n  original:\n    git: https://github.com/evil/bar\n- completed:\n    name: baz\n    url: https://example/baz.tar.gz\n    subdir: baz\n  original:\n    url: https://example/baz.tar.gz\n",
+        )
+        .unwrap();
+        let deps = parse(None, Some(&lock)).unwrap();
+        let got: Vec<(&str, &str, Option<&str>)> = deps
+            .iter()
+            .map(|d| (d.name.as_str(), d.version.as_str(), d.resolved_url.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("bar", "0.1.0", Some("https://github.com/evil/bar")),
+                ("baz", "unknown", Some("https://example/baz.tar.gz")),
+            ]
+        );
+    }
+
+    #[test]
+    fn cabal_conditionals_and_sublibs() {
+        let dir = tmp_dir();
+        let cabal = dir.join("app.cabal");
+        std::fs::write(
+            &cabal,
+            "name: app\n\nlibrary\n  build-depends:\n      base >=4 && <5\n    , mylib:sublib\n    , text\n  if os(windows)\n    build-depends: Win32\n  else\n    build-depends: unix\n  default-language: Haskell2010\n",
+        )
+        .unwrap();
+        let mut names: Vec<String> = declared(&cabal).into_keys().collect();
+        names.sort();
+        assert_eq!(names, ["Win32", "base", "mylib", "text", "unix"]);
     }
 }

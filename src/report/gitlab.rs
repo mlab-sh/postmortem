@@ -113,7 +113,8 @@ pub fn render_tree(
     let mut vulns = Vec::new();
 
     for pkg in &tree.vulnerabilities {
-        let file = lockfile_hint(&pkg.ecosystem);
+        // mlab spells ecosystems OSV-style (`NuGet`, `PyPI`, `Hex`).
+        let file = lockfile_hint(&pkg.ecosystem.to_ascii_lowercase());
         for v in &pkg.vulns {
             // The fix target, when `fix` computed one for this exact version.
             let solution = v

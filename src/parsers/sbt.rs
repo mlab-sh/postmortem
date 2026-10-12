@@ -18,7 +18,7 @@
 
 use anyhow::{Context, Result};
 use regex::Regex;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::OnceLock;
 
@@ -51,7 +51,32 @@ fn val_re() -> &'static Regex {
 
 fn scala_version_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(&format!(r"scalaVersion\s*:=\s*({TERM})")).unwrap())
+    // `scalaVersion := ...`, `ThisBuild / scalaVersion := ...`,
+    // `scalaVersion in ThisBuild := ...`.
+    R.get_or_init(|| {
+        Regex::new(&format!(r"scalaVersion\s*(?:in\s+\w+\s*)?:=\s*({TERM})")).unwrap()
+    })
+}
+
+fn cross_versions_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| {
+        Regex::new(&format!(
+            r"crossScalaVersions\s*(?:in\s+\w+\s*)?:=\s*(?:Seq|List)\(\s*({TERM})"
+        ))
+        .unwrap()
+    })
+}
+
+/// The first element of `val name = Seq(...)` — for `scalaVersion := name.head`.
+fn seq_head(name: &str, src: &str) -> Option<(String, usize)> {
+    let re = Regex::new(&format!(
+        r"val\s+{}\s*(?::[^=\n]*)?=\s*(?:Seq|List)\(\s*({TERM})",
+        regex::escape(name)
+    ))
+    .ok()?;
+    let c = re.captures(src)?;
+    Some((c[1].to_string(), c.get(0)?.end()))
 }
 
 /// The build files of the project whose root holds `build_sbt`.
@@ -87,6 +112,18 @@ fn strip_comments(src: &str) -> String {
     let (mut i, mut in_str) = (0, false);
     while i < b.len() {
         match (b[i], b.get(i + 1)) {
+            // A char literal — `'"'`, `'x'`, `'\n'`, `'\u0041'` — opens no string.
+            (b'\'', Some(b'\\')) if !in_str => {
+                let rest = b.get(i + 3..).unwrap_or_default();
+                if let Some(n) = rest.iter().take(5).position(|&c| c == b'\'') {
+                    i += n + 4;
+                    continue;
+                }
+            }
+            (b'\'', Some(_)) if !in_str && b.get(i + 2) == Some(&b'\'') => {
+                i += 3;
+                continue;
+            }
             (b'"', _) => in_str = !in_str,
             (b'\\', _) if in_str => i += 1,
             (b'/', Some(b'/')) if !in_str => {
@@ -117,9 +154,28 @@ fn strip_comments(src: &str) -> String {
     String::from_utf8(out).unwrap_or_default()
 }
 
-/// The string a term stands for at byte `at` of `src`: a literal, or the
+/// A file's string `val`s: name -> (end offset, value), in file order.
+type FileVals<'a> = HashMap<&'a str, Vec<(usize, &'a str)>>;
+
+fn file_vals(src: &str) -> FileVals<'_> {
+    let mut out: FileVals = HashMap::new();
+    for c in val_re().captures_iter(src).filter(|c| c.get(3).is_none()) {
+        let (name, value) = (c.get(1).unwrap(), c.get(2).unwrap());
+        out.entry(name.as_str())
+            .or_default()
+            .push((c.get(0).unwrap().end(), value.as_str()));
+    }
+    out
+}
+
+/// The string a term stands for at byte `at` of a file: a literal, or the
 /// nearest `val` above. An interpolated literal stands for nothing knowable.
-fn resolve(term: &str, src: &str, at: usize, all_vals: &HashMap<String, String>) -> Option<String> {
+fn resolve(
+    term: &str,
+    vals: &FileVals,
+    at: usize,
+    all_vals: &HashMap<String, String>,
+) -> Option<String> {
     if let Some(lit) = term.strip_prefix('"') {
         return Some(lit.trim_end_matches('"').to_string());
     }
@@ -128,11 +184,11 @@ fn resolve(term: &str, src: &str, at: usize, all_vals: &HashMap<String, String>)
     }
     // `V.cats` / `Versions.cats` -> `cats`.
     let name = term.rsplit('.').next().unwrap_or(term);
-    val_re()
-        .captures_iter(&src[..at])
-        .filter(|c| &c[1] == name && c.get(3).is_none())
-        .last()
-        .map(|c| c[2].to_string())
+    vals.get(name)
+        .and_then(|defs| {
+            let above = defs.partition_point(|&(end, _)| end <= at);
+            above.checked_sub(1).map(|i| defs[i].1.to_string())
+        })
         .or_else(|| all_vals.get(name).cloned())
 }
 
@@ -159,22 +215,41 @@ pub fn parse(build_sbt: &Path) -> Result<Vec<Dependency>> {
                 .or_insert_with(|| c[2].to_string());
         }
     }
+    let vals: Vec<FileVals> = files.iter().map(|(_, src)| file_vals(src)).collect();
+    // `scalaVersion` (a literal, a val, or `someSeq.head`), else the first of
+    // `crossScalaVersions`. ponytail: unresolvable falls back to 2.12 silently —
+    // the parser has no diagnostics channel.
     let scala = files
         .iter()
-        .find_map(|(_, src)| {
+        .zip(&vals)
+        .find_map(|((_, src), fv)| {
             let c = scala_version_re().captures(src)?;
-            resolve(&c[1], src, c.get(0)?.start(), &all_vals)
+            let at = c.get(0)?.start();
+            match c[1].strip_suffix(".head") {
+                Some(seq) => {
+                    let (term, at) = seq_head(seq.rsplit('.').next()?, src)?;
+                    resolve(&term, fv, at, &all_vals)
+                }
+                None => resolve(&c[1], fv, at, &all_vals),
+            }
+        })
+        .or_else(|| {
+            files.iter().zip(&vals).find_map(|((_, src), fv)| {
+                let c = cross_versions_re().captures(src)?;
+                resolve(&c[1], fv, c.get(0)?.start(), &all_vals)
+            })
         })
         .unwrap_or_else(|| "2.12".to_string());
     let suffix = format!("_{}", binary_version(&scala));
 
     let mut out: Vec<Dependency> = Vec::new();
-    for (_, src) in &files {
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    for ((_, src), fv) in files.iter().zip(&vals) {
         for c in dep_re().captures_iter(src) {
             let at = c.get(0).map_or(0, |m| m.start());
             let (Some(group), Some(mut artifact)) = (
-                resolve(&c[1], src, at, &all_vals),
-                resolve(&c[3], src, at, &all_vals),
+                resolve(&c[1], fv, at, &all_vals),
+                resolve(&c[3], fv, at, &all_vals),
             ) else {
                 continue;
             };
@@ -187,7 +262,7 @@ pub fn parse(build_sbt: &Path) -> Result<Vec<Dependency>> {
                 artifact.push_str(&suffix);
             }
             let version =
-                resolve(&c[4], src, at, &all_vals).unwrap_or_else(|| "managed".to_string());
+                resolve(&c[4], fv, at, &all_vals).unwrap_or_else(|| "managed".to_string());
             // `Test` (an sbt config object) or a `"test"` / `"it,test"` string.
             let config = c.get(5).map_or("", |m| m.as_str()).to_lowercase();
             let scope = if config.contains("test") && !config.contains("compile") {
@@ -196,7 +271,7 @@ pub fn parse(build_sbt: &Path) -> Result<Vec<Dependency>> {
                 Scope::Prod
             };
             let name = format!("{group}:{artifact}");
-            if out.iter().any(|d| d.name == name && d.version == version) {
+            if !seen.insert((name.clone(), version.clone())) {
                 continue;
             }
             out.push(Dependency {
@@ -219,6 +294,65 @@ pub fn parse(build_sbt: &Path) -> Result<Vec<Dependency>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The dependency names `build_sbt` (alone in its directory) declares.
+    fn names(build_sbt: &str) -> Vec<String> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "postmortem-sbt-src-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("build.sbt");
+        std::fs::write(&p, build_sbt).unwrap();
+        parse(&p).unwrap().into_iter().map(|d| d.name).collect()
+    }
+
+    #[test]
+    fn scala_version_forms() {
+        let cats = "\nlibraryDependencies += \"org.typelevel\" %% \"cats-core\" % \"2.9.0\"\n";
+        for (build, want) in [
+            ("scalaVersion in ThisBuild := \"2.13.8\"", "_2.13"),
+            ("ThisBuild / scalaVersion := \"3.3.1\"", "_3"),
+            ("val scala213 = \"2.13.12\"\nscalaVersion := scala213", "_2.13"),
+            ("val versions = Seq(\"2.13.12\", \"2.12.18\")\nscalaVersion := versions.head", "_2.13"),
+            ("crossScalaVersions := Seq(\"2.13.12\", \"2.12.18\")", "_2.13"),
+            ("name := \"x\"", "_2.12"),
+        ] {
+            assert_eq!(
+                names(&format!("{build}{cats}")),
+                vec![format!("org.typelevel:cats-core{want}")],
+                "{build}"
+            );
+        }
+    }
+
+    #[test]
+    fn char_literal_quote_opens_no_string() {
+        let got = names(
+            "val sep = '\"'\nval esc = '\\''\nval org = \"good\"\n// val org = \"bad\"\nlibraryDependencies += org % \"a\" % \"1\"\n",
+        );
+        assert_eq!(got, vec!["good:a"]);
+    }
+
+    #[test]
+    fn thousands_of_val_deps_parse() {
+        let n = 3000;
+        let mut build = String::from("scalaVersion := \"2.13.12\"\n");
+        for i in 0..n {
+            build.push_str(&format!("val v{i} = \"1.{i}\"\n"));
+        }
+        build.push_str("libraryDependencies ++= Seq(\n");
+        for i in 0..n {
+            build.push_str(&format!("  \"org.x{i}\" %% \"lib{i}\" % v{i},\n"));
+        }
+        build.push_str(")\n");
+        let got = names(&build);
+        assert_eq!(got.len(), n);
+        assert_eq!(got[n - 1], format!("org.x{}:lib{}_2.13", n - 1, n - 1));
+    }
 
     #[test]
     fn literal_val_scoped_and_cross_file_terms() {

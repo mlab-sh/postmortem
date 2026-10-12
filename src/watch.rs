@@ -57,6 +57,9 @@ type Fingerprint = BTreeMap<PathBuf, Option<(u64, SystemTime)>>;
 pub fn fingerprint(root: &Path) -> Fingerprint {
     WATCHED
         .iter()
+        .chain(crate::detect::LOCKFILES)
+        .chain(crate::detect::PIN_MANIFESTS)
+        .chain(crate::detect::MANIFESTS)
         .map(|name| {
             let p = root.join(name);
             let meta = std::fs::metadata(&p)

@@ -133,7 +133,7 @@ const MISSING_REPO_TTL: Duration = Duration::from_secs(86_400);
 /// How long a 429 asks to be left alone, from `Retry-After` (seconds) or
 /// `x-ratelimit-reset` (a Unix time) — `None` past a minute: a run does not
 /// stall on a limit that long.
-fn rate_limit_wait(resp: &ureq::Response) -> Option<Duration> {
+pub(crate) fn rate_limit_wait(resp: &ureq::Response) -> Option<Duration> {
     const MAX: u64 = 60;
     let secs = match resp.header("retry-after").and_then(|v| v.trim().parse::<u64>().ok()) {
         Some(s) => s,
@@ -209,7 +209,7 @@ impl Resolver {
         if github && self.gates.github_spent.load(Ordering::Relaxed) {
             anyhow::bail!("GitHub API rate limit spent");
         }
-        let _slot = if github {
+        let slot = if github {
             self.gates.github.enter()
         } else if url.starts_with(&self.endpoints.crates()) {
             self.gates.crates.enter()
@@ -232,11 +232,13 @@ impl Resolver {
             sent => sent,
         };
         // A registry that says when its window reopens (hex.pm: 100/min
-        // anonymous) is waited for, once. GitHub's limit is hours long and has
-        // its own handling below.
+        // anonymous) is waited for, once — outside the host gate, which other
+        // registries share. GitHub's limit is hours long and has its own
+        // handling below.
         let sent = match sent {
             Err(ureq::Error::Status(429, resp)) if !github => match rate_limit_wait(&resp) {
                 Some(wait) => {
+                    drop(slot);
                     std::thread::sleep(wait);
                     req.call()
                 }
@@ -271,6 +273,11 @@ impl Resolver {
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Whether a GitHub call this run was refused for an exhausted quota.
+    pub(super) fn github_spent(&self) -> bool {
+        self.gates.github_spent.load(Ordering::Relaxed)
     }
 
     /// The npm version manifest for `name@version` — immutable once published,

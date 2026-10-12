@@ -4,7 +4,7 @@
 //! * `Podfile.lock` is YAML. `PODS` lists every resolved pod (subspecs such as
 //!   `Firebase/Core` included) with the pods it depends on, so the graph comes
 //!   back with edges; `DEPENDENCIES` is what the Podfile asked for — the direct
-//!   set.
+//!   set. Subspecs fold into their pod: one node per pod@version.
 //! * `Package.resolved` (v1, v2, v3) pins each package to a version or a
 //!   revision but records no edges and no direct/transitive split. The direct
 //!   set is recovered best-effort from `Package.swift`'s `.package(url:)` calls;
@@ -64,16 +64,27 @@ fn split_pod(s: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// `Firebase/Core` -> `Firebase`: the pod a subspec belongs to.
+fn pod_base(name: &str) -> &str {
+    name.split('/').next().unwrap_or(name)
+}
+
 pub fn parse_podfile_lock(path: &Path) -> Result<Vec<Dependency>> {
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
     let lock: PodLock = serde_yaml::from_str(&text)
         .with_context(|| format!("parsing {} as Podfile.lock", path.display()))?;
 
-    let direct: HashSet<&str> = lock.dependencies.iter().map(|d| split_pod(d).0).collect();
+    let direct: HashSet<&str> = lock
+        .dependencies
+        .iter()
+        .map(|d| pod_base(split_pod(d).0))
+        .collect();
 
-    // (pod, version, children) in document order.
+    // (pod, version, children) in document order. A subspec (`Pod/Sub`) is part
+    // of its pod — same version, same source — so it folds into one node.
     let mut entries: Vec<(String, String, Vec<String>)> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
     for item in &lock.pods {
         let (key, children) = match item {
             serde_yaml::Value::String(s) => (s.as_str(), Vec::new()),
@@ -86,7 +97,7 @@ pub fn parse_podfile_lock(path: &Path) -> Result<Vec<Dependency>> {
                     .map(|seq| {
                         seq.iter()
                             .filter_map(|c| c.as_str())
-                            .map(|c| split_pod(c).0.to_string())
+                            .map(|c| pod_base(split_pod(c).0).to_string())
                             .collect()
                     })
                     .unwrap_or_default();
@@ -95,11 +106,21 @@ pub fn parse_podfile_lock(path: &Path) -> Result<Vec<Dependency>> {
             _ => continue,
         };
         let (name, version) = split_pod(key);
-        entries.push((
-            name.to_string(),
-            version.unwrap_or_default().to_string(),
-            children,
-        ));
+        let name = pod_base(name);
+        let i = *seen.entry(name.to_string()).or_insert_with(|| {
+            entries.push((
+                name.to_string(),
+                version.unwrap_or_default().to_string(),
+                Vec::new(),
+            ));
+            entries.len() - 1
+        });
+        let kids = &mut entries[i].2;
+        for c in children {
+            if c != name && !kids.contains(&c) {
+                kids.push(c);
+            }
+        }
     }
 
     let version_of: HashMap<&str, &str> = entries
@@ -109,8 +130,7 @@ pub fn parse_podfile_lock(path: &Path) -> Result<Vec<Dependency>> {
     let mut out: Vec<Dependency> = entries
         .iter()
         .map(|(n, v, _)| {
-            let base = n.split('/').next().unwrap_or(n);
-            let source = lock.checkout.get(base).or_else(|| lock.external.get(base));
+            let source = lock.checkout.get(n).or_else(|| lock.external.get(n));
             let mut d = dep(
                 n.clone(),
                 v.clone(),
@@ -159,9 +179,14 @@ struct V1 {
 
 #[derive(Deserialize)]
 struct Pin {
-    /// v2+ `location`, v1 `repositoryURL`.
-    #[serde(alias = "repositoryURL")]
+    /// v2+ `location`, v1 `repositoryURL`. Empty for a registry pin.
+    #[serde(default, alias = "repositoryURL")]
     location: String,
+    /// v2+: `scope.name` for a registry pin (`"kind": "registry"`).
+    #[serde(default)]
+    identity: String,
+    #[serde(default)]
+    kind: String,
     #[serde(default)]
     state: State,
 }
@@ -217,7 +242,13 @@ pub fn parse_package_resolved(path: &Path, manifest: Option<&Path>) -> Result<Ve
     Ok(pins
         .into_iter()
         .map(|p| {
-            let name = package_path(&p.location);
+            // A registry pin has no repository: its identity is its name.
+            let registry = p.kind == "registry" || p.location.is_empty();
+            let name = if registry {
+                p.identity.clone()
+            } else {
+                package_path(&p.location)
+            };
             let version = p
                 .state
                 .version
@@ -226,7 +257,7 @@ pub fn parse_package_resolved(path: &Path, manifest: Option<&Path>) -> Result<Ve
                 .unwrap_or_default();
             let is_direct = direct.contains(&name.to_lowercase());
             let mut d = dep(name, version, Ecosystem::Swift, is_direct);
-            d.resolved_url = Some(p.location);
+            d.resolved_url = (!registry).then_some(p.location);
             d
         })
         .collect())
@@ -291,7 +322,7 @@ COCOAPODS: 1.15.2
         );
         let deps = parse_podfile_lock(&p).unwrap();
         let get = |n: &str| deps.iter().find(|d| d.name == n).unwrap();
-        assert_eq!(deps.len(), 5);
+        assert_eq!(deps.len(), 4);
         assert!(get("Alamofire").direct && get("FirebaseCore").direct);
         assert_eq!(get("Alamofire").version, "5.9.1");
         assert_eq!(get("Alamofire").resolved_url, None);
@@ -306,8 +337,51 @@ COCOAPODS: 1.15.2
             vec![("FirebaseCore".to_string(), "10.22.0".to_string())]
         );
         assert_eq!(
-            get("GoogleUtilities/NSData+zlib").parents,
-            vec![("FirebaseCoreInternal".to_string(), "10.22.0".to_string())]
+            get("GoogleUtilities").parents,
+            vec![
+                ("FirebaseCore".to_string(), "10.22.0".to_string()),
+                ("FirebaseCoreInternal".to_string(), "10.22.0".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn podfile_lock_folds_subspecs_into_their_pod() {
+        let p = tmp(
+            "Podfile.lock",
+            r#"PODS:
+  - Firebase/Analytics (10.22.0):
+    - Firebase/Core
+    - GoogleUtilities/Logger (~> 7.12)
+  - Firebase/Core (10.22.0):
+    - GoogleUtilities/Logger (~> 7.12)
+  - GoogleUtilities/Logger (7.13.0)
+
+DEPENDENCIES:
+  - Firebase/Analytics
+"#,
+        );
+        let deps = parse_podfile_lock(&p).unwrap();
+        let got: Vec<(&str, &str, bool)> = deps
+            .iter()
+            .map(|d| (d.name.as_str(), d.version.as_str(), d.direct))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("Firebase", "10.22.0", true),
+                ("GoogleUtilities", "7.13.0", false),
+            ]
+        );
+        // No self-edge from Firebase/Analytics -> Firebase/Core; one edge, not two.
+        assert!(deps[0].parents.is_empty());
+        assert_eq!(
+            deps[1].parents,
+            vec![("Firebase".to_string(), "10.22.0".to_string())]
+        );
+        assert_eq!(
+            crate::sbom::purl(&deps[1]),
+            "pkg:cocoapods/GoogleUtilities@7.13.0"
         );
     }
 
@@ -348,5 +422,17 @@ COCOAPODS: 1.15.2
         let deps = parse_package_resolved(&v1, None).unwrap();
         assert_eq!(deps[0].name, "github.com/onevcat/Kingfisher");
         assert_eq!(deps[0].version, "7.10.0");
+    }
+
+    #[test]
+    fn package_resolved_v3_registry_pin_is_named_by_identity() {
+        let p = tmp(
+            "Package.resolved",
+            r#"{"pins":[{"identity":"apple.swift-nio","kind":"registry","location":"","state":{"version":"2.65.0"}}],"version":3}"#,
+        );
+        let deps = parse_package_resolved(&p, None).unwrap();
+        assert_eq!(deps[0].name, "apple.swift-nio");
+        assert_eq!(deps[0].version, "2.65.0");
+        assert_eq!(deps[0].resolved_url, None);
     }
 }

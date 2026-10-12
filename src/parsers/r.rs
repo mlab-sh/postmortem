@@ -2,8 +2,9 @@
 //!
 //! JSON: `Packages` maps each package to its `Version`, `Source` (`Repository`
 //! / `CRAN` / `Bioconductor` / `GitHub` / ...) and, in renv >= 1.0 lockfiles,
-//! its `Requirements` — the edges. Older lockfiles carry none: the graph is
-//! then flat. The direct set comes from the project's `DESCRIPTION`
+//! its `Requirements` — the edges. renv >= 1.1 instead copies each package's
+//! `DESCRIPTION` fields (`Depends` / `Imports` / `LinkingTo`): the same edges.
+//! Older lockfiles carry neither: the graph is then flat. The direct set comes from the project's `DESCRIPTION`
 //! (`Depends` / `Imports` / `LinkingTo`; `Suggests` is development).
 
 use anyhow::{Context, Result};
@@ -27,6 +28,12 @@ struct Package {
     source: String,
     #[serde(default, rename = "Requirements")]
     requirements: Vec<String>,
+    #[serde(default, rename = "Depends")]
+    depends: serde_json::Value,
+    #[serde(default, rename = "Imports")]
+    imports: serde_json::Value,
+    #[serde(default, rename = "LinkingTo")]
+    linking_to: serde_json::Value,
     #[serde(default, rename = "RemoteHost")]
     remote_host: Option<String>,
     #[serde(default, rename = "RemoteUsername")]
@@ -35,6 +42,21 @@ struct Package {
     remote_repo: Option<String>,
     #[serde(default, rename = "RemoteUrl")]
     remote_url: Option<String>,
+}
+
+/// A `DESCRIPTION`-style field in the lock — an array, or a comma string —
+/// as package names: `"nlme (>= 3.1-64)"` -> `nlme`.
+fn field_names(v: &serde_json::Value) -> Vec<String> {
+    let items: Vec<&str> = match v {
+        serde_json::Value::Array(a) => a.iter().filter_map(|x| x.as_str()).collect(),
+        serde_json::Value::String(s) => s.split(',').collect(),
+        _ => Vec::new(),
+    };
+    items
+        .into_iter()
+        .filter_map(|i| i.split(|c: char| c == '(' || c.is_whitespace()).find(|s| !s.is_empty()))
+        .map(String::from)
+        .collect()
 }
 
 /// `DESCRIPTION` dependency fields: package -> Suggests only.
@@ -136,7 +158,16 @@ pub fn parse(lockfile: &Path, description: Option<&Path>) -> Result<Vec<Dependen
         .map(|(i, d)| (d.name.clone(), i))
         .collect();
     for (name, p) in &lock.packages {
-        for child in &p.requirements {
+        let children = if p.requirements.is_empty() {
+            [&p.depends, &p.imports, &p.linking_to]
+                .into_iter()
+                .flat_map(field_names)
+                .collect()
+        } else {
+            p.requirements.clone()
+        };
+        // Only names in the lock: `R` and base packages have no node.
+        for child in &children {
             if let (Some(&ci), Some(v)) = (index.get(child), version_of.get(name)) {
                 out[ci].parents.push((name.clone(), v.clone()));
             }
@@ -196,5 +227,28 @@ mod tests {
                 .contains("bioconductor")
         );
         assert_eq!(get("R6").resolved_url, None);
+    }
+
+    #[test]
+    fn renv_1_1_description_fields_are_edges() {
+        let dir = std::env::temp_dir().join(format!("postmortem-r-desc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("renv.lock");
+        std::fs::write(
+            &lock,
+            r#"{"Packages":{
+ "mgcv":{"Package":"mgcv","Version":"1.9-4","Source":"Repository","Depends":["R (>= 4.4.0)","nlme (>= 3.1-64)"],"Imports":["methods","Matrix"]},
+ "nlme":{"Package":"nlme","Version":"3.1-168","Source":"Repository","Imports":"graphics, lattice"},
+ "Matrix":{"Package":"Matrix","Version":"1.7-4","Source":"Repository"},
+ "lattice":{"Package":"lattice","Version":"0.22-7","Source":"Repository"}
+}}"#,
+        )
+        .unwrap();
+        let deps = parse(&lock, None).unwrap();
+        let parents = |n: &str| deps.iter().find(|d| d.name == n).unwrap().parents.clone();
+        let mgcv = vec![("mgcv".to_string(), "1.9-4".to_string())];
+        assert_eq!(parents("nlme"), mgcv);
+        assert_eq!(parents("Matrix"), mgcv);
+        assert_eq!(parents("lattice"), vec![("nlme".to_string(), "3.1-168".to_string())]);
     }
 }
