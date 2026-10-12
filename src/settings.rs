@@ -243,6 +243,9 @@ pub struct Endpoints {
     /// CocoaPods trunk API. Default `https://trunk.cocoapods.org`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cocoapods: Option<String>,
+    /// Hex API (Elixir / Erlang). Default `https://hex.pm`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hex: Option<String>,
     /// pub.dev API (Dart / Flutter). Default `https://pub.dev`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pub_dev: Option<String>,
@@ -304,6 +307,9 @@ impl Endpoints {
     }
     pub fn cocoapods(&self) -> String {
         base(&self.cocoapods, "https://trunk.cocoapods.org")
+    }
+    pub fn hex(&self) -> String {
+        base(&self.hex, "https://hex.pm")
     }
     pub fn pub_dev(&self) -> String {
         base(&self.pub_dev, "https://pub.dev")

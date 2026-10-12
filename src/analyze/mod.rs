@@ -70,7 +70,8 @@ pub fn scans_dependency_code(detected: &[Detected]) -> bool {
         | Detected::Dotnet { .. }
         | Detected::Cocoapods { .. }
         | Detected::Swift { .. }
-        | Detected::Dart { .. } => false,
+        | Detected::Dart { .. }
+        | Detected::Elixir { .. } => false,
     })
 }
 
@@ -509,6 +510,8 @@ fn plan<'a>(
             Detected::Cocoapods { .. } | Detected::Swift { .. } => {}
             // ponytail: no Dart content analyzer yet (needs Lang::Dart).
             Detected::Dart { .. } => {}
+            // ponytail: no Elixir content analyzer yet (needs Lang::Elixir).
+            Detected::Elixir { .. } => {}
         }
     }
 

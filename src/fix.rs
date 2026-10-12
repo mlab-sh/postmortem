@@ -244,6 +244,8 @@ pub fn upgrade_command(eco: Ecosystem, name: &str, target: &str) -> Option<Strin
         // moves within it.
         Ecosystem::Swift => return None,
         Ecosystem::Dart => format!("dart pub add {name}:^{target}"),
+        // Moves within mix.exs's requirement; past it, the requirement is the edit.
+        Ecosystem::Elixir => format!("mix deps.update {name}"),
         // OS packages are the distro's to move, not a manifest edit.
         Ecosystem::Brew => format!("brew upgrade {name}"),
         Ecosystem::Pacman => format!("pacman -Syu {name}"),
@@ -306,6 +308,10 @@ pub fn override_snippet(
             format!("<dependencyManagement> pins {name} to {target}"),
         ),
         // A direct reference wins over the transitive one (NuGet "direct wins").
+        Ecosystem::Elixir => (
+            "mix.exs",
+            format!("{{:{name}, \"~> {target}\", override: true}}"),
+        ),
         Ecosystem::Dart => (
             "pubspec.yaml",
             format!("dependency_overrides:\n  {name}: ^{target}"),

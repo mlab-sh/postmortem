@@ -75,6 +75,12 @@ pub enum Detected {
         /// needed.
         lockfile: PathBuf,
     },
+    Elixir {
+        root: PathBuf,
+        /// `mix.exs` if present — its `deps` are the direct set.
+        manifest: Option<PathBuf>,
+        lockfile: PathBuf,
+    },
 }
 
 impl Detected {
@@ -91,6 +97,7 @@ impl Detected {
             Detected::Cocoapods { .. } => "cocoapods",
             Detected::Swift { .. } => "swift",
             Detected::Dart { .. } => "dart",
+            Detected::Elixir { .. } => "elixir",
         }
     }
 
@@ -107,7 +114,8 @@ impl Detected {
             | Detected::Dotnet { root, .. }
             | Detected::Cocoapods { root, .. }
             | Detected::Swift { root, .. }
-            | Detected::Dart { root, .. } => root,
+            | Detected::Dart { root, .. }
+            | Detected::Elixir { root, .. } => root,
         }
     }
 }
@@ -201,6 +209,11 @@ pub fn detect(root: &Path) -> Result<Vec<Detected>> {
         out.push(swift_at(root, resolved));
     }
 
+    let mix_lock = root.join("mix.lock");
+    if mix_lock.is_file() {
+        out.push(elixir_at(root, mix_lock));
+    }
+
     let pubspec_lock = root.join("pubspec.lock");
     if pubspec_lock.is_file() {
         out.push(Detected::Dart {
@@ -291,6 +304,14 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
             lockfile: file,
         },
         "Package.resolved" => swift_at(root, file),
+        "mix.lock" => elixir_at(root, file),
+        "mix.exs" => {
+            let lock = root.join("mix.lock");
+            if !lock.is_file() {
+                anyhow::bail!("{}: no mix.lock alongside it", target.display());
+            }
+            elixir_at(root, lock)
+        }
         "pubspec.lock" => Detected::Dart {
             root: root.to_path_buf(),
             lockfile: file,
@@ -323,7 +344,7 @@ pub fn detect_target(target: &Path) -> Result<Vec<Detected>> {
              pyproject.toml, setup.py, Pipfile, Pipfile.lock, poetry.lock, uv.lock, requirements*.txt, \
              Cargo.toml, Cargo.lock, Gemfile.lock, composer.lock, go.mod, go.sum, pom.xml, \
              gradle.lockfile, packages.lock.json, *.csproj, *.fsproj, *.vbproj, Podfile.lock, \
-             Package.resolved, Package.swift, pubspec.lock, pubspec.yaml"
+             Package.resolved, Package.swift, pubspec.lock, pubspec.yaml, mix.lock, mix.exs"
         ),
     };
     Ok(vec![detected])
@@ -435,6 +456,15 @@ fn swift_resolved(root: &Path) -> Option<PathBuf> {
             .find(|p| p.is_file())
     };
     in_ext("xcworkspace", "").or_else(|| in_ext("xcodeproj", "project.xcworkspace"))
+}
+
+fn elixir_at(root: &Path, lockfile: PathBuf) -> Detected {
+    let manifest = root.join("mix.exs");
+    Detected::Elixir {
+        root: root.to_path_buf(),
+        manifest: manifest.is_file().then_some(manifest),
+        lockfile,
+    }
 }
 
 fn is_dotnet_project(name: &str) -> bool {

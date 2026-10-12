@@ -52,6 +52,11 @@ pub(super) fn registry_url(dep: &Dependency, ep: &crate::settings::Endpoints) ->
             urlencode(dep.name.split('/').next().unwrap_or(&dep.name)),
             urlencode(&dep.version),
         ),
+        // A private organisation's package (`org/pkg`) is not on the public API.
+        Ecosystem::Elixir if dep.name.contains('/') => return None,
+        // The package document: releases carry no license or links. Both are
+        // therefore the latest release's.
+        Ecosystem::Elixir => format!("{}/api/packages/{}", ep.hex(), dep.name),
         Ecosystem::Dart => format!(
             "{}/api/packages/{}/versions/{}",
             ep.pub_dev(),
@@ -183,6 +188,7 @@ pub(super) fn raw_licenses_from(dep: &Dependency, v: &serde_json::Value) -> Vec<
         }
         // deps.dev is already version-pinned and returns SPDX identifiers.
         Ecosystem::Java | Ecosystem::Dotnet | Ecosystem::Go => arr_at(v, "licenses"),
+        Ecosystem::Elixir => v.get("meta").map(|m| arr_at(m, "licenses")).unwrap_or_default(),
         // A podspec's `license` is `"MIT"` or `{"type": "MIT", "file": ...}`.
         Ecosystem::Cocoapods => npm_licenses(v.get("license"), None),
         // OS packages: licensing is a distro concern, not resolved here.
@@ -296,6 +302,27 @@ pub(super) fn repo_candidates(eco: Ecosystem, v: &serde_json::Value) -> Vec<Stri
         .into_iter()
         .flatten()
         .collect(),
+        // `meta.links` is free-form (`{"GitHub": url, "Docs": url}`): the
+        // repo-looking labels first, then any link that parses as a repo.
+        Ecosystem::Elixir => v
+            .get("meta")
+            .and_then(|m| m.get("links"))
+            .and_then(|l| l.as_object())
+            .map(|links| {
+                let mut out: Vec<(bool, String)> = links
+                    .iter()
+                    .filter_map(|(k, u)| {
+                        let k = k.to_lowercase();
+                        let repo = ["github", "gitlab", "codeberg", "source", "repo"]
+                            .iter()
+                            .any(|w| k.contains(w));
+                        Some((!repo, u.as_str()?.to_string()))
+                    })
+                    .collect();
+                out.sort_by_key(|(rank, _)| *rank);
+                out.into_iter().map(|(_, u)| u).collect()
+            })
+            .unwrap_or_default(),
         Ecosystem::Dart => v
             .get("pubspec")
             .map(|p| [s(p, "repository"), s(p, "homepage")].into_iter().flatten().collect())

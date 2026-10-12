@@ -417,7 +417,10 @@ impl Resolver {
         // under the same name — often the upstream of the fork in use.
         // Same for a Dart git package; a private pub server's package is not
         // pub.dev's to describe, and resolves to no repo rather than a stranger's.
-        if matches!(dep.ecosystem, Ecosystem::Cocoapods | Ecosystem::Dart)
+        if matches!(
+            dep.ecosystem,
+            Ecosystem::Cocoapods | Ecosystem::Dart | Ecosystem::Elixir
+        )
             && let Some(url) = &dep.resolved_url
         {
             return Ok(CachedRepo {

@@ -130,6 +130,25 @@ const MISSING_REPO_TTL: Duration = Duration::from_secs(86_400);
 /// reset (a pooled keep-alive socket the server had already closed). Never a
 /// 403/429 — that is a limit, and asking again only spends more of it — and
 /// never a read timeout: that is a slow server, and a retry doubles the wait.
+/// How long a 429 asks to be left alone, from `Retry-After` (seconds) or
+/// `x-ratelimit-reset` (a Unix time) — `None` past a minute: a run does not
+/// stall on a limit that long.
+fn rate_limit_wait(resp: &ureq::Response) -> Option<Duration> {
+    const MAX: u64 = 60;
+    let secs = match resp.header("retry-after").and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(s) => s,
+        None => {
+            let reset: u64 = resp.header("x-ratelimit-reset")?.trim().parse().ok()?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_secs();
+            reset.saturating_sub(now)
+        }
+    };
+    (secs <= MAX).then(|| Duration::from_secs(secs.max(1)))
+}
+
 fn retryable(e: &ureq::Error) -> bool {
     match e {
         ureq::Error::Status(code, _) => matches!(code, 502..=504),
@@ -208,8 +227,21 @@ impl Resolver {
         let sent = match req.clone().call() {
             Err(e) if retryable(&e) => {
                 std::thread::sleep(Duration::from_millis(250));
-                req.call()
+                req.clone().call()
             }
+            sent => sent,
+        };
+        // A registry that says when its window reopens (hex.pm: 100/min
+        // anonymous) is waited for, once. GitHub's limit is hours long and has
+        // its own handling below.
+        let sent = match sent {
+            Err(ureq::Error::Status(429, resp)) if !github => match rate_limit_wait(&resp) {
+                Some(wait) => {
+                    std::thread::sleep(wait);
+                    req.call()
+                }
+                None => Err(ureq::Error::Status(429, resp)),
+            },
             sent => sent,
         };
         match sent {
@@ -517,5 +549,28 @@ mod tests {
         for code in [403, 404, 429, 500] {
             assert!(!retryable(&status(code)), "{code}: a limit or an answer");
         }
+    }
+
+    #[test]
+    fn a_short_rate_limit_window_is_waited_for_a_long_one_is_not() {
+        let resp = |header: &str| {
+            format!("HTTP/1.1 429 Too Many Requests\r\n{header}\r\n\r\n")
+                .parse::<ureq::Response>()
+                .unwrap()
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(rate_limit_wait(&resp("Retry-After: 7")), Some(Duration::from_secs(7)));
+        let wait = rate_limit_wait(&resp(&format!("x-ratelimit-reset: {}", now + 20))).unwrap();
+        assert!((19..=20).contains(&wait.as_secs()), "{wait:?}");
+        // Already reset: still a beat, not a busy retry.
+        assert_eq!(
+            rate_limit_wait(&resp(&format!("x-ratelimit-reset: {}", now - 5))),
+            Some(Duration::from_secs(1))
+        );
+        assert_eq!(rate_limit_wait(&resp("Retry-After: 3600")), None);
+        assert_eq!(rate_limit_wait(&resp("X-Other: 1")), None);
     }
 }

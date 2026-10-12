@@ -35,6 +35,7 @@
 - [.NET](DotNet)
 - [Swift / iOS](Swift)
 - [Dart / Flutter](Dart)
+- [Elixir / Hex](Elixir)
 
 **System managers**
 - [Homebrew](Homebrew)

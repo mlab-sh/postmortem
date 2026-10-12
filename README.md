@@ -172,7 +172,7 @@ cd postmortem && cargo build --release
 | [`cache`](https://github.com/mlab-sh/postmortem/wiki/Cache) | Manage the local cache used by the online paths. |
 
 **Ecosystems:** Node (npm / pnpm / yarn), Python, Rust, Ruby, PHP, Go, and
-Java / Kotlin, .NET (NuGet), Swift / iOS (CocoaPods, SwiftPM), Dart / Flutter. Source-code scanning additionally covers C, C++, and Perl.
+Java / Kotlin, .NET (NuGet), Swift / iOS (CocoaPods, SwiftPM), Dart / Flutter, Elixir / Erlang (Hex). Source-code scanning additionally covers C, C++, and Perl.
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 

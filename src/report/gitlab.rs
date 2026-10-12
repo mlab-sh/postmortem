@@ -85,6 +85,7 @@ fn lockfile_hint(ecosystem: &str) -> &'static str {
         "nuget" | "dotnet" => "packages.lock.json",
         "cocoapods" => "Podfile.lock",
         "dart" | "pub" => "pubspec.lock",
+        "elixir" | "hex" => "mix.lock",
         "swift" | "swifturl" => "Package.resolved",
         _ => "lockfile",
     }

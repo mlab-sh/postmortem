@@ -24,6 +24,8 @@ fn purl_type(eco: Ecosystem) -> &'static str {
         // `pkg:swift/github.com/apple/swift-nio@2.65.0` — the name is the path.
         Ecosystem::Swift => "swift",
         Ecosystem::Dart => "pub",
+        // A private organisation's package is `org/pkg`: purl's namespace.
+        Ecosystem::Elixir => "hex",
         Ecosystem::Brew => "brew",
         Ecosystem::Pacman => "alpm",
         Ecosystem::Apt => "deb",

@@ -19,6 +19,8 @@ pub enum Ecosystem {
     Swift,
     /// Dart / Flutter — pub packages (`pubspec.lock`).
     Dart,
+    /// Elixir / Erlang — Hex packages (`mix.lock`).
+    Elixir,
     /// Homebrew (macOS/Linux) — an OS-level package manager, surfaced by the
     /// `system` command rather than the project-lockfile parsers.
     Brew,
@@ -72,6 +74,7 @@ impl Ecosystem {
             Ecosystem::Cocoapods => "cocoapods",
             Ecosystem::Swift => "swift",
             Ecosystem::Dart => "dart",
+            Ecosystem::Elixir => "elixir",
             Ecosystem::Brew => "brew",
             Ecosystem::Pacman => "pacman",
             Ecosystem::Apt => "apt",

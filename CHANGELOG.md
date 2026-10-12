@@ -30,6 +30,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoint); a git package resolves to its own repo, and a private pub
   server's package is never looked up on pub.dev. `--vulns` uploads the
   lockfile to vuln.mlab.sh. See [Dart / Flutter](wiki/Dart.md).
+- **Elixir / Erlang (Hex).** `mix.lock` is read with a small Elixir term
+  reader: full graph with edges, package names (not app names), private
+  organisations as `org/pkg`, git deps resolved to their own repo. Direct set
+  and dev/test split from `mix.exs` `deps`. `--online` through hex.pm (new
+  `hex` endpoint); `--vulns` uploads the lockfile to vuln.mlab.sh. Plausible
+  (169 packages): 98 direct, 19 advisories. See [Elixir / Hex](wiki/Elixir.md).
 
 - **`create-issue` in the GitHub Action.** When the gate trips, the action
   opens an issue explaining it: the exceeded thresholds and what each measures,
@@ -48,6 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   What mlab cannot parse is sent as OSV coordinates: `go.mod` without `go.sum`,
   a `.csproj` without lockfile, SwiftPM pins (`SwiftURL`). Only CocoaPods stays
   unassessed (no OSV ecosystem).
+- **A registry rate limit with a short window is waited for.** On a 429 that
+  says when it lifts (`Retry-After`, `x-ratelimit-reset`) within a minute, the
+  request is retried once after that wait instead of failing. hex.pm's 100
+  requests a minute turned 58 of Plausible's 169 packages into
+  `resolve-failed`; now none. GitHub keeps its own handling.
 
 ### Fixed
 

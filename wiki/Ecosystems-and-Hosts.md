@@ -20,6 +20,7 @@ ecosystem has its own page with lockfiles, quirks, and exceptions.
 | [**CocoaPods**](Swift) | `Podfile.lock` | CocoaPods trunk |
 | [**SwiftPM**](Swift) | `Package.resolved` | *(none - the package path is the repo)* |
 | [**Dart / Flutter**](Dart) | pub (`pubspec.lock`) | pub.dev |
+| [**Elixir / Erlang**](Elixir) | Hex (`mix.lock`) | hex.pm |
 | [**Homebrew**](Homebrew) | via [`system`](System) | formulae.brew.sh |
 | [**pacman**](Pacman) | via [`system`](System) | AUR RPC *(+ homepage → repo)* |
 | [**apt / dpkg**](Apt) | via [`system`](System) | *(none - homepage → repo)* |
@@ -49,7 +50,7 @@ what its lockfile records:
 | Support | Ecosystems | Source |
 | --- | --- | --- |
 | **Complete** (transitives included) | PHP, Python (pipenv), Java (Gradle) | The lockfile resolves the dev tree itself. |
-| **Seeded** (direct deps, then propagated) | Node, Rust, Python (poetry), Ruby, Java (Maven), Dart (direct only - no edges) | The manifest classifies direct deps; the graph does the rest. |
+| **Seeded** (direct deps, then propagated) | Node, Rust, Python (poetry), Ruby, Java (Maven), Elixir, Dart (direct only - no edges) | The manifest classifies direct deps; the graph does the rest. |
 | **None** | Go, Python (`requirements.txt`), .NET, CocoaPods, SwiftPM | No distinction exists in the format. |
 
 ## Code hosts

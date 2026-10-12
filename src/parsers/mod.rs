@@ -1,5 +1,6 @@
 pub mod dart;
 pub mod dotnet;
+pub mod elixir;
 pub mod go;
 pub mod java;
 pub mod node;

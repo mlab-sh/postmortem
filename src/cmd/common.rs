@@ -66,7 +66,9 @@ pub(crate) fn mlab_target(d: &detect::Detected) -> Option<(&Path, &'static str)>
             manifest.as_deref().map(|m| (m, vuln::COORDS_NUGET))
         }
         detect::Detected::Swift { lockfile, .. } => Some((lockfile.as_path(), vuln::COORDS_SWIFT)),
-        detect::Detected::Dart { lockfile, .. } => Some((lockfile.as_path(), "")),
+        detect::Detected::Dart { lockfile, .. } | detect::Detected::Elixir { lockfile, .. } => {
+            Some((lockfile.as_path(), ""))
+        }
         detect::Detected::Cocoapods { .. } => None,
     }
 }
@@ -321,6 +323,16 @@ fn parse_one(eco: &detect::Detected) -> (Vec<model::Dependency>, Vec<model::Diag
                 );
             }
         }
+        detect::Detected::Elixir {
+            manifest, lockfile, ..
+        } => match parsers::elixir::parse_lockfile(lockfile, manifest.as_deref()) {
+            Ok(mut d) => deps.append(&mut d),
+            Err(e) => diag(
+                "elixir",
+                "parse_failed",
+                format!("mix.lock parse failed: {e:#}"),
+            ),
+        },
         detect::Detected::Dart { lockfile, .. } => {
             match parsers::dart::parse_lockfile(lockfile) {
                 Ok(mut d) => deps.append(&mut d),
