@@ -61,7 +61,7 @@ Lists every control with its severity, its profile, CIRSEC's own assessment
 | `uv.toml` / `[tool.uv]`, `pip.conf`, `requirements*.txt`, `poetry`/`pdm`/`Pipfile` sources | release age, source builds, indexes, hashes |
 | `.cargo/config.toml`, `Gemfile`, `composer.json`, `nuget.config`, `GOPROXY` | registry |
 | Lockfiles (through the graph parsers, plus `pnpm-lock.yaml`, `uv.lock`, `poetry.lock`) | hashes, sources, non-registry packages |
-| `.github/workflows/*`, `.gitlab-ci.yml`, CircleCI, Azure, Bitbucket, Jenkins, … | install mode, secrets, caches, scanners, SBOM |
+| Pipeline files of 21 CI platforms (see below) | install mode, secrets, caches, scanners, schedules, SBOM |
 | `Dockerfile*` (last stage) | install mode, dev dependencies |
 | `*.sh`, `Makefile`, `justfile`, `README.md`, `package.json` scripts | unpinned `npx` / `dlx` / `uvx` / `go run @latest` |
 | `.github/dependabot.yml`, Renovate config (JSON or JSON5) | update coverage, cooldown, automerge |
@@ -69,6 +69,67 @@ Lists every control with its severity, its profile, CIRSEC's own assessment
 
 Test fixtures (`tests/`, `fixtures/`, `testdata/`, `examples/`, …) and vendored
 trees are skipped: their Dockerfiles and lockfiles are not the project's.
+
+### CI platforms
+
+Every platform that keeps its pipeline in the repository is recognised:
+
+| Platform | Files |
+| --- | --- |
+| GitHub Actions | `.github/workflows/*.yml` |
+| Forgejo / Gitea Actions | `.forgejo/workflows/`, `.gitea/workflows/` |
+| GitLab CI | `.gitlab-ci.yml`, `.gitlab/ci/*.yml` |
+| CircleCI | `.circleci/*.yml` |
+| Azure Pipelines | `azure-pipelines.yml`, `.azure-pipelines/`, `.azuredevops/` |
+| Bitbucket Pipelines | `bitbucket-pipelines.yml` |
+| Jenkins | `Jenkinsfile`, `Jenkinsfile.*`, `*.jenkinsfile` |
+| Travis CI | `.travis.yml` |
+| Drone / Woodpecker | `.drone.yml`, `.woodpecker.yml`, `.woodpecker/` |
+| Buildkite | `.buildkite/*.yml` |
+| Google Cloud Build / AWS CodeBuild | `cloudbuild.yaml`, `buildspec.yml` |
+| Cirrus, Semaphore, AppVeyor | `.cirrus.yml`, `.semaphore/`, `appveyor.yml` |
+| Tekton, Harness, Bitrise, Codemagic, Taskcluster | `.tekton/`, `.harness/`, `bitrise.yml`, `codemagic.yaml`, `.taskcluster.yml` |
+
+For CB-DEP-VULN-001 (continuous scanning), postmortem finds the scanner
+(`postmortem`, osv-scanner, npm/pnpm/yarn audit, pip-audit, cargo audit/deny,
+trivy, grype, snyk, govulncheck, GitLab Dependency-Scanning, GitHub
+dependency-review, …; mentions in comments are ignored), then the schedule:
+
+- **in the file** — a `cron:` (GitHub, Forgejo, Azure, CircleCI) or Jenkins
+  `cron('…')`. The expression is read and its longest gap compared with
+  `scan_interval_hours` (24h): `0 6 * * 1` is weekly and fails.
+- **gated** — a job that only runs on scheduled pipelines (GitLab
+  `$CI_PIPELINE_SOURCE == "schedule"`, Drone/Woodpecker `event: cron`, Cirrus
+  `CIRRUS_CRON`): a schedule exists, set outside the repository → `MANUAL`.
+- **remote only** — GitLab, Bitbucket, Travis, Buildkite, Cloud Build, … can be
+  scheduled in their UI, invisible here → `MANUAL`. GitHub Actions cannot, so
+  no cron there → `FAIL`.
+
+Each detected platform adds a *check remotely* line naming where its
+out-of-repository settings live (Dependabot alerts, GitLab pipeline schedules
+and security policies, CircleCI triggers, …).
+
+For CB-DEP-CI-001 (install without secrets) and CB-DEP-CI-004 (caches),
+pipelines are parsed into jobs, steps and caches, in each platform's own terms
+— because each hands out secrets differently:
+
+| Platform | A step installing dependencies sees secrets when… | Dependency cache passes when… |
+| --- | --- | --- |
+| GitHub / Forgejo Actions | its step, job or workflow `env` references `secrets.` | `actions/cache` key is `hashFiles()` of a lockfile, or a `setup-*` cache; never on `pull_request_target` |
+| GitLab CI | the job has `environment:`, `secrets:`, `id_tokens:`, or `variables:` pulling in `$…TOKEN`-like names | `cache: key: files:` lists a lockfile |
+| Azure Pipelines | its `env:` maps a `$(…)` secret-like variable (secrets are never implicit) | the `Cache@2` key names a lockfile |
+| CircleCI | its job runs with a `context:` in any workflow | `save_cache` key is a `checksum` of a lockfile |
+| Bitbucket | its step has `deployment:` or `oidc: true` | a custom cache with `key: files:` (predefined caches fail) |
+| Drone / Woodpecker | its `environment` uses `from_secret`, or it lists `secrets:` | the cache plugin key is a `checksum` of a lockfile |
+| Jenkins | it runs inside `withCredentials`, a stage `environment` with `credentials()`, or under a pipeline-level one | — (no native cache) |
+
+Only dependency caches are judged (`node_modules`, `~/.cache/pip`, `~/.m2`,
+`vendor`, `.cargo`, …); a compiler cache, a dataset or a build output is not,
+and `cache: {}` is caching turned off. Variables that reach every job from the
+platform itself (GitLab project variables, Bitbucket repository variables,
+CircleCI project env vars) and fork cache isolation outside GitHub are
+`MANUAL` lines to check remotely. A file the platform accepts but strict YAML
+does not (CircleCI's duplicate anchors) is reported as unparsed.
 
 ### Release age per package manager (CB-DEP-AGE-001)
 

@@ -32,6 +32,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the release-age (48h) and newborn-package (30d) windows behind the
   `fresh-release` and `newborn-package` signals are now settings instead of
   constants.
+- **`harden` recognises 21 CI platforms** (GitHub Actions, Forgejo/Gitea,
+  GitLab, CircleCI, Azure, Bitbucket, Jenkins, Travis, Drone, Woodpecker,
+  Buildkite, Cloud Build, CodeBuild, Cirrus, Semaphore, AppVeyor, Tekton,
+  Harness, Bitrise, Codemagic, Taskcluster) instead of a fixed file list, for
+  every pipeline check. CB-DEP-VULN-001 now reads cron schedules (GitHub,
+  Forgejo, Azure, CircleCI, Jenkins) and fails one rarer than
+  `scan_interval_hours`, treats jobs gated on scheduled pipelines and
+  UI-only schedules as `MANUAL`, ignores scanners named only in comments, and
+  says where to check each platform's remote settings.
+- **CB-DEP-CI-001 and CB-DEP-CI-004 beyond GitHub.** Pipelines are parsed into
+  install steps and caches for GitHub/Forgejo Actions, GitLab CI, Azure
+  Pipelines, CircleCI, Bitbucket, Drone/Woodpecker and Jenkins, each by its own
+  secret model (GitLab `environment`/`secrets`/`id_tokens`, Azure `env`
+  mappings, CircleCI contexts, Bitbucket deployments, `from_secret`, Jenkins
+  `withCredentials`/`credentials()`), and each cache by its own key syntax.
+  Only dependency caches are judged; a GitHub key must hash a lockfile, not any
+  file. Platform-wide variables and fork cache isolation are flagged to check
+  remotely.
 
 
 ## [v2.8.0]

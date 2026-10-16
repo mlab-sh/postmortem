@@ -186,25 +186,7 @@ enum Kind {
 }
 
 fn classify(rel: &str, name: &str) -> Kind {
-    let yaml = name.ends_with(".yml") || name.ends_with(".yaml");
-    if (rel.starts_with(".github/workflows/") && yaml)
-        || (rel.starts_with(".gitlab/ci/") && yaml)
-        || matches!(
-            rel,
-            ".gitlab-ci.yml"
-                | ".circleci/config.yml"
-                | "azure-pipelines.yml"
-                | "bitbucket-pipelines.yml"
-                | "Jenkinsfile"
-                | ".buildkite/pipeline.yml"
-                | ".travis.yml"
-                | "cloudbuild.yaml"
-                | ".drone.yml"
-                | ".woodpecker.yml"
-        )
-        || (rel.starts_with(".forgejo/workflows/") && yaml)
-        || (rel.starts_with(".gitea/workflows/") && yaml)
-    {
+    if ci_platform(rel).is_some() {
         Kind::Ci
     } else if name.starts_with("Dockerfile")
         || name.ends_with(".dockerfile")
@@ -221,6 +203,223 @@ fn classify(rel: &str, name: &str) -> Kind {
     } else {
         Kind::Other
     }
+}
+
+/// A CI/CD platform whose pipeline definition lives in the repository.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Ci {
+    GithubActions,
+    /// Forgejo / Gitea Actions: GitHub Actions syntax, other directory.
+    Forgejo,
+    GitLab,
+    Circle,
+    Azure,
+    Bitbucket,
+    Jenkins,
+    Travis,
+    Drone,
+    Woodpecker,
+    Buildkite,
+    CloudBuild,
+    CodeBuild,
+    Cirrus,
+    Semaphore,
+    AppVeyor,
+    Tekton,
+    Harness,
+    Bitrise,
+    Codemagic,
+    Taskcluster,
+}
+
+impl Ci {
+    pub fn name(self) -> &'static str {
+        match self {
+            Ci::GithubActions => "GitHub Actions",
+            Ci::Forgejo => "Forgejo/Gitea Actions",
+            Ci::GitLab => "GitLab CI",
+            Ci::Circle => "CircleCI",
+            Ci::Azure => "Azure Pipelines",
+            Ci::Bitbucket => "Bitbucket Pipelines",
+            Ci::Jenkins => "Jenkins",
+            Ci::Travis => "Travis CI",
+            Ci::Drone => "Drone",
+            Ci::Woodpecker => "Woodpecker",
+            Ci::Buildkite => "Buildkite",
+            Ci::CloudBuild => "Google Cloud Build",
+            Ci::CodeBuild => "AWS CodeBuild",
+            Ci::Cirrus => "Cirrus CI",
+            Ci::Semaphore => "Semaphore",
+            Ci::AppVeyor => "AppVeyor",
+            Ci::Tekton => "Tekton",
+            Ci::Harness => "Harness",
+            Ci::Bitrise => "Bitrise",
+            Ci::Codemagic => "Codemagic",
+            Ci::Taskcluster => "Taskcluster",
+        }
+    }
+
+    /// GitHub Actions syntax (`on:`, `jobs:`, `steps:`).
+    pub fn is_gha(self) -> bool {
+        matches!(self, Ci::GithubActions | Ci::Forgejo)
+    }
+
+    /// Where else, outside the repository, this platform can schedule or
+    /// configure scanning — what a human has to look at remotely.
+    pub fn remote_settings(self) -> &'static str {
+        match self {
+            Ci::GithubActions => "Dependabot alerts and security updates are repository settings (Settings → Code security)",
+            Ci::Forgejo => "scheduled runs can also be defined per repository in the Forgejo/Gitea UI",
+            Ci::GitLab => "pipeline schedules live in the project (Build → Pipeline schedules); group security policies and compliance pipelines can inject scans",
+            Ci::Circle => "scheduled pipelines live in Project Settings → Triggers",
+            Ci::Azure => "schedules set in the pipeline UI (Triggers) override the YAML",
+            Ci::Bitbucket => "schedules live in Pipelines → Schedules",
+            Ci::Jenkins => "the job or Multibranch configuration on the server can add triggers",
+            Ci::Travis => "cron jobs live in the repository settings (Cron Jobs)",
+            Ci::Drone | Ci::Woodpecker => "cron jobs live in the repository settings (Cron)",
+            Ci::Buildkite => "schedules live in Pipeline Settings → Schedules",
+            Ci::CloudBuild => "triggers and schedules live in Cloud Build triggers / Cloud Scheduler",
+            Ci::CodeBuild => "schedules are EventBridge rules in the AWS account",
+            Ci::Cirrus => "cron builds live in the repository settings",
+            Ci::Semaphore => "schedulers live in the project settings (Tasks)",
+            Ci::AppVeyor => "the build schedule lives in the project settings",
+            Ci::Tekton => "schedules are a CronJob or Trigger in the cluster",
+            Ci::Harness | Ci::Bitrise | Ci::Codemagic | Ci::Taskcluster => "schedules are configured in the platform",
+        }
+    }
+}
+
+/// The CI platform a repository path belongs to, if any.
+pub fn ci_platform(rel: &str) -> Option<Ci> {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    let yaml = name.ends_with(".yml") || name.ends_with(".yaml");
+    let under = |dir: &str| rel.starts_with(dir) && yaml;
+    Some(if under(".github/workflows/") {
+        Ci::GithubActions
+    } else if under(".forgejo/workflows/") || under(".gitea/workflows/") {
+        Ci::Forgejo
+    } else if rel == ".gitlab-ci.yml" || under(".gitlab/ci/") {
+        Ci::GitLab
+    } else if under(".circleci/") {
+        Ci::Circle
+    } else if matches!(rel, "azure-pipelines.yml" | "azure-pipelines.yaml") || under(".azure-pipelines/") || under(".azuredevops/") {
+        Ci::Azure
+    } else if rel == "bitbucket-pipelines.yml" {
+        Ci::Bitbucket
+    } else if name == "Jenkinsfile" || name.starts_with("Jenkinsfile.") || name.ends_with(".jenkinsfile") {
+        Ci::Jenkins
+    } else if rel == ".travis.yml" {
+        Ci::Travis
+    } else if matches!(rel, ".drone.yml" | ".drone.yaml") {
+        Ci::Drone
+    } else if matches!(rel, ".woodpecker.yml" | ".woodpecker.yaml") || under(".woodpecker/") {
+        Ci::Woodpecker
+    } else if under(".buildkite/") {
+        Ci::Buildkite
+    } else if matches!(rel, "cloudbuild.yaml" | "cloudbuild.yml") {
+        Ci::CloudBuild
+    } else if matches!(rel, "buildspec.yml" | "buildspec.yaml") {
+        Ci::CodeBuild
+    } else if rel == ".cirrus.yml" {
+        Ci::Cirrus
+    } else if under(".semaphore/") {
+        Ci::Semaphore
+    } else if matches!(rel, "appveyor.yml" | ".appveyor.yml") {
+        Ci::AppVeyor
+    } else if under(".tekton/") {
+        Ci::Tekton
+    } else if under(".harness/") {
+        Ci::Harness
+    } else if rel == "bitrise.yml" {
+        Ci::Bitrise
+    } else if matches!(rel, "codemagic.yaml" | "codemagic.yml") {
+        Ci::Codemagic
+    } else if rel == ".taskcluster.yml" {
+        Ci::Taskcluster
+    } else {
+        return None;
+    })
+}
+
+/// Cron expressions a pipeline file declares for itself, and whether it has a
+/// job gated on a schedule defined elsewhere (`$CI_PIPELINE_SOURCE ==
+/// "schedule"`, `event: cron`): proof a schedule exists, not of how often.
+pub fn ci_schedules(ci: Ci, text: &str) -> (Vec<String>, bool) {
+    let crons: Vec<String> = match ci {
+        Ci::Jenkins => re!(r#"\bcron\(\s*['"]([^'"]+)['"]"#)
+            .captures_iter(text)
+            .map(|m| m[1].trim().to_string())
+            .collect(),
+        Ci::GithubActions | Ci::Forgejo | Ci::Azure | Ci::Circle | Ci::Taskcluster => {
+            re!(r##"(?m)^\s*-?\s*cron:\s*['"]?([^'"#\n]+?)['"]?\s*(?:#.*)?$"##)
+                .captures_iter(text)
+                .map(|m| m[1].trim().to_string())
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    let gated = match ci {
+        Ci::GitLab => re!(r#"CI_PIPELINE_SOURCE\s*==\s*['"]?schedule"#).is_match(text),
+        Ci::Drone | Ci::Woodpecker => re!(r"event:\s*\[?[^\n]*\bcron\b").is_match(text),
+        Ci::Cirrus => text.contains("CIRRUS_CRON"),
+        Ci::Buildkite => text.contains("BUILDKITE_SOURCE") && text.contains("schedule"),
+        Ci::Semaphore => text.contains("SEMAPHORE_WORKFLOW_TRIGGERED_BY_SCHEDULE"),
+        _ => false,
+    };
+    (crons, gated)
+}
+
+/// The longest gap, in hours, between two runs of a 5-field cron expression
+/// (`m h dom mon dow`, Jenkins `H` allowed) or a macro (`@daily`). An estimate:
+/// enough to tell hourly from daily from weekly, not a scheduler.
+pub fn cron_interval_hours(expr: &str) -> Option<f64> {
+    let e = expr.trim();
+    match e {
+        "@hourly" => return Some(1.0),
+        "@daily" | "@midnight" => return Some(24.0),
+        "@weekly" => return Some(168.0),
+        "@monthly" => return Some(744.0),
+        "@yearly" | "@annually" => return Some(8784.0),
+        _ => {}
+    }
+    let f: Vec<&str> = e.split_whitespace().collect();
+    if f.len() != 5 {
+        return None;
+    }
+    // How many values a field selects out of `full`.
+    let count = |field: &str, full: u32| -> Option<u32> {
+        let mut n = 0;
+        for part in field.split(',') {
+            let (range, step) = match part.split_once('/') {
+                Some((r, s)) => (r, s.parse::<u32>().ok()?.max(1)),
+                None => (part, 1),
+            };
+            let span = if range == "*" || range.starts_with('H') && range.contains('(') || range == "H" && step > 1 {
+                full
+            } else if let Some((a, b)) = range.split_once('-') {
+                let (a, b) = (a.parse::<u32>().ok()?, b.parse::<u32>().ok()?);
+                b.checked_sub(a)? + 1
+            } else if range == "H" || range.parse::<u32>().is_ok() || range.chars().all(|c| c.is_ascii_alphabetic()) {
+                1
+            } else {
+                return None;
+            };
+            n += span.div_ceil(step);
+        }
+        Some(n.clamp(1, full))
+    };
+    let (hours, dom, mon, dow) = (count(f[1], 24)?, count(f[2], 31)?, count(f[3], 12)?, count(f[4], 7)?);
+    let per_day_gap = 24.0 / f64::from(hours);
+    let gap = if mon < 12 {
+        8784.0 / f64::from(mon * dom.min(28))
+    } else if dow < 7 && f[2] == "*" {
+        f64::max(168.0 / f64::from(dow), per_day_gap)
+    } else if dom < 31 && f[4] == "*" {
+        f64::max(744.0 / f64::from(dom), per_day_gap)
+    } else {
+        per_day_gap
+    };
+    Some(gap)
 }
 
 /// `key=value` lines, `;`/`#` comments, `[section]` headers ignored. Keys are
@@ -510,6 +709,31 @@ mod tests {
         assert_eq!(duration_hours("P3D", 1.0), Some(72.0));
         assert_eq!(duration_hours("PT48H", 1.0), Some(48.0));
         assert_eq!(duration_hours("2026-01-01T00:00:00Z", 1.0), None);
+    }
+
+    #[test]
+    fn ci_platforms_and_crons() {
+        assert_eq!(ci_platform(".github/workflows/ci.yml"), Some(Ci::GithubActions));
+        assert_eq!(ci_platform(".gitlab-ci.yml"), Some(Ci::GitLab));
+        assert_eq!(ci_platform(".circleci/config.yml"), Some(Ci::Circle));
+        assert_eq!(ci_platform("Jenkinsfile"), Some(Ci::Jenkins));
+        assert_eq!(ci_platform(".woodpecker/build.yaml"), Some(Ci::Woodpecker));
+        assert_eq!(ci_platform("buildspec.yml"), Some(Ci::CodeBuild));
+        assert_eq!(ci_platform("src/main.yml"), None);
+        assert_eq!(cron_interval_hours("0 3 * * *"), Some(24.0));
+        assert_eq!(cron_interval_hours("0 */6 * * *"), Some(4.0_f64.max(6.0)));
+        assert_eq!(cron_interval_hours("0 0,12 * * *"), Some(12.0));
+        assert_eq!(cron_interval_hours("0 4 * * 1"), Some(168.0));
+        assert_eq!(cron_interval_hours("0 4 * * 1-5"), Some(168.0 / 5.0));
+        assert_eq!(cron_interval_hours("H H * * *"), Some(24.0));
+        assert_eq!(cron_interval_hours("@daily"), Some(24.0));
+        assert!(cron_interval_hours("0 0 1 * *").unwrap() > 168.0, "monthly");
+        let (c, gated) = ci_schedules(Ci::GithubActions, "on:\n  schedule:\n    - cron: '17 3 * * *'\n");
+        assert_eq!((c, gated), (vec!["17 3 * * *".to_string()], false));
+        let (c, gated) = ci_schedules(Ci::GitLab, "scan:\n  rules:\n    - if: $CI_PIPELINE_SOURCE == \"schedule\"\n");
+        assert!(c.is_empty() && gated);
+        let (c, _) = ci_schedules(Ci::Jenkins, "triggers { cron('H 2 * * *') }");
+        assert_eq!(c, vec!["H 2 * * *"]);
     }
 
     #[test]

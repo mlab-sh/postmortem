@@ -35,6 +35,7 @@ macro_rules! re {
 }
 
 pub mod checks;
+mod pipeline;
 pub mod repo;
 
 const BUNDLE: &str = include_str!("../data/cirsec-dependencies.yml");

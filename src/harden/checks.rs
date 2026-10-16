@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::repo::{self, Pm, Repo, TextFile, duration_hours, is_install_command};
-use super::{Ctx, Outcome, Status};
+use super::{Ctx, Outcome, Status, pipeline};
 use crate::model::{Ecosystem, Scope};
 use crate::settings::host_of;
 
@@ -45,10 +45,10 @@ pub const SUPPORT: &[(&str, Support, &str)] = &[
     ("CB-DEP-AGE-001", Support::Auto, "release-age setting per package manager; --online: installed versions younger than the window"),
     ("CB-DEP-AGE-002", Support::Online, "first-publish date of every package"),
     ("CB-DEP-AGE-003", Support::Partial, "every [[gate.allow]] / AGE waiver has an expiry within the limit; approval is by hand"),
-    ("CB-DEP-CI-001", Support::Partial, "GitHub Actions install steps vs secrets in their env; other CI by hand"),
+    ("CB-DEP-CI-001", Support::Partial, "install steps vs the secrets in reach on GitHub/Forgejo, GitLab, Azure, CircleCI, Bitbucket, Drone/Woodpecker, Jenkins; platform-wide variables checked remotely"),
     ("CB-DEP-CI-002", Support::None, "lists the registry tokens pipelines reference; scopes live in the registry"),
     ("CB-DEP-CI-003", Support::Partial, "harden-runner egress policy; network-level egress is not visible"),
-    ("CB-DEP-CI-004", Support::Partial, "GitHub Actions cache keys and pull_request_target; other CI by hand"),
+    ("CB-DEP-CI-004", Support::Partial, "dependency caches keyed on the lockfile on GitHub/Forgejo, GitLab, Azure, CircleCI, Bitbucket, Drone/Woodpecker; fork isolation checked remotely outside GitHub"),
     ("CB-DEP-EXEC-001", Support::Auto, "script policy of npm, pnpm, yarn, bun and composer plugins"),
     ("CB-DEP-EXEC-002", Support::Auto, "Python: no-build / only-binary, and locked packages that ship no wheel"),
     ("CB-DEP-EXEC-003", Support::Auto, "npx / dlx / uvx / pipx run / go run @latest without a version, in CI, Dockerfiles, scripts"),
@@ -74,7 +74,7 @@ pub const SUPPORT: &[(&str, Support, &str)] = &[
     ("CB-DEP-VET-002", Support::None, "a policy document; `postmortem audit --online` helps apply it"),
     ("CB-DEP-VET-003", Support::None, "not automated yet"),
     ("CB-DEP-VET-004", Support::Partial, "dev tools in production deps; the last Dockerfile stage omits dev deps"),
-    ("CB-DEP-VULN-001", Support::Partial, "a scanner in pipelines, on change and on a schedule"),
+    ("CB-DEP-VULN-001", Support::Partial, "a scanner in the pipelines of 21 CI platforms, on change and on a cron at most scan_interval_hours apart; remote schedules flagged to check"),
     ("CB-DEP-VULN-002", Support::Partial, "a malware gate in CI; --vulns: installed packages with a MAL- advisory"),
     ("CB-DEP-VULN-003", Support::None, "deadlines are tracked outside the repo; --vulns summarises open advisories"),
     ("CB-DEP-VULN-004", Support::Online, "archived / inactive source repositories"),
@@ -438,100 +438,50 @@ fn age_003(c: &Ctx) -> Outcome {
 
 // ----------------------------------------------------------------- CI ----
 
-/// A GitHub Actions job, as far as these checks need it.
-struct Job {
-    file: String,
-    name: String,
-    /// Workflow- or job-level `env` references a secret: every step sees it.
-    shared_secret: bool,
-    steps: Vec<Step>,
-    pr_target: bool,
-}
-
-struct Step {
-    name: String,
-    uses: String,
-    run: String,
-    secret: bool,
-    with: serde_yaml::Value,
-}
-
-fn refs_secret(v: Option<&serde_yaml::Value>) -> bool {
-    v.and_then(|v| serde_yaml::to_string(v).ok()).is_some_and(|s| s.contains("secrets."))
-}
-
-fn gha_jobs(r: &Repo) -> Vec<Job> {
-    let mut out = Vec::new();
-    for f in r.ci.iter().filter(|f| f.rel.starts_with(".github/workflows/")) {
-        let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&f.text) else { continue };
-        let wf_secret = refs_secret(doc.get("env"));
-        let pr_target = doc.get("on").is_some_and(|o| {
-            serde_yaml::to_string(o).is_ok_and(|s| s.contains("pull_request_target"))
-        });
-        let Some(jobs) = doc.get("jobs").and_then(|j| j.as_mapping()) else { continue };
-        for (name, job) in jobs {
-            let steps = job
-                .get("steps")
-                .and_then(|s| s.as_sequence())
-                .map(|seq| {
-                    seq.iter()
-                        .map(|s| Step {
-                            name: s.get("name").and_then(ystr).unwrap_or_default(),
-                            uses: s.get("uses").and_then(ystr).unwrap_or_default(),
-                            run: s.get("run").and_then(ystr).unwrap_or_default(),
-                            secret: refs_secret(s.get("env")),
-                            with: s.get("with").cloned().unwrap_or_default(),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            out.push(Job {
-                file: f.rel.clone(),
-                name: ystr(name).unwrap_or_default(),
-                shared_secret: wf_secret || refs_secret(job.get("env")),
-                steps,
-                pr_target,
-            });
-        }
-    }
-    out
-}
-
 fn ci_001(c: &Ctx) -> Outcome {
     let mut v = V::default();
-    let jobs = gha_jobs(c.repo);
-    let mut clean = 0;
-    for j in &jobs {
-        for s in &j.steps {
-            if !s.run.lines().any(is_install_command) {
-                continue;
-            }
-            if s.secret || j.shared_secret {
-                let label = if s.name.is_empty() { snippet(s.run.lines().next().unwrap_or("")) } else { s.name.clone() };
-                v.fail(format!(
-                    "{}: job `{}` step `{label}` installs dependencies with secrets in its {}",
-                    j.file,
-                    j.name,
-                    if s.secret { "env" } else { "job/workflow env" }
-                ));
-            } else {
-                clean += 1;
-            }
+    let p = pipeline::read(c.repo);
+    let mut clean: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut platforms: BTreeSet<repo::Ci> = BTreeSet::new();
+    let mut exposed = Vec::new();
+    for i in &p.installs {
+        platforms.insert(i.ci);
+        match &i.exposure {
+            Some(why) => exposed.push(format!("{}: job `{}` step `{}` installs dependencies with {why}", i.file, i.job, i.step)),
+            None => *clean.entry(i.ci.name()).or_default() += 1,
         }
     }
-    if clean > 0 {
-        v.pass(format!("{clean} GitHub Actions install step(s) run without secrets in their environment"));
+    let more = exposed.len().saturating_sub(10);
+    for e in exposed.into_iter().take(10) {
+        v.fail(e);
     }
-    for f in c.repo.ci.iter().filter(|f| !f.rel.starts_with(".github/")) {
-        if f.text.lines().any(is_install_command) {
-            v.manual(format!("{}: check that the install job holds no deployment or publish credentials", f.rel));
+    if more > 0 {
+        v.fail(format!("… and {more} more"));
+    }
+    if !clean.is_empty() {
+        v.pass(format!(
+            "{} install step(s) with no secret in reach ({})",
+            clean.values().sum::<usize>(),
+            clean.iter().map(|(n, k)| format!("{n} {k}")).collect::<Vec<_>>().join(", ")
+        ));
+    }
+    for ci in &platforms {
+        if let Some(note) = pipeline::global_secrets(*ci) {
+            v.manual(format!("{}: {note}", ci.name()));
         }
+    }
+    for u in p.unparsed.iter().filter(|u| u.installs) {
+        v.manual(format!("{} ({}{}): check that the install job holds no deployment or publish credentials", u.file, u.ci.name(), unparsed_why(u)));
     }
     if c.repo.ci.is_empty() {
         v.outcome(Status::Manual, "? no pipeline definition found")
     } else {
         v.outcome(Status::NotApplicable, "no pipeline step installs dependencies")
     }
+}
+
+fn unparsed_why(u: &pipeline::Unparsed) -> &'static str {
+    if u.broken { ", YAML postmortem could not parse" } else { ", not parsed" }
 }
 
 fn ci_002(c: &Ctx) -> Outcome {
@@ -577,37 +527,23 @@ fn ci_003(c: &Ctx) -> Outcome {
 
 fn ci_004(c: &Ctx) -> Outcome {
     let mut v = V::default();
-    for j in gha_jobs(c.repo) {
-        for s in &j.steps {
-            let cache_action = s.uses.starts_with("actions/cache");
-            let setup_cache = s.uses.starts_with("actions/setup-") && s.with.get("cache").is_some();
-            if !cache_action && !setup_cache {
-                continue;
-            }
-            if j.pr_target {
-                v.fail(format!(
-                    "{}: job `{}` restores a cache on pull_request_target — untrusted code shares the base branch's cache",
-                    j.file, j.name
-                ));
-            } else if cache_action {
-                let key = s.with.get("key").and_then(ystr).unwrap_or_default();
-                if key.contains("hashFiles(") {
-                    v.pass(format!("{}: `{}` cache keyed on {}", j.file, j.name, snippet(&key)));
-                } else {
-                    v.fail(format!("{}: job `{}` cache key `{}` is not derived from the lockfile", j.file, j.name, key));
-                }
-            } else {
-                v.pass(format!("{}: `{}` uses {} cache (keyed on the lockfile)", j.file, j.name, s.uses));
-            }
+    let p = pipeline::read(c.repo);
+    let mut platforms: BTreeSet<repo::Ci> = BTreeSet::new();
+    for k in &p.caches {
+        platforms.insert(k.ci);
+        match &k.problem {
+            Some(problem) => v.fail(format!("{}: job `{}` {problem}", k.file, k.job)),
+            None => v.pass(format!("{}: `{}` {}", k.file, k.job, k.detail)),
         }
     }
-    if !v.pass.is_empty() {
-        v.info("GitHub scopes caches per branch: a fork's PR cannot write the default branch's cache");
-    }
-    for f in c.repo.ci.iter().filter(|f| !f.rel.starts_with(".github/")) {
-        if re!(r"(?m)^\s*cache:").is_match(&f.text) {
-            v.manual(format!("{}: check that untrusted pipelines cannot write the caches trusted ones read", f.rel));
+    for ci in &platforms {
+        match pipeline::cache_isolation(*ci) {
+            Ok(note) => v.info(note),
+            Err(note) => v.manual(format!("{}: {note}", ci.name())),
         }
+    }
+    for u in p.unparsed.iter().filter(|u| u.caches) {
+        v.manual(format!("{} ({}{}): check caches are keyed on the lockfile and untrusted builds cannot write them", u.file, u.ci.name(), unparsed_why(u)));
     }
     v.outcome(Status::NotApplicable, "no dependency cache in the pipelines")
 }
@@ -2008,32 +1944,69 @@ fn vet_004(c: &Ctx) -> Outcome {
 
 // --------------------------------------------------------------- VULN ----
 
-const SCANNERS: &str = r"(?i)\b(postmortem\s+(tree|audit|scan)|mlab-sh/postmortem|osv-scanner|npm\s+audit|pnpm\s+audit|yarn\s+(npm\s+)?audit|pip-audit|cargo[\s-]audit|cargo[\s-]deny|trivy|grype|snyk|dependency-check|govulncheck|bundle(r)?[\s-]audit|composer\s+audit|safety\s+(check|scan)|--vulnerable)\b";
+const SCANNERS: &str = r"(?i)\b(postmortem\s+(tree|audit|scan)|mlab-sh/postmortem|osv-scanner|npm\s+audit|pnpm\s+audit|yarn\s+(npm\s+)?audit|pip-audit|cargo[\s-]audit|cargo[\s-]deny|trivy|grype|snyk|dependency-check|govulncheck|bundle(r)?[\s-]audit|composer\s+audit|safety\s+(check|scan)|--vulnerable|dependency-review-action|Dependency-Scanning|anchore/scan-action)\b";
 
 fn vuln_001(c: &Ctx) -> Outcome {
-    let interval = c.param("scan_interval_hours");
+    let interval = c.param("scan_interval_hours") as f64;
     let mut v = V::default();
     let scanner = regex::Regex::new(SCANNERS).unwrap();
-    let mut on_change = Vec::new();
-    let mut scheduled = Vec::new();
+
+    // Every platform that keeps its pipeline in the repository, and its files.
+    let mut platforms: BTreeMap<repo::Ci, Vec<&TextFile>> = BTreeMap::new();
     for f in &c.repo.ci {
-        let Some(m) = scanner.find(&f.text) else { continue };
-        let tool = m.as_str().to_string();
-        if f.rel.starts_with(".github/") {
-            if re!(r"(?m)^\s*-?\s*cron:").is_match(&f.text) {
-                scheduled.push(format!("{} ({tool})", f.rel));
-            }
-            if re!(r"\b(push|pull_request|pull_request_target|merge_group)\b").is_match(&f.text) {
-                on_change.push(format!("{} ({tool})", f.rel));
-            }
-        } else {
-            on_change.push(format!("{} ({tool})", f.rel));
-            v.info(format!("{}: pipeline schedules are configured in the CI server, not visible here", f.rel));
+        if let Some(ci) = repo::ci_platform(&f.rel) {
+            platforms.entry(ci).or_default().push(f);
         }
     }
-    if c.repo.ci.is_empty() {
-        v.manual("no pipeline definition found — scanning may run on a platform (Dependabot alerts, an SCA app)");
-    } else if on_change.is_empty() && scheduled.is_empty() {
+    if platforms.is_empty() {
+        v.manual("no pipeline definition in the repository — scanning may run on a platform (Dependabot alerts, an SCA app)");
+        v.info("check remotely: the repository host's dependency alerts, and any CI configured outside the repository");
+        return v.outcome(Status::Manual, "");
+    }
+    v.info(format!(
+        "pipelines: {}",
+        platforms
+            .iter()
+            .map(|(ci, fs)| format!("{} ({} file{})", ci.name(), fs.len(), if fs.len() == 1 { "" } else { "s" }))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+
+    let mut on_change = Vec::new();
+    let mut fast = Vec::new();
+    let mut slow = Vec::new();
+    let mut gated = Vec::new();
+    let mut unscheduled: BTreeSet<repo::Ci> = BTreeSet::new();
+    for (ci, files) in &platforms {
+        for f in files {
+            // A scanner named in a comment ("No Dependency-Scanning template")
+            // is not one that runs.
+            let code: String = f.text.lines().filter(|l| !l.trim_start().starts_with('#')).collect::<Vec<_>>().join("\n");
+            let Some(m) = scanner.find(&code) else { continue };
+            let at = format!("{} ({})", f.rel, m.as_str());
+            // Outside GitHub Actions syntax a pipeline runs on every push
+            // unless its rules say otherwise, which is the default worth trusting.
+            if !ci.is_gha() || re!(r"\b(push|pull_request|pull_request_target|merge_group)\b").is_match(&f.text) {
+                on_change.push(at.clone());
+            }
+            let (crons, is_gated) = repo::ci_schedules(*ci, &f.text);
+            for cron in &crons {
+                match repo::cron_interval_hours(cron) {
+                    Some(h) if h <= interval + 1e-9 => fast.push(format!("{} `{cron}` (every {})", f.rel, hours(h))),
+                    Some(h) => slow.push(format!("{} `{cron}` runs every {}", f.rel, hours(h))),
+                    None => gated.push(format!("{} `{cron}` (unparsed schedule)", f.rel)),
+                }
+            }
+            if is_gated {
+                gated.push(format!("{} has a job for scheduled pipelines", f.rel));
+            }
+            if crons.is_empty() && !is_gated {
+                unscheduled.insert(*ci);
+            }
+        }
+    }
+
+    if on_change.is_empty() && fast.is_empty() && slow.is_empty() && gated.is_empty() {
         v.fail("no pipeline runs a vulnerability scanner (`postmortem tree --vulns --fail-on-vuln high`)");
     } else {
         if on_change.is_empty() {
@@ -2041,13 +2014,31 @@ fn vuln_001(c: &Ctx) -> Outcome {
         } else {
             v.pass(format!("scan on change: {}", list(&on_change, 3)));
         }
-        let has_gha_scanner = c.repo.ci.iter().any(|f| f.rel.starts_with(".github/") && scanner.is_match(&f.text));
-        if !scheduled.is_empty() {
-            v.pass(format!("scheduled scan: {}", list(&scheduled, 3)));
-            v.info(format!("check the schedule runs at least every {interval}h"));
-        } else if has_gha_scanner {
-            v.fail(format!("no scheduled scan — add a `schedule:` cron so the default branch is rescanned every {interval}h"));
+        if !fast.is_empty() {
+            v.pass(format!("scheduled scan: {}", list(&fast, 3)));
+        } else if !slow.is_empty() {
+            v.fail(format!("scheduled scan too rare (needs every {}): {}", hours(interval), list(&slow, 3)));
+        } else if !gated.is_empty() {
+            v.manual(format!(
+                "{} — the schedule itself is set outside the repository: check it runs every {}",
+                list(&gated, 3),
+                hours(interval)
+            ));
+        } else if unscheduled.iter().all(|ci| ci.is_gha()) {
+            v.fail(format!(
+                "no scheduled scan — add a `schedule:` cron so the default branch is rescanned every {}",
+                hours(interval)
+            ));
+        } else {
+            v.manual(format!(
+                "no schedule in the pipeline files — {} schedules can be set remotely: check one rescans every {}",
+                unscheduled.iter().filter(|ci| !ci.is_gha()).map(|ci| ci.name()).collect::<Vec<_>>().join(", "),
+                hours(interval)
+            ));
         }
+    }
+    for ci in platforms.keys() {
+        v.info(format!("check remotely ({}): {}", ci.name(), ci.remote_settings()));
     }
     if let Some(vulns) = c.vulns {
         v.info(format!("right now: {} vulnerable package(s) in the lockfiles (see CB-DEP-VULN-003)", vulns.len()));
@@ -2184,6 +2175,59 @@ mod tests {
             assert_eq!(status(id), Status::Fail, "{id}: {:?}", run(id, &ctx).evidence);
         }
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Run one control over a throwaway repository made of `files`.
+    fn outcome_for(id: &str, files: &[(&str, &str)]) -> Outcome {
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("pm-harden-{}-{n}", std::process::id()));
+        for (rel, body) in files {
+            let p = dir.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        }
+        let repo = Repo::load(&dir);
+        let pms = repo::detect_pms(&repo);
+        let controls = super::super::controls();
+        let params = super::super::resolve_params(&controls, super::super::Level::Baseline, &BTreeMap::new()).unwrap();
+        let cfg = crate::config::HardenConfig::default();
+        let ctx = Ctx {
+            repo: &repo,
+            pms: &pms,
+            level: super::super::Level::Baseline,
+            params: &params,
+            cfg: &cfg,
+            gate_allow: &[],
+            deps: &[],
+            online: None,
+            vulns: None,
+            today: chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap(),
+        };
+        let out = run(id, &ctx);
+        std::fs::remove_dir_all(&dir).ok();
+        out
+    }
+
+    #[test]
+    fn vuln_001_reads_every_platform_schedule() {
+        let gha = |cron: &str| format!("on:\n  push:\n  schedule:\n    - cron: '{cron}'\njobs:\n  s:\n    steps:\n      - run: postmortem tree . --vulns\n");
+        let daily = outcome_for("CB-DEP-VULN-001", &[(".github/workflows/scan.yml", &gha("0 3 * * *"))]);
+        assert_eq!(daily.status, Status::Pass, "{:?}", daily.evidence);
+        assert!(daily.evidence.iter().any(|e| e.contains("check remotely (GitHub Actions)")));
+        let weekly = outcome_for("CB-DEP-VULN-001", &[(".github/workflows/scan.yml", &gha("0 3 * * 1"))]);
+        assert_eq!(weekly.status, Status::Fail, "{:?}", weekly.evidence);
+        let gl_gated = outcome_for("CB-DEP-VULN-001", &[(".gitlab-ci.yml", "audit:\n  script: osv-scanner -r .\n  rules:\n    - if: $CI_PIPELINE_SOURCE == \"schedule\"\n")]);
+        assert_eq!(gl_gated.status, Status::Manual, "{:?}", gl_gated.evidence);
+        assert!(gl_gated.evidence.iter().any(|e| e.contains("Pipeline schedules")));
+        let gl_plain = outcome_for("CB-DEP-VULN-001", &[(".gitlab-ci.yml", "audit:\n  script: trivy fs .\n")]);
+        assert_eq!(gl_plain.status, Status::Manual, "{:?}", gl_plain.evidence);
+        let gha_only = outcome_for("CB-DEP-VULN-001", &[(".github/workflows/ci.yml", "on: [push]\njobs:\n  s:\n    steps:\n      - run: npm audit\n")]);
+        assert_eq!(gha_only.status, Status::Fail, "{:?}", gha_only.evidence);
+        let jenkins = outcome_for("CB-DEP-VULN-001", &[("Jenkinsfile", "pipeline { triggers { cron('H 2 * * *') }\n stages { stage('s') { steps { sh 'grype dir:.' } } } }")]);
+        assert_eq!(jenkins.status, Status::Pass, "{:?}", jenkins.evidence);
+        let none = outcome_for("CB-DEP-VULN-001", &[(".circleci/config.yml", "jobs:\n  build:\n    steps:\n      - run: make\n")]);
+        assert_eq!(none.status, Status::Fail, "{:?}", none.evidence);
     }
 
     #[test]
