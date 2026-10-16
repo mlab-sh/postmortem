@@ -1,0 +1,2108 @@
+# CIRSEC Baselines — Third-party package dependencies (CB-DEP), embedded by `postmortem harden`.
+# Source: https://github.com/cirsec/baselines categories/supply-chain/dependencies/controls @ a87f1ff
+# Content CC BY 4.0. Regenerate: see wiki/Harden.md.
+---
+id: CB-DEP-AGE-001
+title: Wait a minimum age before installing a new package version
+finding:
+  title: Package versions can be installed minutes after they are published
+  description: A compromised or malicious release is installed before the community or registry has had time to detect and remove it.
+status: draft
+profiles: [baseline]
+risk:
+  severity: high
+assessment: partial
+tags: [release-age, quarantine, malware]
+description: |
+  A package version can only be resolved once it has been public for at least {{ min_release_age_hours }} hours. The rule applies to direct and transitive dependencies, on workstations, in pipelines and in automated update proposals. Older versions stay selectable.
+rationale: |
+  Most malicious releases, including those pushed from hijacked maintainer accounts, are detected and removed within hours to a few days. A short quarantine turns most of these attacks into a non-event for the organization, at almost no cost.
+impact: |
+  New features and fixes arrive a few days later. Urgent security fixes need the exception process in CB-DEP-AGE-003. Some package managers resolve to an older version or fail when only a too-recent version satisfies the constraints.
+notes: |
+  Enforce the rule where it cannot be bypassed: in the registry proxy if possible, otherwise in the package manager configuration. A rule that only applies to update proposals does not protect against a developer adding a fresh release by hand, nor against transitive dependencies.
+setting:
+  location: Registry proxy policy, or package manager configuration (see CB-DEP-SRC-006)
+  default_value: No minimum age
+  recommended_value: At least {{ min_release_age_hours }} hours since publication
+parameters:
+  - name: min_release_age_hours
+    type: integer
+    description: Minimum time between publication of a version and its first install.
+    unit: hours
+    default: 48
+    profile_defaults:
+      hardened: 72
+    minimum: 24
+    maximum: 720
+audit:
+  manual: |
+    1. Find where the release-age rule is enforced (proxy, package manager, both).
+    2. Check that the configured age is at least {{ min_release_age_hours }} hours and that it covers transitive dependencies.
+    3. Try to install a version published less than {{ min_release_age_hours }} hours ago: it must be refused.
+remediation:
+  manual: |
+    1. Configure a minimum release age of {{ min_release_age_hours }} hours in the registry proxy, or in committed package manager configuration for each ecosystem.
+    2. Apply the same delay to automated update proposals.
+references:
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-3
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-11
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+  - framework: cwe
+    id: CWE-1357
+related_controls:
+  - id: CB-DEP-AGE-002
+    type: related
+  - id: CB-DEP-AGE-003
+    type: related
+  - id: CB-DEP-UPD-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-AGE-002
+title: Wait a minimum age before adopting a new package
+finding:
+  title: Packages that appeared on the registry days ago can be added as dependencies
+status: draft
+profiles: [hardened]
+risk:
+  severity: medium
+assessment: partial
+tags: [release-age, typosquatting]
+description: |
+  A package (not a version: the package name itself) that first appeared on its registry less than {{ min_package_age_days }} days ago cannot be added as a new dependency without explicit review.
+rationale: |
+  Typosquats and fake packages are, by nature, young. A package with no history has no reputation to evaluate. This rule catches what the release-age rule misses: a first release that is malicious from day one and is then left alone.
+impact: |
+  Brand-new legitimate packages need a review before use.
+parameters:
+  - name: min_package_age_days
+    type: integer
+    description: Minimum age of a package, counted from its first published version.
+    unit: days
+    default: 30
+    minimum: 7
+    maximum: 365
+audit:
+  manual: |
+    1. Check that new dependency review (CB-DEP-VET-001) or an automated rule flags packages younger than {{ min_package_age_days }} days.
+    2. Review recent additions for packages that were young when added.
+remediation:
+  manual: |
+    1. Add package age to the new dependency criteria and, where possible, to an automated check on manifest changes.
+references:
+  - title: Concise Guide for Evaluating Open Source Software
+    url: https://best.openssf.org/Concise-Guide-for-Evaluating-Open-Source-Software
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-3
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+  - framework: cwe
+    id: CWE-1357
+related_controls:
+  - id: CB-DEP-AGE-001
+    type: related
+  - id: CB-DEP-VET-002
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-AGE-003
+title: Grant release-age exceptions explicitly and for a limited time
+finding:
+  title: The release-age rule is bypassed without trace or without end date
+status: draft
+profiles: [baseline]
+risk:
+  severity: low
+assessment: manual
+tags: [release-age, exception]
+description: |
+  When a version younger than the release-age threshold is needed (typically an urgent security fix), the exception names the package and exact version, the reason, the approver, and expires after at most {{ max_exception_days }} days.
+rationale: |
+  Without a clear process, teams disable the rule globally the first time they are blocked, and never turn it back on.
+impact: |
+  Someone must be available to approve exceptions quickly.
+parameters:
+  - name: max_exception_days
+    type: integer
+    description: Maximum lifetime of a release-age exception.
+    unit: days
+    default: 7
+    minimum: 1
+    maximum: 30
+audit:
+  manual: |
+    1. List active release-age exceptions.
+    2. Check each one targets an exact version, has a recorded reason and approver, and is younger than {{ max_exception_days }} days.
+    3. Check the global rule is not disabled.
+remediation:
+  manual: |
+    1. Define who can approve exceptions and where they are recorded.
+    2. Remove expired and global exceptions.
+references:
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-3
+    relation: related
+related_controls:
+  - id: CB-DEP-AGE-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-CI-001
+title: Install dependencies in a step without secrets
+finding:
+  title: Dependencies are installed in an environment that holds secrets
+  description: A malicious package can read deploy keys, cloud credentials and publish tokens as soon as it is installed.
+status: draft
+profiles: [baseline]
+risk:
+  severity: high
+assessment: partial
+tags: [ci, secrets]
+description: |
+  The pipeline step that downloads and installs dependencies has no access to deployment credentials, cloud credentials, signing keys or publish tokens. Those are only given to later steps that need them.
+rationale: |
+  Install-time code, and test code from dependencies, run with whatever the environment holds. Separating installation from secrets limits what a malicious package can steal.
+impact: |
+  Pipelines may need to be split into several jobs or steps with different secrets.
+audit:
+  manual: |
+    1. Review the environment of install steps in each pipeline.
+    2. Check that no secret other than read-only registry access is available.
+remediation:
+  manual: |
+    1. Move secrets to the steps that need them.
+    2. Split installation and deployment into separate jobs if secrets are job-wide.
+references:
+  - title: OWASP Top 10 CI/CD Security Risks
+    url: https://owasp.org/www-project-top-10-ci-cd-security-risks/
+    publisher: OWASP
+    kind: guide
+    accessed: 2026-10-16
+  - title: SLSA specification v1.0
+    url: https://slsa.dev/spec/v1.0/
+    publisher: OpenSSF
+    kind: standard
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: AC-6
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SA-15
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+  - framework: mitre-attack
+    id: T1552
+related_controls:
+  - id: CB-DEP-EXEC-001
+    type: related
+  - id: CB-DEP-CI-002
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-CI-002
+title: Use read-only registry credentials in pipelines
+finding:
+  title: Pipelines hold registry credentials that can publish packages
+status: draft
+profiles: [baseline]
+risk:
+  severity: high
+assessment: partial
+tags: [ci, secrets, registry]
+description: |
+  Credentials used to download packages in pipelines can only read. Publishing uses separate, short-lived credentials limited to the release job.
+rationale: |
+  A stolen read-write token lets an attacker publish a malicious version of the organization's own packages, turning one compromise into many.
+impact: |
+  Separate credentials must be managed for publishing.
+audit:
+  manual: |
+    1. List registry credentials available to pipelines.
+    2. Check that install steps only have read access.
+remediation:
+  manual: |
+    1. Create read-only credentials for installs.
+    2. Restrict publish credentials to the release job, preferably short-lived and issued per run.
+references:
+  - title: OWASP Top 10 CI/CD Security Risks
+    url: https://owasp.org/www-project-top-10-ci-cd-security-risks/
+    publisher: OWASP
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: AC-6
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+  - framework: mitre-attack
+    id: T1195.002
+related_controls:
+  - id: CB-DEP-CI-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-CI-003
+title: Limit network access of builds to approved registries
+finding:
+  title: Build environments can reach any host on the internet
+status: draft
+profiles: [hardened]
+risk:
+  severity: medium
+assessment: partial
+tags: [ci, network]
+description: |
+  Build and install steps can only reach the organization's registries and the services the build requires. Other outbound traffic is blocked and logged.
+rationale: |
+  Blocks malicious install code from exfiltrating secrets or downloading a second stage, and stops builds from silently fetching unvetted code.
+impact: |
+  Builds that download from the internet break until their sources are proxied.
+audit:
+  manual: |
+    1. From a build environment, try to reach an arbitrary internet host: it must fail.
+    2. Check that blocked attempts are logged.
+remediation:
+  manual: |
+    1. Apply an egress allowlist to build environments, limited to approved registries and required services.
+references:
+  - title: SLSA specification v1.0
+    url: https://slsa.dev/spec/v1.0/
+    publisher: OpenSSF
+    kind: standard
+    accessed: 2026-10-16
+  - title: OWASP Top 10 CI/CD Security Risks
+    url: https://owasp.org/www-project-top-10-ci-cd-security-risks/
+    publisher: OWASP
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SC-7
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1041
+related_controls:
+  - id: CB-DEP-SRC-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-CI-004
+title: Separate dependency caches by trust level
+finding:
+  title: Untrusted builds can write to caches used by trusted builds
+status: draft
+profiles: [baseline]
+risk:
+  severity: medium
+assessment: partial
+tags: [ci, cache]
+description: |
+  Dependency caches are keyed on the lockfile hash. Builds of untrusted changes (external contributions, forks) cannot write to caches read by default-branch or release builds.
+rationale: |
+  A poisoned cache lets an attacker who can run one build insert packages into every following build, bypassing lockfile and registry controls.
+impact: |
+  Slightly lower cache hit rates.
+audit:
+  manual: |
+    1. Review cache configuration of pipelines.
+    2. Check cache keys include the lockfile hash and that untrusted builds cannot write to trusted caches.
+remediation:
+  manual: |
+    1. Key caches on the lockfile hash.
+    2. Give untrusted builds read-only or separate caches.
+references:
+  - title: OWASP Top 10 CI/CD Security Risks
+    url: https://owasp.org/www-project-top-10-ci-cd-security-risks/
+    publisher: OWASP
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SI-7
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+related_controls:
+  - id: CB-DEP-LOCK-003
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-EXEC-001
+title: Block install-time scripts except for an allowlist
+finding:
+  title: Any dependency can run code when it is installed
+  description: Install hooks run with the user's or the pipeline's privileges, before any test or review, and are the most common way malicious packages steal credentials.
+status: draft
+profiles: [baseline]
+risk:
+  severity: high
+assessment: partial
+tags: [install-scripts, malware]
+description: |
+  Package lifecycle scripts that run at install time (pre-install, post-install, build hooks) are disabled by default. Only packages on an explicit, reviewed allowlist may run them.
+rationale: |
+  Most malicious packages do their work in an install hook: they steal tokens and keys from the environment the moment the package is installed, without ever being imported by the application.
+impact: |
+  Packages that compile native code or download binaries at install time break until they are added to the allowlist or replaced.
+audit:
+  manual: |
+    1. Check that install-time scripts are disabled in committed package manager configuration.
+    2. Review the allowlist: each entry must have a reason.
+    3. Check that pipelines do not re-enable scripts with a flag.
+remediation:
+  manual: |
+    1. Disable install-time scripts in committed configuration.
+    2. Run an install, list the packages whose scripts were skipped, and allowlist only those needed.
+references:
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-7
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-11
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+  - framework: mitre-attack
+    id: T1059
+  - framework: cwe
+    id: CWE-829
+related_controls:
+  - id: CB-DEP-EXEC-002
+    type: related
+  - id: CB-DEP-CI-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-EXEC-002
+title: Prefer prebuilt packages over packages built from source at install
+finding:
+  title: Installing a dependency runs its build code on the machine
+status: draft
+profiles: [hardened]
+risk:
+  severity: medium
+assessment: partial
+tags: [install-scripts, build]
+description: |
+  Where the ecosystem offers both, prebuilt distributions are installed instead of source distributions that execute a build script at install time. Source builds are allowed only for listed packages.
+rationale: |
+  Building from source at install time is install-time code execution, even in ecosystems that have no explicit lifecycle scripts.
+impact: |
+  Some packages only ship sources for some platforms and must be listed or built once and published to the private registry.
+audit:
+  manual: |
+    1. Check that configuration prefers or requires prebuilt distributions.
+    2. Review the list of packages allowed to build from source.
+remediation:
+  manual: |
+    1. Require prebuilt distributions in committed configuration.
+    2. Build the remaining packages once in a controlled pipeline and publish them to the private registry.
+references:
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-7
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+  - framework: cwe
+    id: CWE-829
+related_controls:
+  - id: CB-DEP-EXEC-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-EXEC-003
+title: Do not run on-demand packages without a pinned version
+finding:
+  title: Scripts and pipelines download and run the latest version of a package
+status: draft
+profiles: [baseline]
+risk:
+  severity: medium
+assessment: partial
+tags: [pinning, ci]
+description: |
+  Commands that fetch and run a package in one step, without adding it to the project, are not used in pipelines, scripts or documentation unless they pin an exact version that goes through the same release-age and source rules as other dependencies.
+rationale: |
+  One-shot runners usually resolve the latest version at every run and bypass the lockfile, so a malicious release runs immediately everywhere the command is used.
+impact: |
+  Tools used this way must be added as pinned development dependencies or pinned in the command.
+audit:
+  manual: |
+    1. Search pipelines, scripts, container files and documentation for one-shot package runner commands.
+    2. Check each one pins an exact version.
+remediation:
+  manual: |
+    1. Add the tool as a pinned development dependency, or pin an exact version in the command.
+references:
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: OWASP Top 10 CI/CD Security Risks
+    url: https://owasp.org/www-project-top-10-ci-cd-security-risks/
+    publisher: OWASP
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-7
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+related_controls:
+  - id: CB-DEP-AGE-001
+    type: related
+  - id: CB-DEP-LOCK-002
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-INV-001
+title: Produce and keep an SBOM for every release
+finding:
+  title: Releases have no record of the components they contain
+status: draft
+profiles: [baseline]
+risk:
+  severity: medium
+assessment: partial
+tags: [sbom, inventory]
+description: |
+  Each release produces a software bill of materials (SBOM) in a standard format, listing every component and version, generated from the actual build. It is stored with the release artifact for at least as long as the release is supported.
+rationale: |
+  When a vulnerability or a malicious package is announced, the SBOM answers "are we affected, and where?" for every version in the field, including old ones no longer in the repository.
+impact: |
+  Build pipelines need an extra step and storage.
+audit:
+  manual: |
+    1. Pick a recent release and retrieve its SBOM.
+    2. Check it uses a standard format, includes transitive dependencies and matches the shipped artifact.
+remediation:
+  manual: |
+    1. Add SBOM generation to the release build.
+    2. Store it with the release artifact.
+references:
+  - title: The Minimum Elements For a Software Bill of Materials (SBOM)
+    url: https://www.ntia.gov/report/2021/minimum-elements-software-bill-materials-sbom
+    publisher: NTIA
+    kind: standard
+    accessed: 2026-10-16
+  - title: NIST SP 800-218 - Secure Software Development Framework (SSDF) 1.1
+    url: https://csrc.nist.gov/pubs/sp/800/218/final
+    publisher: NIST
+    kind: standard
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-8
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-4
+    relation: related
+related_controls:
+  - id: CB-DEP-INV-002
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-INV-002
+title: Know where any package version is used within a set time
+finding:
+  title: The organization cannot quickly tell which systems use a given package
+status: draft
+profiles: [baseline]
+risk:
+  severity: medium
+assessment: manual
+tags: [inventory, incident]
+description: |
+  The organization can answer "which projects, builds and deployed systems use package X at version Y?" across all its software within {{ inventory_answer_hours }} hours.
+rationale: |
+  During a supply chain incident, the first hours are spent finding where the package is. Without a central inventory, this means asking every team.
+impact: |
+  SBOMs or lockfiles must be collected into a searchable place.
+parameters:
+  - name: inventory_answer_hours
+    type: integer
+    description: Maximum time to list every use of a package version.
+    unit: hours
+    default: 24
+    profile_defaults:
+      hardened: 4
+    minimum: 1
+    maximum: 168
+audit:
+  manual: |
+    1. Run an exercise: pick a package and version, and time how long it takes to list every use.
+    2. Check the answer is complete and came within {{ inventory_answer_hours }} hours.
+remediation:
+  manual: |
+    1. Collect SBOMs and lockfiles of all projects and deployed versions into a searchable inventory.
+references:
+  - title: The Minimum Elements For a Software Bill of Materials (SBOM)
+    url: https://www.ntia.gov/report/2021/minimum-elements-software-bill-materials-sbom
+    publisher: NTIA
+    kind: standard
+    accessed: 2026-10-16
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-8
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: IR-4
+    relation: related
+related_controls:
+  - id: CB-DEP-INV-001
+    type: related
+  - id: CB-DEP-IR-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-INV-003
+title: Verify provenance and signatures when the ecosystem provides them
+finding:
+  title: Published provenance and signatures of packages are ignored
+status: draft
+profiles: [hardened]
+risk:
+  severity: medium
+assessment: partial
+tags: [provenance, signature]
+description: |
+  When a package publishes signatures or build provenance attestations, they are verified at install or in the pipeline, and a package that used to publish them and stops doing so is flagged.
+rationale: |
+  Provenance ties a package to the source repository and pipeline that built it. A release pushed by hand from a stolen token typically lacks it.
+impact: |
+  Support varies by ecosystem and package. Where it is absent, this control does not apply.
+audit:
+  manual: |
+    1. Check that available signatures and provenance are verified for ecosystems that support them.
+    2. Check that loss of provenance on a new version is flagged.
+remediation:
+  manual: |
+    1. Enable signature and provenance verification in the package manager or pipeline where supported.
+references:
+  - title: SLSA specification v1.0
+    url: https://slsa.dev/spec/v1.0/
+    publisher: OpenSSF
+    kind: standard
+    accessed: 2026-10-16
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-4
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SI-7
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+  - framework: cwe
+    id: CWE-494
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-IR-001
+title: Have a response procedure for compromised dependencies
+finding:
+  title: There is no plan for when a malicious dependency has been installed
+status: draft
+profiles: [baseline]
+risk:
+  severity: high
+assessment: manual
+tags: [incident, secrets]
+description: |
+  A written procedure covers the case where a malicious or compromised package version was installed anywhere in the organization. It includes at least:
+
+  1. finding every workstation, pipeline and system that installed it (CB-DEP-INV-002);
+  2. treating those machines as compromised;
+  3. rotating every secret they could reach: registry and source hosting tokens, cloud credentials, SSH and signing keys, environment variables;
+  4. checking whether the organization's own packages or repositories were modified or published with stolen credentials;
+  5. purging the version from caches and the registry proxy, and pinning a safe version;
+  6. recording what happened and what changed.
+rationale: |
+  Malicious packages typically steal credentials within seconds and use them to spread. The response must be fast and complete, which only happens if it was written before.
+impact: |
+  The procedure must be exercised and kept current.
+audit:
+  manual: |
+    1. Check that the procedure exists and covers the steps above.
+    2. Check that it was exercised in the last year.
+remediation:
+  manual: |
+    1. Write the procedure, starting from the steps above.
+    2. Run a tabletop exercise.
+references:
+  - title: NIST SP 800-218 - Secure Software Development Framework (SSDF) 1.1
+    url: https://csrc.nist.gov/pubs/sp/800/218/final
+    publisher: NIST
+    kind: standard
+    accessed: 2026-10-16
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: IR-4
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: IR-8
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-8
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+related_controls:
+  - id: CB-DEP-INV-002
+    type: related
+  - id: CB-DEP-VULN-002
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-LOCK-001
+title: Commit a lockfile for every deployable application
+finding:
+  title: Applications are built without a lockfile
+  description: Each build resolves dependencies again and may silently pick up a new, possibly malicious, version.
+status: draft
+profiles: [baseline]
+risk:
+  severity: high
+assessment: partial
+tags: [lockfile, reproducibility]
+description: |
+  Every application, service or other deployable artifact commits the lockfile produced by its package manager, listing the exact version of every direct and transitive dependency.
+rationale: |
+  Without a lockfile, the dependency tree is decided at build time by whatever the registry serves that minute. Two builds of the same commit can differ, and a new malicious release is picked up automatically.
+impact: |
+  Lockfile changes must be reviewed like code. Merge conflicts in lockfiles are more frequent.
+notes: |
+  Libraries published for others to consume may leave the lockfile out of the published package, but should still commit it for their own tests and builds.
+audit:
+  manual: |
+    1. List deployable projects.
+    2. Check each one has a committed, up-to-date lockfile for every ecosystem it uses.
+remediation:
+  manual: |
+    1. Generate the lockfile with the package manager and commit it.
+    2. Remove lockfiles from ignore rules.
+references:
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: SLSA specification v1.0
+    url: https://slsa.dev/spec/v1.0/
+    publisher: OpenSSF
+    kind: standard
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-2
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-4
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+  - framework: cwe
+    id: CWE-1357
+related_controls:
+  - id: CB-DEP-LOCK-002
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-LOCK-002
+title: Install from the lockfile without modifying it in builds
+finding:
+  title: Builds may resolve versions different from the lockfile
+status: draft
+profiles: [baseline]
+risk:
+  severity: high
+assessment: partial
+tags: [lockfile, ci]
+description: |
+  Pipelines and release builds install dependencies in the package manager's frozen or locked mode: they install exactly what the lockfile lists and fail if the manifest and lockfile disagree, instead of updating the lockfile.
+rationale: |
+  A lockfile only protects the build if the build is forced to follow it. In default mode, several package managers quietly re-resolve and rewrite the lockfile.
+impact: |
+  Builds fail when someone forgets to update the lockfile. That is the intended behaviour.
+audit:
+  manual: |
+    1. Review the install step of each pipeline.
+    2. Check it uses the frozen or locked install mode and that a manifest/lockfile mismatch fails the build.
+remediation:
+  manual: |
+    1. Switch the install step of every pipeline to the package manager's frozen or locked mode.
+references:
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: SLSA specification v1.0
+    url: https://slsa.dev/spec/v1.0/
+    publisher: OpenSSF
+    kind: standard
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-2
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-4
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+related_controls:
+  - id: CB-DEP-LOCK-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-LOCK-003
+title: Verify package integrity against recorded hashes
+finding:
+  title: Downloaded packages are not checked against a known hash
+status: draft
+profiles: [baseline]
+risk:
+  severity: high
+assessment: partial
+tags: [lockfile, integrity]
+description: |
+  The lockfile records a cryptographic hash for every package, and the package manager verifies the downloaded content against it on every install. Where the ecosystem does not do this by default, hash checking is turned on explicitly.
+rationale: |
+  Hashes guarantee that what is installed today is byte-for-byte what was reviewed when the lockfile was changed, even if a registry, mirror or cache serves something else.
+impact: |
+  None known, once lockfiles contain hashes. Older lockfiles may need to be regenerated.
+audit:
+  manual: |
+    1. Check that lockfiles contain a hash for every entry.
+    2. Check that hash verification is not disabled in configuration or pipeline flags.
+remediation:
+  manual: |
+    1. Regenerate lockfiles with hashes.
+    2. Turn on mandatory hash checking where it is optional.
+references:
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: SLSA specification v1.0
+    url: https://slsa.dev/spec/v1.0/
+    publisher: OpenSSF
+    kind: standard
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SI-7
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-4
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+  - framework: cwe
+    id: CWE-494
+related_controls:
+  - id: CB-DEP-LOCK-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-LOCK-004
+title: Allow only approved sources in lockfiles
+finding:
+  title: A lockfile change can introduce packages from an unexpected source
+status: draft
+profiles: [baseline]
+risk:
+  severity: medium
+assessment: partial
+tags: [lockfile, review, registry]
+description: |
+  An automated check on every change rejects lockfiles that resolve a package from a host, scheme or source type other than the approved registries.
+rationale: |
+  Lockfiles are long and rarely read in review. Swapping a resolved URL to an attacker's host is an easy way to hide a malicious package in an otherwise harmless change.
+impact: |
+  The check must be updated when a registry URL changes.
+audit:
+  manual: |
+    1. Check that a lockfile source check runs on every change request.
+    2. Check that it fails on a non-approved host or a non-registry source.
+remediation:
+  manual: |
+    1. Add a check to the pipeline that parses each lockfile and compares every resolved source with the list of approved registries.
+references:
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: OWASP Top 10 CI/CD Security Risks
+    url: https://owasp.org/www-project-top-10-ci-cd-security-risks/
+    publisher: OWASP
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-3
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+related_controls:
+  - id: CB-DEP-SRC-004
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-LOCK-005
+title: Pin direct dependencies of applications to exact versions
+finding:
+  title: Application manifests use version ranges
+status: draft
+profiles: [hardened]
+risk:
+  severity: low
+assessment: partial
+tags: [lockfile, pinning]
+description: |
+  In deployable applications, direct dependencies are declared with an exact version, not a range. Version changes happen only through a reviewed change to the manifest.
+rationale: |
+  With a lockfile and frozen installs, ranges are already safe in builds. Exact versions also protect the moments when the lockfile is regenerated, and make every upgrade visible in the manifest diff.
+impact: |
+  More update proposals to review.
+notes: |
+  Does not apply to libraries meant to be consumed by others, which should declare compatible ranges.
+audit:
+  manual: |
+    1. Check application manifests for direct dependencies declared with a range.
+remediation:
+  manual: |
+    1. Replace ranges with the exact version currently in the lockfile.
+references:
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-2
+    relation: related
+related_controls:
+  - id: CB-DEP-LOCK-001
+    type: related
+  - id: CB-DEP-UPD-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-SRC-001
+title: Resolve all packages through an organization-controlled registry
+finding:
+  title: Packages are downloaded directly from public registries
+  description: Builds and workstations pull packages straight from the internet. The organization cannot block, delay or audit what enters its software.
+status: draft
+profiles: [baseline]
+risk:
+  severity: medium
+assessment: partial
+tags: [registry, proxy]
+description: |
+  Every package install, on workstations and in build pipelines, goes through a registry or caching proxy run or controlled by the organization. Direct access to public registries is not used.
+rationale: |
+  A single entry point is where release-age rules, malicious package blocking and audit logs can be enforced for everyone at once. It also keeps builds working when a package is unpublished upstream, and gives a record of which package versions were fetched, by whom and when.
+impact: |
+  A registry proxy must be operated and kept available: if it is down, nobody can install. Package manager configuration must be distributed to every workstation and pipeline.
+audit:
+  manual: |
+    1. List the registry URLs configured for each ecosystem in project, user and pipeline configuration.
+    2. Confirm every URL points to the organization-controlled registry.
+    3. From a build environment, confirm that direct requests to public registries are refused or not used.
+remediation:
+  manual: |
+    1. Deploy a registry proxy for each ecosystem in use, or one that serves several.
+    2. Set it as the only registry in versioned project configuration (see CB-DEP-SRC-006).
+    3. Block or alert on direct access to public registries from build networks.
+references:
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-3
+    relation: related
+  - framework: iso27001-2022
+    framework_version: '2022'
+    id: A.5.21
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+related_controls:
+  - id: CB-DEP-SRC-006
+    type: related
+  - id: CB-DEP-AGE-001
+    type: related
+  - id: CB-DEP-VULN-002
+    type: related
+  - id: CB-DEP-CI-003
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-SRC-002
+title: Bind internal package namespaces to the private registry
+finding:
+  title: Internal package names can be resolved from a public registry
+  description: An attacker can publish a public package with the name of an internal one. The package manager may install the attacker's package instead (dependency confusion).
+status: draft
+profiles: [baseline]
+risk:
+  severity: high
+assessment: partial
+tags: [dependency-confusion, namespace]
+description: |
+  Internal packages use a dedicated namespace, scope or prefix. The package manager is configured so that this namespace is only ever resolved from the private registry, never from a public one, and the registry proxy does not fall back to public sources for it.
+rationale: |
+  When a package manager searches several registries for the same name, it may pick the public one, often because it has a higher version number. This lets anyone on the internet inject code into internal builds by guessing or leaking an internal package name.
+impact: |
+  Existing internal packages without a namespace must be renamed or explicitly mapped, which touches every project that uses them.
+notes: |
+  Ecosystems differ: some have native scopes or namespaces, others only allow one index or need explicit per-package source mapping. Where no reliable mapping exists, use a single private registry that serves internal packages and proxies public ones without name overlap.
+audit:
+  manual: |
+    1. List internal packages and the namespace or prefix they use.
+    2. For each ecosystem, check that this namespace is mapped to the private registry only.
+    3. Check the registry proxy: a request for an internal name must never be forwarded upstream.
+remediation:
+  manual: |
+    1. Choose a namespace or prefix for internal packages and move them under it.
+    2. Map the namespace to the private registry in versioned configuration.
+    3. Disable upstream fallback for that namespace in the registry proxy.
+references:
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-3
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-7
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+  - framework: cwe
+    id: CWE-427
+related_controls:
+  - id: CB-DEP-SRC-001
+    type: related
+  - id: CB-DEP-SRC-003
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-SRC-003
+title: Reserve internal package names on public registries
+finding:
+  title: Internal package names are free to register on public registries
+status: draft
+profiles: [hardened]
+risk:
+  severity: medium
+assessment: manual
+tags: [dependency-confusion, namespace]
+description: |
+  The organization owns the namespace, scope or placeholder package names matching its internal packages on each public registry where they could be resolved.
+rationale: |
+  A second barrier against dependency confusion, for the day a configuration is wrong or a new project forgets the mapping. It also prevents impersonation of the organization's packages.
+impact: |
+  Accounts on public registries must be created and kept secured. Placeholder packages need a clear description so they are not mistaken for real ones.
+audit:
+  manual: |
+    1. For each internal namespace or prefix, check who owns it on each relevant public registry.
+    2. Confirm the owning accounts belong to the organization and use multi-factor authentication.
+remediation:
+  manual: |
+    1. Register the namespaces or placeholder names on each relevant public registry.
+    2. Protect the accounts with multi-factor authentication and restrict who can publish.
+references:
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-3
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+related_controls:
+  - id: CB-DEP-SRC-002
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-SRC-004
+title: Declare dependencies only from a registry
+finding:
+  title: Dependencies are pulled from direct URLs, source repositories or local paths
+  description: Code fetched from a URL or a repository branch bypasses registry controls and can change at any time without a new version.
+status: draft
+profiles: [baseline]
+risk:
+  severity: medium
+assessment: partial
+tags: [registry, lockfile]
+description: |
+  Production dependencies are declared as named, versioned packages from an approved registry. Direct archive URLs, source repository references and local paths are not used, except under a documented and reviewed exception.
+rationale: |
+  Non-registry sources skip release-age rules, malicious package blocking and vulnerability matching. A branch or unversioned URL can point to different content between two builds.
+impact: |
+  Forks or unreleased fixes must be published to the private registry instead of referenced directly.
+notes: |
+  If an exception is needed, reference an immutable identifier (a full commit hash, a checksum) and record the reason.
+audit:
+  manual: |
+    1. Search manifests and lockfiles for dependencies whose source is a URL, a source repository or a path.
+    2. Check that each one has a documented exception and an immutable reference.
+remediation:
+  manual: |
+    1. Publish the needed package to the private registry under a proper version.
+    2. Replace the direct reference with the registry package.
+references:
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-3
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+  - framework: cwe
+    id: CWE-494
+related_controls:
+  - id: CB-DEP-LOCK-004
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-SRC-005
+title: Use authenticated, encrypted transport to registries
+finding:
+  title: Packages are downloaded without TLS or without certificate verification
+status: draft
+profiles: [baseline]
+risk:
+  severity: high
+assessment: partial
+tags: [tls, registry]
+description: |
+  All registry and proxy URLs use HTTPS with certificate verification enabled. No configuration disables TLS verification or marks a host as trusted to skip it.
+rationale: |
+  Without verified TLS, anyone on the network path can swap a package during download. Disabling verification "temporarily" to work around a proxy is a common and long-lived mistake.
+impact: |
+  Internal certificate authorities must be distributed to workstations and build images.
+audit:
+  manual: |
+    1. Search project, user, system and pipeline configuration for registry URLs that are not HTTPS.
+    2. Search for settings or flags that disable certificate verification or trust a host without it.
+remediation:
+  manual: |
+    1. Switch every registry URL to HTTPS.
+    2. Remove settings that disable verification, and install the internal CA certificate instead.
+references:
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SC-8
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1557
+  - framework: cwe
+    id: CWE-295
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-SRC-006
+title: Keep package manager configuration in the repository
+finding:
+  title: Package manager behaviour depends on each machine's local settings
+status: draft
+profiles: [baseline]
+risk:
+  severity: low
+assessment: partial
+tags: [configuration]
+description: |
+  Security-relevant package manager settings (registries, namespace mappings, release age, script execution, frozen installs) are set in configuration files committed with the project, so workstations and pipelines behave the same way.
+rationale: |
+  Settings that only live in one person's home folder or one pipeline are lost, drift, and are impossible to review. Committed configuration is versioned and reviewed like code.
+impact: |
+  None known. Credentials must still stay out of the repository.
+audit:
+  manual: |
+    1. Check that each project has committed package manager configuration covering the settings of this standard.
+    2. Check that it contains no credentials.
+remediation:
+  manual: |
+    1. Move security-relevant settings into a project configuration file and commit it.
+    2. Keep tokens in environment variables or a secret store.
+references:
+  - title: Package Manager Best Practices
+    url: https://github.com/ossf/package-manager-best-practices
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-2
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-6
+    relation: related
+related_controls:
+  - id: CB-DEP-SRC-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-UPD-001
+title: Propose dependency updates automatically
+finding:
+  title: Dependencies are only updated by hand, when someone remembers
+status: draft
+profiles: [baseline]
+risk:
+  severity: medium
+assessment: partial
+tags: [updates, automation]
+description: |
+  An automated process opens change requests for new dependency versions, at least for security fixes and preferably for all updates. Proposals respect the release-age rule (CB-DEP-AGE-001) and run the full test suite.
+rationale: |
+  Small, frequent updates are easy to review and to roll back. Rare, large ones are risky, so teams avoid them, and fall behind until a vulnerability forces a painful jump.
+impact: |
+  A steady flow of change requests to review. Grouping related updates keeps it manageable.
+audit:
+  manual: |
+    1. Check that automated update proposals are enabled for each project and ecosystem.
+    2. Check that they wait for the release-age threshold.
+remediation:
+  manual: |
+    1. Enable automated update proposals for every project and ecosystem.
+    2. Configure the same minimum release age as CB-DEP-AGE-001.
+references:
+  - title: NIST SP 800-218 - Secure Software Development Framework (SSDF) 1.1
+    url: https://csrc.nist.gov/pubs/sp/800/218/final
+    publisher: NIST
+    kind: standard
+    accessed: 2026-10-16
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SI-2
+    relation: related
+related_controls:
+  - id: CB-DEP-AGE-001
+    type: related
+  - id: CB-DEP-UPD-002
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-UPD-002
+title: Require human review for risky updates
+finding:
+  title: Risky dependency updates are merged automatically
+status: draft
+profiles: [baseline]
+risk:
+  severity: medium
+assessment: partial
+tags: [updates, review]
+description: |
+  Updates are never merged without human review when they are a new major version, when the package changed maintainers or publisher, or when the new version adds install-time scripts or new dependencies. Automatic merging, if used, is limited to minor and patch updates that pass tests, and is not used in the hardened profile.
+rationale: |
+  Account takeovers and hostile maintainer changes show up as an ordinary new version. These signals are the ones that most often precede a malicious release.
+impact: |
+  More manual reviews.
+audit:
+  manual: |
+    1. Review automatic merge rules.
+    2. Check that major, maintainer-change and new-script updates are excluded.
+remediation:
+  manual: |
+    1. Restrict automatic merging to minor and patch updates without the risk signals above, or disable it.
+references:
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: OWASP Top 10 CI/CD Security Risks
+    url: https://owasp.org/www-project-top-10-ci-cd-security-risks/
+    publisher: OWASP
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-3
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+related_controls:
+  - id: CB-DEP-UPD-001
+    type: related
+  - id: CB-DEP-EXEC-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-UPD-003
+title: Do not fall more than a set number of major versions behind
+finding:
+  title: Dependencies are several major versions behind their current release
+status: draft
+profiles: [baseline]
+risk:
+  severity: low
+assessment: partial
+tags: [updates, maintenance]
+description: |
+  No direct dependency is more than {{ max_major_versions_behind }} major version(s) behind its latest stable release, unless a recorded plan exists.
+rationale: |
+  Old major versions stop receiving fixes, and the longer the gap, the harder the upgrade when a fix becomes urgent.
+impact: |
+  Major upgrades need to be planned regularly.
+parameters:
+  - name: max_major_versions_behind
+    type: integer
+    description: Maximum number of major versions behind the latest stable release.
+    unit: versions
+    default: 2
+    profile_defaults:
+      hardened: 1
+    minimum: 0
+    maximum: 5
+audit:
+  manual: |
+    1. List direct dependencies with their major version gap.
+    2. Check none exceeds {{ max_major_versions_behind }} without a plan.
+remediation:
+  manual: |
+    1. Plan the overdue major upgrades.
+references:
+  - title: NIST SP 800-218 - Secure Software Development Framework (SSDF) 1.1
+    url: https://csrc.nist.gov/pubs/sp/800/218/final
+    publisher: NIST
+    kind: standard
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SI-2
+    relation: related
+threats:
+  - framework: cwe
+    id: CWE-1104
+related_controls:
+  - id: CB-DEP-VULN-004
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-VET-001
+title: Review every new direct dependency before merge
+finding:
+  title: New dependencies can be added without review
+status: draft
+profiles: [baseline]
+risk:
+  severity: medium
+assessment: partial
+tags: [review, code-owners]
+description: |
+  Any change that adds a direct dependency, or changes its source, needs approval from a person or group responsible for dependencies. Manifest files are protected so that this approval is required by the repository, not left to habit.
+rationale: |
+  Each new dependency brings its full transitive tree, its maintainers and their security practices into the product. It is one of the highest-impact lines of a change, and the easiest to overlook.
+impact: |
+  Changes that add dependencies take longer to merge.
+audit:
+  manual: |
+    1. Check that manifest files require approval from a designated reviewer group.
+    2. Sample recent additions and check they were reviewed against CB-DEP-VET-002.
+remediation:
+  manual: |
+    1. Assign required reviewers for manifest files in the repository settings.
+    2. Publish the review criteria (CB-DEP-VET-002).
+references:
+  - title: Concise Guide for Evaluating Open Source Software
+    url: https://best.openssf.org/Concise-Guide-for-Evaluating-Open-Source-Software
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SA-9
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-3
+    relation: related
+  - framework: iso27001-2022
+    framework_version: '2022'
+    id: A.5.21
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+related_controls:
+  - id: CB-DEP-VET-002
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-VET-002
+title: Evaluate new dependencies against written criteria
+finding:
+  title: Dependencies are chosen without any trust evaluation
+status: draft
+profiles: [baseline]
+risk:
+  severity: medium
+assessment: manual
+tags: [review, typosquatting, license]
+description: |
+  Before adoption, a new dependency is checked against written criteria, at least:
+
+  - the name is the intended package, not a look-alike;
+  - it links to a public source repository that matches the published content;
+  - it is maintained (recent activity, responsive maintainers, security contact);
+  - it has a usage and history consistent with its purpose (see CB-DEP-AGE-002);
+  - it has no install-time scripts, or they are justified;
+  - its license is compatible with the product;
+  - its transitive tree is reasonable for what it does;
+  - it is needed: the same result is not a few lines of code or already available in the standard library or an existing dependency.
+rationale: |
+  Most supply chain incidents involve packages that a short look would have flagged: a misspelled name, no source repository, a single anonymous maintainer, or an install hook in a utility library.
+impact: |
+  A few minutes per new dependency.
+audit:
+  manual: |
+    1. Check that the criteria are written and known to reviewers.
+    2. Sample recent additions and check the evaluation was recorded.
+remediation:
+  manual: |
+    1. Write the criteria, starting from the list above.
+    2. Add a short evaluation section to the change request template for manifest changes.
+references:
+  - title: Concise Guide for Evaluating Open Source Software
+    url: https://best.openssf.org/Concise-Guide-for-Evaluating-Open-Source-Software
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: OWASP Software Component Verification Standard
+    url: https://owasp.org/www-project-software-component-verification-standard/
+    publisher: OWASP
+    kind: standard
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-6
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SA-9
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+  - framework: cwe
+    id: CWE-1357
+  - framework: cwe
+    id: CWE-1104
+related_controls:
+  - id: CB-DEP-VET-001
+    type: related
+  - id: CB-DEP-AGE-002
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-VET-003
+title: Remove unused dependencies
+finding:
+  title: The project declares dependencies it does not use
+status: draft
+profiles: [baseline]
+risk:
+  severity: low
+assessment: partial
+tags: [minimization]
+description: |
+  Dependencies that are no longer imported or used are removed from manifests and lockfiles. This is checked regularly.
+rationale: |
+  Unused dependencies still get installed, still run install scripts, still show up in vulnerability reports, and still can be compromised. Removing them is the cheapest risk reduction.
+impact: |
+  None known.
+audit:
+  manual: |
+    1. Run an unused-dependency analysis on each project.
+    2. Check findings are handled.
+remediation:
+  manual: |
+    1. Remove unused dependencies and regenerate the lockfile.
+    2. Run the analysis periodically or in the pipeline.
+references:
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-7
+    relation: related
+threats:
+  - framework: cwe
+    id: CWE-1104
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-VET-004
+title: Ship only production dependencies
+finding:
+  title: Development and test dependencies are installed in production artifacts
+status: draft
+profiles: [baseline]
+risk:
+  severity: low
+assessment: partial
+tags: [minimization, build]
+description: |
+  Development, test and build-only dependencies are declared separately from runtime ones, and production artifacts (images, packages, bundles) contain only runtime dependencies.
+rationale: |
+  Development dependencies are often the largest part of the tree. Shipping them grows the attack surface of the running system for no benefit.
+impact: |
+  Dependency groups must be maintained correctly.
+audit:
+  manual: |
+    1. Check that manifests separate runtime and development dependencies.
+    2. Inspect a production artifact and check that development dependencies are absent.
+remediation:
+  manual: |
+    1. Move development dependencies to the development group.
+    2. Install only runtime dependencies in the production build step.
+references:
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: CM-7
+    relation: related
+related_controls:
+  - id: CB-DEP-INV-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-VULN-001
+title: Scan dependencies for known vulnerabilities continuously
+finding:
+  title: Known vulnerabilities in dependencies are not detected
+status: draft
+profiles: [baseline]
+risk:
+  severity: high
+assessment: partial
+tags: [vulnerability, sca]
+description: |
+  The full resolved dependency tree of every project is matched against public vulnerability databases on every change and at least every {{ scan_interval_hours }} hours for the default branch and deployed versions.
+rationale: |
+  New vulnerabilities are published every day for code that has not changed. Scanning only on change misses them for projects that are not actively developed.
+impact: |
+  Findings must be triaged. Expect noise at first.
+notes: |
+  Scan the lockfile or SBOM (resolved versions), not only the manifest (declared ranges).
+parameters:
+  - name: scan_interval_hours
+    type: integer
+    description: Maximum time between two scans of the same project.
+    unit: hours
+    default: 24
+    minimum: 1
+    maximum: 168
+audit:
+  manual: |
+    1. Check that a dependency scan runs on change requests.
+    2. Check that a scheduled scan covers each default branch and deployed version at least every {{ scan_interval_hours }} hours.
+    3. Check that results reach the owning team.
+remediation:
+  manual: |
+    1. Add a dependency scan to pipelines and a scheduled scan of default branches and deployed versions.
+    2. Route findings to the owning team.
+references:
+  - title: Open Source Vulnerability format
+    url: https://ossf.github.io/osv-schema/
+    publisher: OpenSSF
+    kind: standard
+    accessed: 2026-10-16
+  - title: NIST SP 800-218 - Secure Software Development Framework (SSDF) 1.1
+    url: https://csrc.nist.gov/pubs/sp/800/218/final
+    publisher: NIST
+    kind: standard
+    accessed: 2026-10-16
+  - title: OWASP Software Component Verification Standard
+    url: https://owasp.org/www-project-software-component-verification-standard/
+    publisher: OWASP
+    kind: standard
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: RA-5
+    relation: related
+  - framework: iso27001-2022
+    framework_version: '2022'
+    id: A.8.8
+    relation: related
+threats:
+  - framework: cwe
+    id: CWE-1395
+related_controls:
+  - id: CB-DEP-VULN-003
+    type: related
+  - id: CB-DEP-INV-002
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-VULN-002
+title: Block packages known to be malicious
+finding:
+  title: Packages flagged as malicious can still be installed
+status: draft
+profiles: [baseline]
+risk:
+  severity: critical
+assessment: partial
+tags: [malware, registry]
+description: |
+  The registry proxy or the pipeline refuses packages and versions listed as malicious in public advisories. A match fails the build and raises an alert. No exception is possible.
+rationale: |
+  A malicious package is not a vulnerability to patch later: installing it is already the incident. Advisory databases publish malicious package reports, often within hours.
+impact: |
+  None known.
+audit:
+  manual: |
+    1. Check that malicious package advisories are part of the scan or proxy policy.
+    2. Check that a match blocks the install or build and alerts the security team.
+remediation:
+  manual: |
+    1. Enable malicious package advisories in the registry proxy policy and the dependency scan.
+    2. Treat any match on an existing project as an incident (CB-DEP-IR-001).
+references:
+  - title: Open Source Vulnerability format
+    url: https://ossf.github.io/osv-schema/
+    publisher: OpenSSF
+    kind: standard
+    accessed: 2026-10-16
+  - title: Secure Supply Chain Consumption Framework (S2C2F)
+    url: https://github.com/ossf/s2c2f
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SI-3
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SR-11
+    relation: related
+threats:
+  - framework: mitre-attack
+    id: T1195.001
+  - framework: cwe
+    id: CWE-506
+related_controls:
+  - id: CB-DEP-SRC-001
+    type: related
+  - id: CB-DEP-IR-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-VULN-003
+title: Fix vulnerable dependencies within set deadlines
+finding:
+  title: Vulnerable dependencies stay in production indefinitely
+status: draft
+profiles: [baseline]
+risk:
+  severity: high
+assessment: manual
+tags: [vulnerability, sla]
+description: |
+  Vulnerable dependencies are fixed, mitigated or formally accepted within a deadline that depends on severity: {{ sla_critical_days }} days for critical, {{ sla_high_days }} days for high, {{ sla_medium_days }} days for medium. Vulnerabilities listed as exploited in the wild, or with a high exploitation probability, are handled first.
+rationale: |
+  Detection without a deadline produces backlogs. Prioritizing by known exploitation focuses effort on the small share of vulnerabilities attackers actually use.
+impact: |
+  Teams must reserve time for dependency fixes.
+notes: |
+  A vulnerability in code that is not reachable may be accepted, with the analysis recorded and reviewed at the next release.
+parameters:
+  - name: sla_critical_days
+    type: integer
+    description: Deadline for critical vulnerabilities.
+    unit: days
+    default: 7
+    profile_defaults:
+      hardened: 2
+    minimum: 1
+    maximum: 30
+  - name: sla_high_days
+    type: integer
+    description: Deadline for high vulnerabilities.
+    unit: days
+    default: 30
+    profile_defaults:
+      hardened: 14
+    minimum: 1
+    maximum: 90
+  - name: sla_medium_days
+    type: integer
+    description: Deadline for medium vulnerabilities.
+    unit: days
+    default: 90
+    profile_defaults:
+      hardened: 60
+    minimum: 1
+    maximum: 365
+audit:
+  manual: |
+    1. Check that deadlines are defined and known to teams.
+    2. List open dependency vulnerabilities and check none is past its deadline without a recorded acceptance.
+remediation:
+  manual: |
+    1. Publish the deadlines.
+    2. Track open findings with their due date and report overdue ones.
+references:
+  - title: Known Exploited Vulnerabilities Catalog
+    url: https://www.cisa.gov/known-exploited-vulnerabilities-catalog
+    publisher: CISA
+    kind: other
+    accessed: 2026-10-16
+  - title: Exploit Prediction Scoring System (EPSS)
+    url: https://www.first.org/epss/
+    publisher: FIRST
+    kind: standard
+    accessed: 2026-10-16
+  - title: NIST SP 800-218 - Secure Software Development Framework (SSDF) 1.1
+    url: https://csrc.nist.gov/pubs/sp/800/218/final
+    publisher: NIST
+    kind: standard
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SI-2
+    relation: related
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: RA-5
+    relation: related
+  - framework: iso27001-2022
+    framework_version: '2022'
+    id: A.8.8
+    relation: related
+threats:
+  - framework: cwe
+    id: CWE-1395
+related_controls:
+  - id: CB-DEP-VULN-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16
+---
+id: CB-DEP-VULN-004
+title: Track unmaintained, deprecated and end-of-life components
+finding:
+  title: The product depends on components that no longer receive fixes
+status: draft
+profiles: [baseline]
+risk:
+  severity: medium
+assessment: partial
+tags: [end-of-life, maintenance]
+description: |
+  Dependencies marked as deprecated by their registry, archived by their maintainers, or without any release for a long time are identified, as well as language runtimes past their end of life. Each one has a replacement plan or a recorded acceptance.
+rationale: |
+  An unmaintained component will not get a fix when the next vulnerability is found, and abandoned package names are a target for takeover.
+impact: |
+  Replacing a core dependency can be a large piece of work.
+audit:
+  manual: |
+    1. List deprecated, archived and long-inactive dependencies and end-of-life runtimes.
+    2. Check each has a plan or an acceptance.
+remediation:
+  manual: |
+    1. Add deprecation and end-of-life checks to the scheduled scan.
+    2. Plan replacements, starting with runtime dependencies.
+references:
+  - title: Concise Guide for Evaluating Open Source Software
+    url: https://best.openssf.org/Concise-Guide-for-Evaluating-Open-Source-Software
+    publisher: OpenSSF
+    kind: guide
+    accessed: 2026-10-16
+  - title: OWASP Software Component Verification Standard
+    url: https://owasp.org/www-project-software-component-verification-standard/
+    publisher: OWASP
+    kind: standard
+    accessed: 2026-10-16
+mappings:
+  - framework: nist-800-53r5
+    framework_version: 5.1.1
+    id: SA-22
+    relation: related
+threats:
+  - framework: cwe
+    id: CWE-1104
+related_controls:
+  - id: CB-DEP-VULN-001
+    type: related
+authors:
+  - name: Alice
+    github: Sn0wAlice
+introduced_in: 1.0.0
+created: 2026-10-16
+updated: 2026-10-16

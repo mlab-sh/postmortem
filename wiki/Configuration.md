@@ -23,6 +23,8 @@ tree:
     perl: 0
   recent_days: 30            # flag repos created within this many days
   stale_days: 365            # flag repos with no push in this many days
+  fresh_hours: 48            # flag versions published less than this many hours ago
+  newborn_days: 30           # flag packages whose first release is younger than this
 ```
 
 Stars measure popularity, and popularity is relative to the ecosystem. Without
@@ -177,6 +179,26 @@ hole — past the date the finding comes back and the run says so. See
 
 **Gate policy** (`tree`, `audit`, `system`): see [CI gate](CI-Gate) for the
 `[gate]` block and `[[gate.allow]]` entries, which take the same `expires`.
+
+## Baseline settings - `[harden]`
+
+`postmortem harden` reads its profile, approved registries, internal scopes,
+parameter overrides and waivers from here. See [harden](Harden#configuration--harden-in-postmortemconf).
+
+```toml
+[harden]
+level = "hardened"
+registries = ["npm.corp.example"]
+internal_scopes = ["@acme"]
+
+[harden.params]
+min_release_age_hours = 96
+
+[[harden.waive]]
+control = "CB-DEP-SRC-001"
+reason = "no org proxy yet"
+expires = "2026-12-31"
+```
 
 ## License policy - `[license]`
 

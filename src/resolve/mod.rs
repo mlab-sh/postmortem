@@ -370,10 +370,10 @@ impl Resolver {
             // Release-age cooldown + newborn: both time-relative, so computed
             // here against the current clock (never cached — see VersionMeta).
             let now = chrono::Utc::now().timestamp();
-            if let Some(h) = fresh_age_hours(meta.published_ts, now) {
+            if let Some(h) = fresh_age_hours(meta.published_ts, now, self.thresholds.fresh_hours) {
                 signals.push(RiskSignal::FreshRelease(h));
             }
-            if let Some(d) = newborn_age_days(meta.first_release_ts, now) {
+            if let Some(d) = newborn_age_days(meta.first_release_ts, now, self.thresholds.newborn_days) {
                 signals.push(RiskSignal::NewbornPackage(d));
             }
         }

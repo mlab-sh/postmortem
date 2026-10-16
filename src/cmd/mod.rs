@@ -11,6 +11,7 @@ pub mod diff;
 pub mod fix;
 pub mod gate_policy;
 pub mod ghost;
+pub mod harden;
 pub mod hook;
 pub mod hunt;
 pub mod licenses;

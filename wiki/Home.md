@@ -27,6 +27,7 @@ locally.
 | [`diff`](Diff) | Compare two project states — or a GitHub PR by URL — and assess what the change introduces. |
 | [`sbom`](Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |
 | [`system`](System) | Audit the machine's OS package managers (Homebrew, pacman/AUR, apt/dpkg, dnf/rpm, Nix, apk, and on [Windows](Windows) WinGet, MSIX, Chocolatey, Scoop and the registry) with the same risk scoring. |
+| [`harden`](Harden) | Evaluate how the project consumes dependencies against the CIRSEC baseline (CB-DEP): release-age gates, frozen installs, install scripts, registries, CI. `harden info` lists what is checked. |
 | [`scripts`](Install-Time) | Which dependencies execute code at install time, whether each is approved, and what its script does. |
 | [`hook`](Install-Time) | The git pre-commit hook that scans staged dependency changes. |
 | [`watch`](Install-Time) | Re-scan whenever a lockfile changes. |

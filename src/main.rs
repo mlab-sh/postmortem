@@ -24,6 +24,7 @@ mod enrich;
 mod fix;
 mod gate;
 mod gochi;
+mod harden;
 mod hook;
 mod image;
 mod human;
@@ -84,6 +85,7 @@ fn main() -> Result<()> {
         cli::Command::Ci(a) => cmd::ci::run_ci(a),
         cli::Command::Cache(args) => cmd::cache::run_cache(args),
         cli::Command::System(args) => cmd::system::run_system(args),
+        cli::Command::Harden(args) => cmd::harden::run_harden(args),
         cli::Command::Help => {
             cmd::overview::print_overview();
             Ok(())

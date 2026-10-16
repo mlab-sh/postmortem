@@ -93,6 +93,7 @@ postmortem why left-pad .               # why is this package installed?
 postmortem why left-pad . --blast       # if it were compromised, what breaks?
 postmortem timeline event-stream        # when did this package change hands?
 postmortem scripts .                    # what runs code when I install?
+postmortem harden . --level hardened    # is the project set up to keep attacks out? (CIRSEC)
 postmortem hook install                 # scan staged lockfile changes
 postmortem diff <github-pr-url> --online # what does this PR pull in, and is it safe?
 postmortem sbom . -o sbom.json          # export a CycloneDX 1.5 SBOM
@@ -162,6 +163,7 @@ cd postmortem && cargo build --release
 | [`diff`](https://github.com/mlab-sh/postmortem/wiki/Diff) | Compare two project states — or a GitHub PR by URL — and assess what the change introduces. |
 | [`sbom`](https://github.com/mlab-sh/postmortem/wiki/Sbom) | Export the resolved dependency graph as a CycloneDX 1.5 SBOM. |
 | [`system`](https://github.com/mlab-sh/postmortem/wiki/System) | Audit your machine's OS package managers — Linux, macOS and [Windows](https://github.com/mlab-sh/postmortem/wiki/Windows) — and deep-inspect any package's real source. |
+| [`harden`](https://github.com/mlab-sh/postmortem/wiki/Harden) | Evaluate how the project consumes dependencies against the CIRSEC baseline: release-age gates, frozen installs, install scripts, registries, CI. |
 | [`scripts`](https://github.com/mlab-sh/postmortem/wiki/Install-Time) | Which dependencies execute code at install time, whether each is approved, and what its script does. |
 | [`hook`](https://github.com/mlab-sh/postmortem/wiki/Install-Time) | Git pre-commit hook for staged dependency changes. |
 | [`timeline`](https://github.com/mlab-sh/postmortem/wiki/Timeline) | Lay a package's release history out in order: handovers, install scripts, repository moves. |

@@ -78,31 +78,25 @@ type HistorySource = (&'static str, String);
 /// Flag a gap this large (days) between releases as a dormancy anomaly.
 const DORMANT_DAYS: i64 = 365;
 
-/// Cooldown window: a version published within this many hours hasn't had time
-/// for the ecosystem to catch a malicious release. 48h is the middle of the
-/// 24–72h the supply-chain guidance converges on.
-const FRESH_HOURS: i64 = 48;
-
-/// A package whose first-ever release is younger than this has no track record —
-/// the delivery vehicle for typosquats and slopsquatted (AI-hallucinated) names.
-const NEWBORN_DAYS: i64 = 30;
-
 /// Age in hours of a version published at `published_ts`, but only if it falls
-/// inside the [`FRESH_HOURS`] cooldown window — otherwise `None`. Kept pure (now
-/// is passed in) so the cooldown threshold is unit-testable. A future publish
-/// time (clock skew) yields age 0, still "fresh".
-pub(super) fn fresh_age_hours(published_ts: Option<i64>, now: i64) -> Option<i64> {
+/// inside the `window_hours` cooldown (`tree.fresh_hours`, 48 by default: the
+/// middle of the 24–72h the supply-chain guidance converges on) — otherwise
+/// `None`. Kept pure (now is passed in) so the threshold is unit-testable. A
+/// future publish time (clock skew) yields age 0, still "fresh".
+pub(super) fn fresh_age_hours(published_ts: Option<i64>, now: i64, window_hours: i64) -> Option<i64> {
     let ts = published_ts?;
     let hours = (now - ts).max(0) / 3_600;
-    (hours < FRESH_HOURS).then_some(hours)
+    (hours < window_hours).then_some(hours)
 }
 
-/// Days since the package's first-ever release, only within the [`NEWBORN_DAYS`]
-/// window — else `None`. Pure (now passed in) for unit-testing.
-pub(super) fn newborn_age_days(first_release_ts: Option<i64>, now: i64) -> Option<i64> {
+/// Days since the package's first-ever release, only within `window_days`
+/// (`tree.newborn_days`, 30 by default: a package that young has no track
+/// record — the delivery vehicle for typosquats and slopsquatted names) — else
+/// `None`. Pure (now passed in) for unit-testing.
+pub(super) fn newborn_age_days(first_release_ts: Option<i64>, now: i64, window_days: i64) -> Option<i64> {
     let ts = first_release_ts?;
     let days = (now - ts).max(0) / 86_400;
-    (days < NEWBORN_DAYS).then_some(days)
+    (days < window_days).then_some(days)
 }
 
 /// RFC3339 (GitHub timestamps) → unix seconds.
@@ -636,27 +630,27 @@ mod tests {
     fn fresh_release_cooldown_window() {
         let now = 1_700_000_000;
         assert_eq!(
-            fresh_age_hours(Some(now - 10 * 3600), now),
+            fresh_age_hours(Some(now - 10 * 3600), now, 48),
             Some(10),
             "10h old → fresh"
         );
         assert_eq!(
-            fresh_age_hours(Some(now - 47 * 3600), now),
+            fresh_age_hours(Some(now - 47 * 3600), now, 48),
             Some(47),
             "just inside 48h"
         );
         assert_eq!(
-            fresh_age_hours(Some(now - 49 * 3600), now),
+            fresh_age_hours(Some(now - 49 * 3600), now, 48),
             None,
             "aged out of window"
         );
         assert_eq!(
-            fresh_age_hours(None, now),
+            fresh_age_hours(None, now, 48),
             None,
             "no publish time → not fresh"
         );
         assert_eq!(
-            fresh_age_hours(Some(now + 3600), now),
+            fresh_age_hours(Some(now + 3600), now, 48),
             Some(0),
             "clock skew → age 0, still fresh"
         );
@@ -666,21 +660,21 @@ mod tests {
     fn newborn_window() {
         let now = 1_700_000_000;
         assert_eq!(
-            newborn_age_days(Some(now - 5 * 86_400), now),
+            newborn_age_days(Some(now - 5 * 86_400), now, 30),
             Some(5),
             "5d old → newborn"
         );
         assert_eq!(
-            newborn_age_days(Some(now - 29 * 86_400), now),
+            newborn_age_days(Some(now - 29 * 86_400), now, 30),
             Some(29),
             "just inside 30d"
         );
         assert_eq!(
-            newborn_age_days(Some(now - 45 * 86_400), now),
+            newborn_age_days(Some(now - 45 * 86_400), now, 30),
             None,
             "established package"
         );
-        assert_eq!(newborn_age_days(None, now), None);
+        assert_eq!(newborn_age_days(None, now, 30), None);
     }
 
     #[test]

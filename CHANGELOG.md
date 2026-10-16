@@ -5,10 +5,38 @@ All notable changes to postmortem are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v2.8.0
+## [v2.9.0]
 
 ### Added
 
+- **`harden`: the CIRSEC dependency baseline (CB-DEP), evaluated.** 36 controls
+  on how a project consumes packages, embedded verbatim from
+  [cirsec/baselines](https://baselines.cirsec.org/b/dependencies), each reported
+  `PASS` / `FAIL` / `MANUAL` / `SKIP` / `N/A` / `WAIVED` with its evidence and,
+  on failure, the baseline's remediation. `--level baseline|hardened` (`high`
+  accepted); parameters follow the profile (release age 48h / 72h, …) and can be
+  overridden within the baseline's bounds. Offline it reads package-manager
+  config (release-age gate in npm / pnpm / yarn / bun / uv / pip units, script
+  policy, registries, scope mappings, TLS bypasses), lockfiles (hashes, sources,
+  non-registry packages), pipelines and Dockerfiles (frozen installs, secrets in
+  install steps, cache keys, scanners, SBOM), Dependabot / Renovate (coverage,
+  cooldown, automerge) and CODEOWNERS; `--online` adds installed versions younger
+  than the window, newborn packages, dropped provenance and archived repos;
+  `--vulns` adds malicious-package (MAL-) and open advisories. `[harden]` in
+  `postmortem.conf` sets level, approved `registries`, `internal_scopes`,
+  `params` and expirable `[[harden.waive]]`. Exits 1 on a failed control, 2 on
+  unusable settings. `harden info` lists every control with severity, profile,
+  CIRSEC assessment and postmortem coverage (15 auto, 2 online, 11 partial,
+  8 manual). See [harden](wiki/Harden.md).
+- **`tree.fresh_hours` / `tree.newborn_days`** in `~/.postmortem/config.yml`:
+  the release-age (48h) and newborn-package (30d) windows behind the
+  `fresh-release` and `newborn-package` signals are now settings instead of
+  constants.
+
+
+## [v2.8.0]
+
+### Added
 - **.NET / NuGet ecosystem.** `packages.lock.json` gives the full graph (edges
   resolved per target framework, frameworks merged, project-reference children
   counted as direct, `contentHash` kept as integrity); without it the

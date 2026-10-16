@@ -47,6 +47,13 @@ pub(crate) fn print_overview() {
         "system",
         "your machine's OS packages (brew, apt, dnf, pacman, nix, apk)",
     );
+    cmd(
+        "harden",
+        &format!(
+            "how the project consumes deps, vs the CIRSEC baseline {}",
+            "(harden info)".dimmed()
+        ),
+    );
 
     println!("\n{}", "UNDERSTAND ONE THING".bold());
     cmd(

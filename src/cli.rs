@@ -138,8 +138,81 @@ pub enum Command {
     /// `--online` adds repo reputation, `--vulns` known CVEs.
     System(SystemArgs),
 
+    /// Evaluate the project against the CIRSEC dependency baseline (CB-DEP):
+    /// release-age gates, frozen installs, install scripts, registries, CI.
+    /// Offline by default; `--online` and `--vulns` add the controls that need
+    /// registry history or advisories.
+    Harden(HardenArgs),
+
     /// Show an overview of postmortem: what it does and the available commands.
     Help,
+}
+
+/// Arguments for `postmortem harden <path>`.
+#[derive(Args, Debug)]
+#[command(args_conflicts_with_subcommands = true)]
+pub struct HardenArgs {
+    #[command(subcommand)]
+    pub action: Option<HardenAction>,
+
+    /// Project directory to evaluate.
+    #[arg(default_value = ".")]
+    pub path: PathBuf,
+
+    /// Baseline profile: `baseline` (30 controls) or `hardened` (all 36;
+    /// `high` is accepted). Config: `[harden] level`. Default: baseline.
+    #[arg(long, value_enum)]
+    pub level: Option<crate::harden::Level>,
+
+    /// Go ONLINE for the controls that need registry history: release age of
+    /// every installed version, package age, provenance, archived repositories.
+    #[arg(long)]
+    pub online: bool,
+
+    /// Check the lockfiles against known and malicious-package advisories
+    /// (vuln.mlab.sh).
+    #[arg(long)]
+    pub vulns: bool,
+
+    /// Emit the result as JSON instead of the terminal view.
+    #[arg(long)]
+    pub json: bool,
+
+    /// POST the JSON report to this URL instead of printing it.
+    ///
+    /// Produces exactly what `--json` produces; pass both to print it as well.
+    #[arg(long, value_name = "URL")]
+    pub webhook: Option<String>,
+
+    /// Write output to file. Pass `-` to force stdout.
+    #[arg(short, long)]
+    pub output: Option<PathBuf>,
+
+    /// Config file to read `[harden]` from (default: <path>/postmortem.conf).
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+
+    /// Disable the animated progress UI.
+    #[arg(long)]
+    pub no_progress: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HardenAction {
+    /// List every CIRSEC control: severity, profile, and what postmortem checks
+    /// automatically, online, partly, or not at all.
+    Info(HardenInfoArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HardenInfoArgs {
+    /// Only the controls of this profile (`hardened` lists all 36).
+    #[arg(long, value_enum)]
+    pub level: Option<crate::harden::Level>,
+
+    /// Emit the catalogue as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Arguments for `postmortem hook <action>`.

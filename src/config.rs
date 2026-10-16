@@ -53,6 +53,57 @@ pub struct Config {
     /// License policy for `licenses`. Ignored by every other command.
     #[serde(default)]
     pub license: LicenseConfig,
+    /// Baseline settings for `harden`. Ignored by every other command.
+    #[serde(default)]
+    pub harden: HardenConfig,
+}
+
+/// The `[harden]` table: the project's choices for the CIRSEC baseline.
+///
+/// ```toml
+/// [harden]
+/// level = "hardened"
+/// registries = ["npm.corp.example", "pypi.corp.example"]
+/// internal_scopes = ["@acme"]
+///
+/// [harden.params]
+/// min_release_age_hours = 96
+///
+/// [[harden.waive]]
+/// control = "CB-DEP-SRC-001"
+/// reason = "no org proxy yet, tracked in SEC-42"
+/// expires = "2026-12-31"
+/// ```
+///
+/// `registries` and `internal_scopes` are what the baseline calls "approved
+/// registries" and "internal namespaces": facts about the organization that no
+/// file in the repository states. `params` overrides the profile's values,
+/// within the bounds the baseline sets.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct HardenConfig {
+    #[serde(default)]
+    pub level: Option<String>,
+    #[serde(default)]
+    pub registries: Vec<String>,
+    #[serde(default)]
+    pub internal_scopes: Vec<String>,
+    #[serde(default)]
+    pub params: std::collections::BTreeMap<String, i64>,
+    #[serde(default)]
+    pub waive: Vec<Waiver>,
+}
+
+/// One `[[harden.waive]]` entry: a control the project does not apply, with
+/// the reason and an optional `expires` (`YYYY-MM-DD`) after which the control
+/// is evaluated again.
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct Waiver {
+    pub control: String,
+    pub reason: String,
+    #[serde(default)]
+    pub expires: Option<String>,
 }
 
 /// The `[license]` table: which licenses the project accepts.
@@ -429,7 +480,7 @@ fn rule_matches(rule: &IgnoreRule, path: Option<&regex::Regex>, f: &Finding) -> 
 /// Minimal glob: `*` matches anything except `/`, `**` matches anything including `/`,
 /// `?` matches one non-slash char. Anchored at neither end — pattern is matched as
 /// a substring inside the location string, which is convenient for path filters.
-fn glob_regex(pattern: &str) -> Option<regex::Regex> {
+pub(crate) fn glob_regex(pattern: &str) -> Option<regex::Regex> {
     // Compile to a regex
     let mut re = String::with_capacity(pattern.len() * 2);
     let mut chars = pattern.chars().peekable();

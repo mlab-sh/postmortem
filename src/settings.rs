@@ -574,7 +574,7 @@ impl Agents {
 }
 
 /// The host of a URL, lowercased, without userinfo or port.
-fn host_of(url: &str) -> Option<String> {
+pub(crate) fn host_of(url: &str) -> Option<String> {
     let rest = url.split("://").nth(1).unwrap_or(url);
     let host = rest.split(['/', '?', '#']).next()?;
     let host = host.rsplit('@').next()?;
@@ -599,6 +599,12 @@ pub struct TreeSettings {
     pub recent_days: i64,
     /// Flag repositories with no push in this many days.
     pub stale_days: i64,
+    /// Flag a version published less than this many hours ago (release-age
+    /// cooldown). `harden` sets it from CB-DEP-AGE-001.
+    pub fresh_hours: i64,
+    /// Flag a package whose first release is younger than this many days.
+    /// `harden` sets it from CB-DEP-AGE-002.
+    pub newborn_days: i64,
 }
 
 impl Default for TreeSettings {
@@ -609,6 +615,8 @@ impl Default for TreeSettings {
             min_stars_by_ecosystem: Default::default(),
             recent_days: 30,
             stale_days: 365,
+            fresh_hours: 48,
+            newborn_days: 30,
         }
     }
 }

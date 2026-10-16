@@ -12,6 +12,7 @@
 - [diff](Diff)
 - [sbom](Sbom)
 - [system](System)
+- [harden](Harden)
 - [scripts](Install-Time)
 - [hook](Install-Time)
 - [watch](Install-Time)
